@@ -2,6 +2,10 @@
 
 import sys
 import logging
+import os
+
+import string
+from pathlib import Path
 from google import genai
 from google.genai import types
 
@@ -27,11 +31,29 @@ config = types.GenerateContentConfig(
     tools=[{"google_search": {}}],
 )
 
-
 while prompt != "quit":
     prompt = input()
     if prompt == "quit":
         break
+    elif prompt == "save-chat":
+        # Log chat to a file and save it.
+        title = chat_history[0].split()[:6]
+        title = "".join(str(n) for n in title).lower()
+        title += ".convo"
+        print(title)
+        if os.path.isfile(title):
+            with open(title, "w", encoding="utf-8") as f:
+               f.write()
+               print("ran open file")
+        elif not os.path.isfile(title):
+            tempstring = "\n".join(chat_history)
+            print(tempstring)
+            with open(title, "w", encoding="utf-8") as f:
+                f.write(tempstring)
+                print("file not existed, created and wrote chat_history")
+
+        
+
     else:
         current_chat = chat_history.append(prompt)
         response = client.models.generate_content(

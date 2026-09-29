@@ -37,20 +37,22 @@ config = types.GenerateContentConfig(
     # 2. Creativity and Length
     temperature=0.1,  # Low temperature for factual consistency
     # 3. Output Format
+    ## Standard text stream
     # 4. Optional Stop Triggers
     stop_sequences=["END_OF_TRANSLATION"],
     # 5. Adding Tools (e.g., Google Search)
     tools=[{"google_search": {}}],
 )
 
-
+# Program loop
 while True:
     try:
         # Wait for user input
-        prompt = user + input("\033[31m " + user + "\033[0m ")
+        prompt = user + input("\033[31m " + user + "\033[0m")
         # Update "Chat History {chat_history}"
         current_chat = chat_history.append(prompt)
         # "response" from genai is a blocking call (waits)
+        # animated with rich package
         with Live(Padding.indent(Spinner("balloon", "thinking..."), 1), console=console, transient=True):
             response = client.models.generate_content(
                 model="gemini-3.8-flash", contents = chat_history, config = config,

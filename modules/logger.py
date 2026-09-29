@@ -17,11 +17,8 @@ def log_chat(chat_history):
     # Log chat to a file and save it.
     # Grab first 3 words of chat history first dataset
     save_title = chat_history[0].split()[:3]
-    #  print(save_title)
     save_title = "".join(str(n) for n in save_title).lower()
-    # print(save_title)
     save_title += ".convo"
-    # print(save_title)
 
     # We need the directory of this program to create file_path
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -30,5 +27,5 @@ def log_chat(chat_history):
     file_path_complete = os.path.join(file_path_second, save_title)
 
     with open(file_path_complete, "w", encoding="utf-8") as f:
-       f.write(formatted_chat)
-       print("re-wrote file")
+       f.write(str(chat_history))
+       # print("Saved chat to /chats folder")

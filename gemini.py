@@ -2,8 +2,9 @@
 
 import sys
 import logging
+import getpass
 
-from pathlib import Path
+# from pathlib import Path
 from google import genai
 from google.genai import types
 
@@ -20,6 +21,7 @@ logging.getLogger().setLevel(logging.ERROR)
 client = genai.Client()
 
 # GLOBAL VARIABLES
+username = getpass.getuser()
 chat_history = []
 prompt = ""
 
@@ -37,29 +39,25 @@ config = types.GenerateContentConfig(
 
 while prompt != "quit":
     try:
+        user = username + ": "
         # Wait for user input
-        prompt = input()
-        # Check for quit command
-        if prompt == "quit":
-            break
-        elif prompt == "save-chat":
-            # Save chat to log file command
-            logger.log_chat(chat_history)
-        # If prompt from user an actual chat request
+        prompt = user + input()
+        # Update "Chat History {chat_history}"
+        current_chat = chat_history.append(prompt)
+        # "response" from genai is a blocking call (waits)
+        response = client.models.generate_content(
+            model="gemini-3.8-flash", contents = chat_history, config = config,
+)
+        # Update "Chat History {chat_history} with AI response"
+        current_chat = chat_history.append(response.text)
+        # Save updated conversation chat to log file auto
+        logger.log_chat(chat_history)
+        # No response from server error handling
+        if response.text == None:
+            print("Response was NoneType")
         else:
-            # Update "Chat History {chat_history}"
-            current_chat = chat_history.append(prompt)
-            # "response" from genai is a blocking call (waits)
-            response = client.models.generate_content(
-                model="gemini-3.8-flash", contents = chat_history, config = config,
-    )
-            # Update "Chat History {chat_history} with AI response"
-            current_chat = chat_history.append(response.text)
-            # No response from server error handling
-            if response.text == None:
-                print("Response was NoneType")
-            else:
-                print("\n" + response.text + "\n")
+            print("\n" + response.text + "\n")
+            # print(chat_history)
     ### USED FOR PROGRAM ESCAPE ###
     except KeyboardInterrupt as e:
         print(f" : Exiting program 'Geminis'")

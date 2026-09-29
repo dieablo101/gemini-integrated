@@ -22,6 +22,7 @@ client = genai.Client()
 
 # GLOBAL VARIABLES
 username = getpass.getuser()
+user = username + ": "
 chat_history = []
 prompt = ""
 
@@ -39,15 +40,14 @@ config = types.GenerateContentConfig(
 
 while prompt != "quit":
     try:
-        user = username + ": "
         # Wait for user input
-        prompt = user + input()
+        prompt = user + input("\033[31m " + user + "\033[0m ")
         # Update "Chat History {chat_history}"
         current_chat = chat_history.append(prompt)
         # "response" from genai is a blocking call (waits)
         response = client.models.generate_content(
             model="gemini-3.8-flash", contents = chat_history, config = config,
-)
+        )
         # Update "Chat History {chat_history} with AI response"
         current_chat = chat_history.append(response.text)
         # Save updated conversation chat to log file auto
@@ -56,8 +56,9 @@ while prompt != "quit":
         if response.text == None:
             print("Response was NoneType")
         else:
-            print("\n" + response.text + "\n")
+            print("\033[34m gemini:\033[0m " + response.text)
             # print(chat_history)
+
     ### USED FOR PROGRAM ESCAPE ###
     except KeyboardInterrupt as e:
         print(f" : Exiting program 'Geminis'")

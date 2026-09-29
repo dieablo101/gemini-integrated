@@ -51,10 +51,11 @@ while True:
         # Update "Chat History {chat_history}"
         current_chat = chat_history.append(prompt)
         # "response" from genai is a blocking call (waits)
-        with Console().status("thinking ..."):
+        with Live(Padding.indent(Spinner("balloon", "thinking..."), 1), console=console, transient=True):
             response = client.models.generate_content(
                 model="gemini-3.8-flash", contents = chat_history, config = config,
             )
+            pass
         # Update "Chat History {chat_history} with AI response"
         current_chat = chat_history.append(response.text)
         # Save updated conversation chat to log file auto

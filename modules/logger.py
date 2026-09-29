@@ -4,15 +4,20 @@ import getpass
 
 username = getpass.getuser()
 
+## GLOBALS
+save_title=""
+
 def log_chat(chat_history):
     # Formatting for file contents
-    user = f"{username} : "
-    formatted = [
-        f"{user}{msg}" if i % 2 == 0 else msg
-        for i, msg in enumerate(chat_history)
-    ]
+
+    #### DONT NEED RIGHT NOW, KEEPING AROUND INCASE ### ( formatting - unused )
+    # user = f"{username} : "
+    # formatted = [
+        # f"{user}{msg}" if i % 2 == 0 else msg
+        # for i, msg in enumerate(chat_history)
+    # ]
     # Formatted chat history.
-    formatted_chat = "\n\n".join(formatted)
+    formatted_chat = "\n\n".join(chat_history)
 
     # Log chat to a file and save it.
     # Grab first 3 words of chat history first dataset
@@ -27,5 +32,5 @@ def log_chat(chat_history):
     file_path_complete = os.path.join(file_path_second, save_title)
 
     with open(file_path_complete, "w", encoding="utf-8") as f:
-       f.write(str(chat_history))
+       f.write(str(formatted_chat))
        # print("Saved chat to /chats folder")

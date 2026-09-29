@@ -34,25 +34,25 @@ config = types.GenerateContentConfig(
 
 while prompt != "quit":
     try:
-        print("try")
-    except KeyboardInterrupt as e:
-        print(f"System exit attempted")
-    prompt = input()
-    if prompt == "quit":
-        break
-    elif prompt == "save-chat":
-        # Save chat to log file command
-        logger.log_chat(chat_history)
-    else:
-        # Update "Chat History {chat_history}"
-        current_chat = chat_history.append(prompt)
-        response = client.models.generate_content(
-            model="gemini-3.8-flash", contents = chat_history, config = config,
-)
-        # Update "Chat History {chat_history} with AI response"
-        current_chat = chat_history.append(response.text)
-        if response.text == None:
-            print("Response was NoneType")
+        prompt = input()
+        if prompt == "quit":
+            break
+        elif prompt == "save-chat":
+            # Save chat to log file command
+            logger.log_chat(chat_history)
         else:
-            print("\n" + response.text + "\n")
+            # Update "Chat History {chat_history}"
+            current_chat = chat_history.append(prompt)
+            response = client.models.generate_content(
+                model="gemini-3.8-flash", contents = chat_history, config = config,
+    )
+            # Update "Chat History {chat_history} with AI response"
+            current_chat = chat_history.append(response.text)
+            if response.text == None:
+                print("Response was NoneType")
+            else:
+                print("\n" + response.text + "\n")
 
+    except KeyboardInterrupt as e:
+        print(f" : Exiting program 'Geminis'")
+        sys.exit(1)

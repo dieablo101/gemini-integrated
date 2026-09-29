@@ -7,10 +7,14 @@ from pathlib import Path
 from google import genai
 from google.genai import types
 
+# Syntax highlighting
+from rich.console import Console
+from rich.syntax import Syntax
+
 # Custom Modules
 from modules import logger
 
-# Suppress develope warnings from the SDK
+# Suppress developer warnings from the SDK
 logging.getLogger().setLevel(logging.ERROR)
 
 client = genai.Client()
@@ -31,7 +35,6 @@ config = types.GenerateContentConfig(
     tools=[{"google_search": {}}],
 )
 
-
 while prompt != "quit":
     try:
         # Wait for user input
@@ -42,6 +45,7 @@ while prompt != "quit":
         elif prompt == "save-chat":
             # Save chat to log file command
             logger.log_chat(chat_history)
+        # If prompt from user an actual chat request
         else:
             # Update "Chat History {chat_history}"
             current_chat = chat_history.append(prompt)

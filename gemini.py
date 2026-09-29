@@ -10,7 +10,8 @@ from google.genai import types
 
 # Syntax highlighting
 from rich.console import Console
-from rich.syntax import Syntax
+from rich.markdown import Markdown
+from rich.panel import Panel
 
 # Custom Modules
 from modules import logger
@@ -20,12 +21,15 @@ logging.getLogger().setLevel(logging.ERROR)
 
 client = genai.Client()
 
+# Instantiations
+console = Console()
+
 # GLOBAL VARIABLES
 username = getpass.getuser()
 user = username + ": "
 chat_history = []
-prompt = ""
 
+### AI CONNECTION CONFIGURATION ###
 config = types.GenerateContentConfig(
     # 1. Behavior and Persona
     system_instruction="You are a terminal assistant in Ubuntu CLI you work alongside a computer programmer, using emacs, terminator terminal. Keep answers as short as possible, keep a personality though (one of friendship and companion and co worker)",
@@ -38,16 +42,18 @@ config = types.GenerateContentConfig(
     tools=[{"google_search": {}}],
 )
 
-while prompt != "quit":
+
+while True:
     try:
         # Wait for user input
         prompt = user + input("\033[31m " + user + "\033[0m ")
         # Update "Chat History {chat_history}"
         current_chat = chat_history.append(prompt)
         # "response" from genai is a blocking call (waits)
-        response = client.models.generate_content(
-            model="gemini-3.8-flash", contents = chat_history, config = config,
-        )
+        with Console().status("thinking ..."):
+            response = client.models.generate_content(
+                model="gemini-3.8-flash", contents = chat_history, config = config,
+            )
         # Update "Chat History {chat_history} with AI response"
         current_chat = chat_history.append(response.text)
         # Save updated conversation chat to log file auto
@@ -56,7 +62,9 @@ while prompt != "quit":
         if response.text == None:
             print("Response was NoneType")
         else:
-            print("\033[34m gemini:\033[0m " + response.text)
+            console.print(
+                Panel(Markdown(response.text), title="Gemini", border_style="red")
+            )
             # print(chat_history)
 
     ### USED FOR PROGRAM ESCAPE ###

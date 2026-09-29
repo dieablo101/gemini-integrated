@@ -10,6 +10,9 @@ from google.genai import types
 
 # Syntax highlighting
 from rich.console import Console
+from rich.live import Live
+from rich.padding import Padding
+from rich.spinner import Spinner
 from rich.markdown import Markdown
 from rich.panel import Panel
 
@@ -20,8 +23,6 @@ from modules import logger
 logging.getLogger().setLevel(logging.ERROR)
 
 client = genai.Client()
-
-# Instantiations
 console = Console()
 
 # GLOBAL VARIABLES

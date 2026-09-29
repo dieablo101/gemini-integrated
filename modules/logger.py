@@ -17,7 +17,7 @@ def log_chat(chat_history):
     # Log chat to a file and save it.
     # Grab first 3 words of chat history first dataset
     save_title = chat_history[0].split()[:3]
-    # print(save_title)
+    #  print(save_title)
     save_title = "".join(str(n) for n in save_title).lower()
     # print(save_title)
     save_title += ".convo"

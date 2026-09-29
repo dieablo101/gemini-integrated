@@ -21,7 +21,7 @@ prompt = ""
 
 config = types.GenerateContentConfig(
     # 1. Behavior and Persona
-    system_instruction="You are a terminal assistant in Ubuntu CLI you work alongside a computer programmer, using emacs, terminator terminal.",
+    system_instruction="You are a terminal assistant in Ubuntu CLI you work alongside a computer programmer, using emacs, terminator terminal. Keep answers as short as possible, keep a personality though (one of friendship and companion and co worker)",
     # 2. Creativity and Length
     temperature=0.1,  # Low temperature for factual consistency
     # 3. Output Format
@@ -35,10 +35,9 @@ while prompt != "quit":
     prompt = input()
     if prompt == "quit":
         break
-    # Save chat to log file command
     elif prompt == "save-chat":
+        # Save chat to log file command
         logger.log_chat(chat_history)
-
     else:
         current_chat = chat_history.append(prompt)
         response = client.models.generate_content(

@@ -34,7 +34,9 @@ config = types.GenerateContentConfig(
 
 while prompt != "quit":
     try:
+        # Wait for user input
         prompt = input()
+        # Check for quit command
         if prompt == "quit":
             break
         elif prompt == "save-chat":
@@ -43,16 +45,18 @@ while prompt != "quit":
         else:
             # Update "Chat History {chat_history}"
             current_chat = chat_history.append(prompt)
+            # "response" from genai is a blocking call (waits)
             response = client.models.generate_content(
                 model="gemini-3.8-flash", contents = chat_history, config = config,
     )
             # Update "Chat History {chat_history} with AI response"
             current_chat = chat_history.append(response.text)
+            # No response from server error handling
             if response.text == None:
                 print("Response was NoneType")
             else:
                 print("\n" + response.text + "\n")
-
+    ### USED FOR PROGRAM ESCAPE ###
     except KeyboardInterrupt as e:
         print(f" : Exiting program 'Geminis'")
         sys.exit(1)

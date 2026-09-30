@@ -5,6 +5,8 @@ from pathlib import Path
 
 # username = getpass.getuser()
 
+#### ANOTHER TEST OF MAIN ####
+
 def log_chat(chat_history):
 
     # Formatted chat history.

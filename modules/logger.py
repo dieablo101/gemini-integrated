@@ -19,7 +19,7 @@ def log_chat(chat_history):
         token = token
         print(token)
     elif token == None:
-        token = secrets.token_hex(8)
+        token = secrets.token_hex(16)
         print(token)
 
     # create filename off of beginning text

@@ -1,4 +1,4 @@
-#!/home/kidlucrid/.gemini/.venv/bin/python3
+#!/opt/gemini/.venv/bin/python3
 
 import sys
 import logging

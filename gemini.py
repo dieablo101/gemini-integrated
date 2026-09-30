@@ -14,7 +14,6 @@ from rich.live import Live
 from rich.padding import Padding
 from rich.spinner import Spinner
 from rich.markdown import Markdown
-from rich.panel import Panel
 
 # Custom Modules
 from modules import logger

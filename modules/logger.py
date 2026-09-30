@@ -1,8 +1,8 @@
 # get username for logging
 import os
-#import getpass
+import getpass
 
-#username = getpass.getuser()
+username = getpass.getuser()
 
 ## GLOBALS
 save_title=""
@@ -29,11 +29,12 @@ def log_chat(chat_history):
     #   --- if so, add a number or a hash
 
     # We need the directory of this program to create file_path
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    file_path = os.path.join(script_dir)
-    file_path_second = os.path.join(file_path, "../chats/")
-    file_path_complete = os.path.join(file_path_second, save_title)
+    user_directory = os.path.join(os.path.expanduser("~"), ".gemini_chats/", save_title)
+    # file_path = os.path.join(user_directory, ".gemini_chats/")
+    # file_path_second = os.path.join(file_path, save_title)
 
-    with open(file_path_complete, "w", encoding="utf-8") as f:
+    print(user_directory)
+
+    with open(user_directory, "w", encoding="utf-8") as f:
        f.write(str(formatted_chat))
        # print("Saved chat to /chats folder")

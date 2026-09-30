@@ -67,7 +67,7 @@ while True:
             print("Response was NoneType")
         else:
             console.print(
-                Panel(Markdown(response.text), title="Gemini", border_style="red")
+                Panel(Markdown(response.text))
             )
             # print(chat_history)
 

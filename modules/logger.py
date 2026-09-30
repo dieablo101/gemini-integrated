@@ -1,8 +1,9 @@
 # get username for logging
 import os
-import getpass
+# import getpass
+from pathlib import Path
 
-username = getpass.getuser()
+# username = getpass.getuser()
 
 def log_chat(chat_history):
 
@@ -12,14 +13,15 @@ def log_chat(chat_history):
     # create filename off of beginning text
     file_name = "".join(chat_history[0].split()[:3]).lower() + ".convo"
 
-    ### CHECK: if file named save_title exists
-    #   --- if so, add a number or a hash
+    # We need the directory of the logged in user to create file path
+    user_directory = os.path.join(os.path.expanduser("~"), ".gemini_chats/")
+    user_file_name = os.path.join(user_directory, file_name)
 
-    # We need the directory of this program to create file_path
-    user_directory = os.path.join(os.path.expanduser("~"), ".gemini_chats/", file_name)
+    
+    # Checks if folder exists on user for file save directory
+    # if not, it creates it for us.
+    Path(user_directory).mkdir(parents=True, exist_ok=True)
 
-    #print(user_directory)
-
-    with open(user_directory, "w", encoding="utf-8") as f:
+    with open(user_file_name, "w", encoding="utf-8") as f:
        f.write(str(formatted_chat))
        # print("Saved chat to /chats folder")

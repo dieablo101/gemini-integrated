@@ -1,8 +1,8 @@
 # get username for logging
 import os
-import getpass
+#import getpass
 
-username = getpass.getuser()
+#username = getpass.getuser()
 
 ## GLOBALS
 save_title=""
@@ -24,6 +24,9 @@ def log_chat(chat_history):
     save_title = chat_history[0].split()[:3]
     save_title = "".join(str(n) for n in save_title).lower()
     save_title += ".convo"
+
+    ### CHECK: if file named save_title exists
+    #   --- if so, add a number or a hash
 
     # We need the directory of this program to create file_path
     script_dir = os.path.dirname(os.path.abspath(__file__))

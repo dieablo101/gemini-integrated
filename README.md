@@ -7,7 +7,9 @@
 - Create a Virtual python environment named .venv in the project folder
 - {enter} the virtual environment
 - Install pip package google-genai
--- Instal pip package rich
+-- Install pip package rich
+-- Install pip package textual
+-- Install pip package pyperclip
 - {exit} the virtual environment
 - run program file gemini.py
 -- make sure you have the right file permissions on the gemini.py file ( executable )

@@ -17,10 +17,8 @@ def log_chat(chat_history):
     # Generate a session token for the initial current session
     if token:
         token = token
-        print(token)
     elif token == None:
         token = secrets.token_hex(16)
-        print(token)
 
     # create filename off of beginning text
     file_name = token + ".convo"
@@ -34,5 +32,5 @@ def log_chat(chat_history):
     Path(user_directory).mkdir(parents=True, exist_ok=True)
 
     with open(user_file_name, "w", encoding="utf-8") as f:
-       f.write(str(formatted_chat))
+       f.write(str(chat_history))
        # print("Saved chat to /chats folder")

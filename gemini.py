@@ -58,7 +58,18 @@ while True:
             )
             pass
         # Update "Chat History {chat_history} with AI response"
-        current_chat = chat_history.append(response.text)
+        current_chat = chat_history.append("gemini: " + response.text)
+
+        ### IDEAS HOW TO HANDLE LIVE DISPLAY OF SAVED CHATS
+        # pars through the chat_history, devide by user or gemini
+        # then print the whole thing at once in a loop,
+        # if live view up to date with file, only add / print the new stuff
+        # unless we swap to another topic then we re-parse and
+        # re-distribute to the display.
+
+        ## OR
+        # Draw the whole thing live on the screen and display it live.
+
         # Save updated conversation chat to log file auto
         logger.log_chat(chat_history)
         # No response from server error handling

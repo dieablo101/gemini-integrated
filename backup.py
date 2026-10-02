@@ -2,11 +2,8 @@
 
 import asyncio
 import json
-import os
-from pathlib import Path
-import subprocess
-import tempfile
 import time
+from pathlib import Path
 from uuid import uuid4
 
 import pyperclip
@@ -75,10 +72,6 @@ class ExpandingInput(TextArea):
             event.prevent_default()
             event.stop()
             self.app.action_copy_last_response()
-        elif event.key == "ctrl+e":
-            event.prevent_default()
-            event.stop()
-            self.app.action_open_in_editor()
         elif event.key in ("escape", "ctrl+o"):
             event.prevent_default()
             event.stop()
@@ -171,10 +164,6 @@ class FeedArea(Markdown):
             event.prevent_default()
             event.stop()
             self.app.action_copy_last_response()
-        elif event.key in ("ctrl+e", "v"):
-            event.prevent_default()
-            event.stop()
-            self.app.action_open_in_editor()
         # Feed scrolling navigation
         elif event.key in ("k", "up"):
             event.prevent_default()
@@ -288,7 +277,6 @@ class ChatApp(App):
         Binding("ctrl+n", "new_chat", "New Chat", show=True),
         Binding("ctrl+b", "toggle_history", "History", show=True),
         Binding("ctrl+y", "copy_last_response", "Yank Last", show=True),
-        Binding("ctrl+e", "open_in_editor", "Editor", show=True),
         Binding("escape", "toggle_focus", "Focus Swap", show=True),
         Binding("ctrl+q", "quit", "Quit", show=True),
     ]
@@ -444,28 +432,6 @@ class ChatApp(App):
                 self.notify("Copied last Gemini response to clipboard!")
                 return
         self.notify("No response to copy yet.", severity="warning")
-
-    def action_open_in_editor(self) -> None:
-        """Suspend Textual and open the current conversation in $EDITOR or $PAGER."""
-        feed = self.query_one("#feed", FeedArea)
-        if not getattr(feed, "_raw_markdown", ""):
-            self.notify("No conversation to open.", severity="warning")
-            return
-
-        editor = os.environ.get("EDITOR") or os.environ.get("PAGER") or "nano"
-
-        with tempfile.NamedTemporaryFile(suffix=".md", mode="w+", delete=False, encoding="utf-8") as tmp:
-            tmp.write(feed._raw_markdown)
-            tmp.flush()
-            tmp_path = tmp.name
-
-        try:
-            with self.suspend():
-                subprocess.run([editor, tmp_path])
-        except Exception as e:
-            self.notify(f"Failed to launch editor: {e}", severity="error")
-        finally:
-            Path(tmp_path).unlink(missing_ok=True)
 
     async def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         if event.option_id:

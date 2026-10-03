@@ -15,6 +15,7 @@ from rich.syntax import Syntax
 from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
+from textual.command import CommandPalette
 from textual.containers import Horizontal, Vertical
 from textual.message import Message
 from textual.screen import ModalScreen
@@ -32,6 +33,18 @@ class RemoteInsert(Message):
     def __init__(self, text: str) -> None:
         super().__init__()
         self.text = text
+
+
+class MenuPalette(CommandPalette):
+    """Command palette customized as the Emacs-style Menu (M-x)."""
+
+    def on_mount(self) -> None:
+        super().on_mount()
+        try:
+            palette_input = self.query_one("CommandInput", Input)
+            palette_input.placeholder = "Menu (M-x)..."
+        except Exception:
+            pass
 
 
 class TitlePromptModal(ModalScreen[str | None]):
@@ -71,6 +84,7 @@ class TitlePromptModal(ModalScreen[str | None]):
 
     BINDINGS = [
         Binding("escape", "cancel", "Cancel"),
+        Binding("ctrl+g", "cancel", "Cancel"),
     ]
 
     def __init__(self, prompt: str = "Enter chat topic / title:", default_title: str = "") -> None:
@@ -115,72 +129,250 @@ class ExpandingInput(TextArea):
 
     def on_mount(self) -> None:
         self.show_line_numbers = False
+        self._prefix_c_c = False
         self._update_layout()
 
     def _on_key(self, event: events.Key) -> None:
-        # Submit & Newlines
+        # -----------------------------
+        # Emacs C-c Prefix Mode
+        # -----------------------------
+        if self._prefix_c_c:
+            self._prefix_c_c = False
+            if event.key in ("ctrl+n", "n"):
+                event.prevent_default()
+                event.stop()
+                self.app.action_new_chat()
+                return
+            elif event.key in ("ctrl+b", "b"):
+                event.prevent_default()
+                event.stop()
+                self.app.action_toggle_history()
+                return
+            elif event.key in ("ctrl+e", "e"):
+                event.prevent_default()
+                event.stop()
+                self.app.action_open_in_editor()
+                return
+            elif event.key in ("ctrl+y", "y"):
+                event.prevent_default()
+                event.stop()
+                self.app.action_copy_last_response()
+                return
+            elif event.key in ("ctrl+t", "t"):
+                event.prevent_default()
+                event.stop()
+                self.app.action_rename_chat()
+                return
+            elif event.key in ("ctrl+c", "ctrl+g", "escape"):
+                event.prevent_default()
+                event.stop()
+                return
+
+        if event.key == "ctrl+c":
+            event.prevent_default()
+            event.stop()
+            self._prefix_c_c = True
+            return
+
+        # -----------------------------
+        # Submission & Line Breaks
+        # -----------------------------
         if event.key == "enter":
             event.prevent_default()
             event.stop()
             self.action_submit()
+            return
         elif event.key in ("shift+enter", "ctrl+j"):
             event.prevent_default()
             event.stop()
             self.action_newline()
-        elif event.key in ("ctrl+c", "y"):
+            return
+
+        # -----------------------------
+        # Emacs M-x / Menu
+        # -----------------------------
+        elif event.key in ("alt+x", "meta+x"):
+            event.prevent_default()
+            event.stop()
+            self.app.action_command_palette()
+            return
+
+        # -----------------------------
+        # Emacs Navigation
+        # -----------------------------
+        elif event.key == "ctrl+f":
+            event.prevent_default()
+            event.stop()
+            self.action_cursor_right()
+            return
+        elif event.key == "ctrl+b":
+            event.prevent_default()
+            event.stop()
+            self.action_cursor_left()
+            return
+        elif event.key == "ctrl+n":
+            event.prevent_default()
+            event.stop()
+            self.action_cursor_down()
+            return
+        elif event.key == "ctrl+p":
+            event.prevent_default()
+            event.stop()
+            self.action_cursor_up()
+            return
+        elif event.key == "ctrl+a":
+            event.prevent_default()
+            event.stop()
+            self.action_cursor_line_start()
+            return
+        elif event.key == "ctrl+e":
+            event.prevent_default()
+            event.stop()
+            self.action_cursor_line_end()
+            return
+        elif event.key in ("alt+f", "meta+f"):
+            event.prevent_default()
+            event.stop()
+            self.action_cursor_word_right()
+            return
+        elif event.key in ("alt+b", "meta+b"):
+            event.prevent_default()
+            event.stop()
+            self.action_cursor_word_left()
+            return
+        elif event.key in ("alt+<", "meta+<", "alt+comma"):
+            event.prevent_default()
+            event.stop()
+            self.action_cursor_document_start()
+            return
+        elif event.key in ("alt+>", "meta+>", "alt+period"):
+            event.prevent_default()
+            event.stop()
+            self.action_cursor_document_end()
+            return
+
+        # -----------------------------
+        # Emacs Editing & Kill Ring
+        # -----------------------------
+        elif event.key == "ctrl+d":
+            event.prevent_default()
+            event.stop()
+            self.action_delete_right()
+            self._update_layout()
+            return
+        elif event.key == "ctrl+k":
+            event.prevent_default()
+            event.stop()
+            self._kill_line_forward()
+            self._update_layout()
+            return
+        elif event.key == "ctrl+u":
+            event.prevent_default()
+            event.stop()
+            self._kill_line_backward()
+            self._update_layout()
+            return
+        elif event.key in ("alt+d", "meta+d"):
+            event.prevent_default()
+            event.stop()
+            self._kill_word_forward()
+            self._update_layout()
+            return
+        elif event.key in ("ctrl+w", "alt+backspace", "meta+backspace"):
+            event.prevent_default()
+            event.stop()
+            if self.selected_text:
+                self.app.copy_to_clipboard(self.selected_text)
+                self.delete()
+            else:
+                self._kill_word_backward()
+            self._update_layout()
+            return
+        elif event.key == "ctrl+y":
+            event.prevent_default()
+            event.stop()
+            try:
+                paste_text = pyperclip.paste()
+                if paste_text:
+                    self.insert(paste_text)
+                    self._update_layout()
+            except Exception:
+                pass
+            return
+        elif event.key in ("alt+w", "meta+w"):
             if self.selected_text:
                 event.prevent_default()
                 event.stop()
                 self.app.copy_to_clipboard(self.selected_text)
+                return
+        elif event.key in ("ctrl+slash", "ctrl+underscore"):
+            event.prevent_default()
+            event.stop()
+            self.action_undo()
+            self._update_layout()
+            return
+        elif event.key in ("ctrl+g", "escape"):
+            event.prevent_default()
+            event.stop()
+            self.move_cursor(self.cursor_location)
+            self.app.query_one("#feed", FeedArea).focus()
+            return
 
-        # Snippet cycling hotkeys directly from input
+        # -----------------------------
+        # Snippet Cycling Hotkeys
+        # -----------------------------
         elif event.key in ("alt+n", "alt+down"):
             event.prevent_default()
             event.stop()
             self.app.action_next_snippet()
+            return
         elif event.key in ("alt+p", "alt+up"):
             event.prevent_default()
             event.stop()
             self.app.action_prev_snippet()
+            return
 
-        # Emacs / CLI power tools
-        elif event.key == "ctrl+u":
-            event.prevent_default()
-            event.stop()
-            self.clear()
-            self._update_layout()
-        elif event.key in ("pageup",):
-            event.prevent_default()
-            event.stop()
-            self.app.query_one("#feed", FeedArea).focus()
+        super()._on_key(event)
 
-        # App Actions passed through
-        elif event.key == "ctrl+b":
-            event.prevent_default()
-            event.stop()
-            self.app.action_toggle_history()
-        elif event.key == "ctrl+n":
-            event.prevent_default()
-            event.stop()
-            self.app.action_new_chat()
-        elif event.key == "ctrl+t":
-            event.prevent_default()
-            event.stop()
-            self.app.action_rename_chat()
-        elif event.key == "ctrl+y":
-            event.prevent_default()
-            event.stop()
-            self.app.action_copy_last_response()
-        elif event.key == "ctrl+e":
-            event.prevent_default()
-            event.stop()
-            self.app.action_open_in_editor()
-        elif event.key in ("escape", "ctrl+o"):
-            event.prevent_default()
-            event.stop()
-            self.app.action_toggle_focus()
+    def _kill_line_forward(self) -> None:
+        row, col = self.cursor_location
+        line = self.document.get_line(row)
+        if col < len(line):
+            killed = line[col:]
+            self.delete((row, col), (row, len(line)))
         else:
-            super()._on_key(event)
+            if row < self.document.line_count - 1:
+                killed = "\n"
+                self.delete((row, col), (row + 1, 0))
+            else:
+                return
+        self.app.copy_to_clipboard(killed)
+
+    def _kill_line_backward(self) -> None:
+        row, col = self.cursor_location
+        if col > 0:
+            line = self.document.get_line(row)
+            killed = line[:col]
+            self.delete((row, 0), (row, col))
+            self.app.copy_to_clipboard(killed)
+
+    def _kill_word_forward(self) -> None:
+        start = self.cursor_location
+        self.action_cursor_word_right()
+        end = self.cursor_location
+        if start != end:
+            killed = self.get_text_range(start, end)
+            self.delete(start, end)
+            self.app.copy_to_clipboard(killed)
+
+    def _kill_word_backward(self) -> None:
+        start = self.cursor_location
+        self.action_cursor_word_left()
+        end = self.cursor_location
+        if start != end:
+            killed = self.get_text_range(end, start)
+            self.delete(end, start)
+            self.app.copy_to_clipboard(killed)
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         self._update_layout()
@@ -213,7 +405,6 @@ class FeedArea(Markdown):
         self.selected_snippet_index: int = -1
 
     def _enable_fence_wrapping(self) -> None:
-        """Walks mounted markdown widgets and enforces word-wrapping on code blocks."""
         for fence in self.query(MarkdownFence):
             if hasattr(fence, "renderable") and isinstance(fence.renderable, Syntax):
                 fence.renderable.word_wrap = True
@@ -306,7 +497,6 @@ class FeedArea(Markdown):
 
     @on(events.Click)
     def _on_feed_click(self, event: events.Click) -> None:
-        """Allow selecting code snippets by tapping / clicking them on screen."""
         curr = event.widget
         while curr and curr is not self:
             if isinstance(curr, MarkdownFence):
@@ -344,78 +534,7 @@ class FeedArea(Markdown):
             event.stop()
             self.app.action_open_in_editor()
 
-        # Snippet cycling
-        elif event.key in ("down", "n"):
-            event.prevent_default()
-            event.stop()
-            fences = self._get_fences()
-            if fences:
-                self.navigate_snippet(1)
-            else:
-                self.scroll_down()
-        elif event.key in ("up", "p"):
-            event.prevent_default()
-            event.stop()
-            fences = self._get_fences()
-            if fences:
-                self.navigate_snippet(-1)
-            else:
-                self.scroll_up()
-
-        # Regular scrolling
-        elif event.key in ("j",):
-            event.prevent_default()
-            event.stop()
-            self.scroll_down()
-        elif event.key in ("k",):
-            event.prevent_default()
-            event.stop()
-            self.scroll_up()
-        elif event.key in ("pageup",):
-            event.prevent_default()
-            event.stop()
-            self.scroll_page_up()
-        elif event.key in ("pagedown",):
-            event.prevent_default()
-            event.stop()
-            self.scroll_page_down()
-        elif event.key in ("home",):
-            event.prevent_default()
-            event.stop()
-            self.scroll_home()
-        elif event.key in ("end",):
-            event.prevent_default()
-            event.stop()
-            self.scroll_end()
-        else:
-            super()._on_key(event)
-    def _on_key(self, event: events.Key) -> None:
-        if event.key in ("escape", "i", "ctrl+o"):
-            event.prevent_default()
-            event.stop()
-            self.app.query_one("#input", ExpandingInput).focus()
-        elif event.key == "ctrl+b":
-            event.prevent_default()
-            event.stop()
-            self.app.action_toggle_history()
-        elif event.key == "ctrl+n":
-            event.prevent_default()
-            event.stop()
-            self.app.action_new_chat()
-        elif event.key == "ctrl+t":
-            event.prevent_default()
-            event.stop()
-            self.app.action_rename_chat()
-        elif event.key == "ctrl+y":
-            event.prevent_default()
-            event.stop()
-            self.app.action_copy_last_response()
-        elif event.key in ("ctrl+e", "v"):
-            event.prevent_default()
-            event.stop()
-            self.app.action_open_in_editor()
-
-        # Snippet cycling (now strictly alt+n / alt+p)
+        # Snippet cycling strictly on Alt+n / Alt+p
         elif event.key in ("alt+n", "alt+down"):
             event.prevent_default()
             event.stop()
@@ -425,7 +544,7 @@ class FeedArea(Markdown):
             event.stop()
             self.navigate_snippet(-1)
 
-        # Regular scrolling (arrow keys restored here)
+        # Standard scrolling
         elif event.key in ("down", "j"):
             event.prevent_default()
             event.stop()
@@ -453,6 +572,7 @@ class FeedArea(Markdown):
         else:
             super()._on_key(event)
 
+
 class HistoryList(OptionList):
     """OptionList with Vim/Emacs navigation, instant deletion, and renaming."""
 
@@ -469,11 +589,11 @@ class HistoryList(OptionList):
             event.prevent_default()
             event.stop()
             self.app.rename_highlighted_chat()
-        elif event.key in ("k", "ctrl+p"):
+        elif event.key in ("k", "ctrl+p", "up"):
             event.prevent_default()
             event.stop()
             self.action_cursor_up()
-        elif event.key in ("j", "ctrl+n"):
+        elif event.key in ("j", "ctrl+n", "down"):
             event.prevent_default()
             event.stop()
             self.action_cursor_down()
@@ -482,6 +602,9 @@ class HistoryList(OptionList):
 
 
 class ChatApp(App):
+    COMMAND_PALETTE_BINDING = "alt+x"
+    COMMAND_PALETTE = MenuPalette
+
     CSS = """
     Screen {
         layout: vertical;
@@ -543,6 +666,7 @@ class ChatApp(App):
         super().copy_to_clipboard(text)
 
     BINDINGS = [
+        Binding("alt+x", "command_palette", "Menu", show=True),
         Binding("ctrl+n", "new_chat", "New Chat", show=True),
         Binding("ctrl+t", "rename_chat", "Rename", show=True),
         Binding("ctrl+b", "toggle_history", "History", show=True),
@@ -582,7 +706,6 @@ class ChatApp(App):
     # --- Unix Domain Socket Server ---
 
     async def start_socket_server(self) -> None:
-        """Ensure socket at /tmp/gemini_textual.sock exists and listen."""
         if SOCKET_PATH.exists():
             SOCKET_PATH.unlink()
 
@@ -610,7 +733,6 @@ class ChatApp(App):
 
     @on(RemoteInsert)
     def on_remote_insert(self, event: RemoteInsert) -> None:
-        """Insert text at current input cursor silently."""
         input_widget = self.query_one("#input", ExpandingInput)
         input_widget.insert(event.text)
         input_widget._update_layout()
@@ -836,7 +958,6 @@ class ChatApp(App):
             self._send_to_emacs_buffer(snippet_text)
             return
 
-        # Fallback to copying last model turn
         for turn in reversed(self.history):
             if turn["role"] == "model":
                 self.copy_to_clipboard(turn["text"])

@@ -15,6 +15,7 @@ from rich.syntax import Syntax
 from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
+from textual.command import CommandPalette, DiscoveryHit, Hit, Hits, Provider
 from textual.containers import Horizontal, Vertical
 from textual.message import Message
 from textual.screen import ModalScreen
@@ -32,6 +33,170 @@ class RemoteInsert(Message):
     def __init__(self, text: str) -> None:
         super().__init__()
         self.text = text
+
+
+class CustomKeysScreen(ModalScreen[None]):
+    """Clean, left-aligned, fully keyboard-traversable Keys viewer."""
+
+    DEFAULT_CSS = """
+    CustomKeysScreen {
+        align: center middle;
+        background: rgba(0, 0, 0, 0.75);
+    }
+
+    #keys-dialog {
+        width: 80%;
+        max-width: 95;
+        height: 80%;
+        border: thick dodgerblue;
+        background: $surface;
+        padding: 1 2;
+    }
+
+    #keys-title {
+        text-style: bold;
+        color: dodgerblue;
+        margin-bottom: 1;
+        text-align: left;
+    }
+
+    #keys-list-widget {
+        height: 1fr;
+        width: 100%;
+        border: solid #444444;
+        background: transparent;
+    }
+
+    #keys-list-widget:focus {
+        border: double lightgreen;
+    }
+
+    #keys-footer-box {
+        margin-top: 1;
+        width: 100%;
+        align-horizontal: right;
+    }
+
+    #close-keys-btn:focus {
+        border: double yellow;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "dismiss", "Close", show=True),
+        Binding("q", "dismiss", "Close", show=False),
+        Binding("tab", "cycle_focus", "Cycle Focus", show=False),
+    ]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="keys-dialog"):
+            yield Label("Active Key Bindings", id="keys-title")
+            yield OptionList(id="keys-list-widget")
+            with Horizontal(id="keys-footer-box"):
+                yield Button("Close (Esc)", variant="primary", id="close-keys-btn")
+
+    def on_mount(self) -> None:
+        opt_list = self.query_one("#keys-list-widget", OptionList)
+        opt_list.clear_options()
+
+        seen = set()
+        for binding in self.app.active_bindings.values():
+            key = binding.binding.key_display or binding.binding.key
+            desc = binding.binding.description or ""
+            action = binding.binding.action or ""
+            sig = (key, action)
+            if sig not in seen:
+                seen.add(sig)
+                # Formatted, left-aligned layout with fixed-width columns
+                line = f"{key:<18} │ {desc:<38} │ {action}"
+                opt_list.add_option(Option(prompt=line, id=key))
+
+        # Focus list immediately so arrow keys work on open
+        opt_list.focus()
+
+    def action_cycle_focus(self) -> None:
+        opt_list = self.query_one("#keys-list-widget", OptionList)
+        btn = self.query_one("#close-keys-btn", Button)
+        if opt_list.has_focus:
+            btn.focus()
+        else:
+            opt_list.focus()
+
+    @on(Button.Pressed, "#close-keys-btn")
+    def on_close_pressed(self) -> None:
+        self.dismiss()
+
+    def _on_key(self, event: events.Key) -> None:
+        opt_list = self.query_one("#keys-list-widget", OptionList)
+        if event.key in ("escape", "q"):
+            event.prevent_default()
+            event.stop()
+            self.dismiss()
+        elif event.key == "tab":
+            event.prevent_default()
+            event.stop()
+            self.action_cycle_focus()
+        elif event.key in ("down", "j", "ctrl+n"):
+            event.prevent_default()
+            event.stop()
+            opt_list.action_cursor_down()
+        elif event.key in ("up", "k", "ctrl+p"):
+            event.prevent_default()
+            event.stop()
+            opt_list.action_cursor_up()
+        elif event.key in ("pageup",):
+            event.prevent_default()
+            event.stop()
+            opt_list.action_page_up()
+        elif event.key in ("pagedown",):
+            event.prevent_default()
+            event.stop()
+            opt_list.action_page_down()
+        elif event.key in ("home",):
+            event.prevent_default()
+            event.stop()
+            opt_list.action_first()
+        elif event.key in ("end",):
+            event.prevent_default()
+            event.stop()
+            opt_list.action_last()
+        else:
+            super()._on_key(event)
+
+
+class CustomAppCommands(Provider):
+    """Custom command provider replacing default Textual AppCommands in Ctrl+P."""
+
+    async def discover(self) -> Hits:
+        yield DiscoveryHit(
+            "Keys: View active key bindings",
+            self.app.action_show_custom_keys,
+            help="Show active key bindings in a scrollable, left-aligned list",
+        )
+        yield DiscoveryHit(
+            "Quit: Exit application",
+            self.app.action_quit,
+            help="Quit the chat application",
+        )
+
+    async def search(self, query: str) -> Hits:
+        matcher = self.matcher(query)
+        keys_score = matcher.match("Keys: View active key bindings")
+        if keys_score > 0:
+            yield Hit(
+                keys_score,
+                matcher.highlight("Keys: View active key bindings"),
+                self.app.action_show_custom_keys,
+                help="Show active key bindings in a scrollable, left-aligned list",
+            )
+        quit_score = matcher.match("Quit: Exit application")
+        if quit_score > 0:
+            yield Hit(
+                quit_score,
+                matcher.highlight("Quit: Exit application"),
+                self.app.action_quit,
+                help="Quit the chat application",
+            )
 
 
 class TitlePromptModal(ModalScreen[str | None]):
@@ -389,69 +554,7 @@ class FeedArea(Markdown):
             self.scroll_end()
         else:
             super()._on_key(event)
-    def _on_key(self, event: events.Key) -> None:
-        if event.key in ("escape", "i", "ctrl+o"):
-            event.prevent_default()
-            event.stop()
-            self.app.query_one("#input", ExpandingInput).focus()
-        elif event.key == "ctrl+b":
-            event.prevent_default()
-            event.stop()
-            self.app.action_toggle_history()
-        elif event.key == "ctrl+n":
-            event.prevent_default()
-            event.stop()
-            self.app.action_new_chat()
-        elif event.key == "ctrl+t":
-            event.prevent_default()
-            event.stop()
-            self.app.action_rename_chat()
-        elif event.key == "ctrl+y":
-            event.prevent_default()
-            event.stop()
-            self.app.action_copy_last_response()
-        elif event.key in ("ctrl+e", "v"):
-            event.prevent_default()
-            event.stop()
-            self.app.action_open_in_editor()
 
-        # Snippet cycling (now strictly alt+n / alt+p)
-        elif event.key in ("alt+n", "alt+down"):
-            event.prevent_default()
-            event.stop()
-            self.navigate_snippet(1)
-        elif event.key in ("alt+p", "alt+up"):
-            event.prevent_default()
-            event.stop()
-            self.navigate_snippet(-1)
-
-        # Regular scrolling (arrow keys restored here)
-        elif event.key in ("down", "j"):
-            event.prevent_default()
-            event.stop()
-            self.scroll_down()
-        elif event.key in ("up", "k"):
-            event.prevent_default()
-            event.stop()
-            self.scroll_up()
-        elif event.key in ("pageup",):
-            event.prevent_default()
-            event.stop()
-            self.scroll_page_up()
-        elif event.key in ("pagedown",):
-            event.prevent_default()
-            event.stop()
-            self.scroll_page_down()
-        elif event.key in ("home",):
-            event.prevent_default()
-            event.stop()
-            self.scroll_home()
-        elif event.key in ("end",):
-            event.prevent_default()
-            event.stop()
-            self.scroll_end()
-        else:
-            super()._on_key(event)
 
 class HistoryList(OptionList):
     """OptionList with Vim/Emacs navigation, instant deletion, and renaming."""
@@ -482,6 +585,8 @@ class HistoryList(OptionList):
 
 
 class ChatApp(App):
+    COMMANDS = {CustomAppCommands}
+
     CSS = """
     Screen {
         layout: vertical;
@@ -578,6 +683,10 @@ class ChatApp(App):
             self._start_new_chat(title="")
 
         self.query_one("#input").focus()
+
+    def action_show_custom_keys(self) -> None:
+        """Pushes our responsive, left-aligned CustomKeysScreen."""
+        self.push_screen(CustomKeysScreen())
 
     # --- Unix Domain Socket Server ---
 

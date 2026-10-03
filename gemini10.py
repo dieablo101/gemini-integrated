@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import time
@@ -11,27 +12,89 @@ from uuid import uuid4
 
 import pyperclip
 from google import genai
+from rich.console import RenderableType
 from rich.syntax import Syntax
 from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
+from textual.command import CommandPalette
 from textual.containers import Horizontal, Vertical
 from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widgets import Button, Footer, Input, Label, Markdown, OptionList, TextArea
 from textual.widgets.markdown import MarkdownFence
 from textual.widgets.option_list import Option
+from textual.widgets.text_area import Selection
 
 CHATS_DIR = Path("chats")
 CHATS_DIR.mkdir(exist_ok=True)
 SOCKET_PATH = Path("/tmp/gemini_textual.sock")
 
+# ---------------------------------------------------------------------------
+# Dynamic MarkdownFence Hook for Accurate Line Numbers in the Feed
+# ---------------------------------------------------------------------------
+_orig_markdown_fence_render = MarkdownFence.render
+
+def _enhanced_markdown_fence_render(self: MarkdownFence) -> RenderableType:
+    renderable = _orig_markdown_fence_render(self)
+    if isinstance(renderable, Syntax):
+        renderable.word_wrap = True
+        renderable.padding = 0
+        renderable.line_numbers = True
+
+        # Scan previous siblings for snippet line metadata: (Lines 123-145)
+        start_line = 1
+        if self.parent:
+            siblings = list(self.parent.children)
+            if self in siblings:
+                idx = siblings.index(self)
+                for s in reversed(siblings[:idx]):
+                    s_text = getattr(s, "_text", "") or ""
+                    if hasattr(s, "walk_children"):
+                        for child in s.walk_children():
+                            if hasattr(child, "text"):
+                                s_text += " " + str(child.text)
+                    m = re.search(r"\(Lines?\s+(\d+)", s_text)
+                    if m:
+                        start_line = int(m.group(1))
+                        break
+                    if isinstance(s, MarkdownFence):
+                        break
+
+        renderable.start_line = start_line
+    return renderable
+
+MarkdownFence.render = _enhanced_markdown_fence_render
+
 
 class RemoteInsert(Message):
     """Event posted when external process sends text to insert."""
-    def __init__(self, text: str) -> None:
+    def __init__(
+        self,
+        text: str,
+        lang: str = "",
+        file: str = "",
+        start_line: int | None = None,
+        end_line: int | None = None,
+    ) -> None:
         super().__init__()
         self.text = text
+        self.lang = lang
+        self.file = file
+        self.start_line = start_line
+        self.end_line = end_line
+
+
+class MenuPalette(CommandPalette):
+    """Command palette customized as the Emacs-style Menu (M-x)."""
+
+    def on_mount(self) -> None:
+        super().on_mount()
+        try:
+            palette_input = self.query_one("CommandInput", Input)
+            palette_input.placeholder = "Menu (M-x)..."
+        except Exception:
+            pass
 
 
 class TitlePromptModal(ModalScreen[str | None]):
@@ -71,6 +134,7 @@ class TitlePromptModal(ModalScreen[str | None]):
 
     BINDINGS = [
         Binding("escape", "cancel", "Cancel"),
+        Binding("ctrl+g", "cancel", "Cancel"),
     ]
 
     def __init__(self, prompt: str = "Enter chat topic / title:", default_title: str = "") -> None:
@@ -107,87 +171,412 @@ class TitlePromptModal(ModalScreen[str | None]):
         self.dismiss(None)
 
 
-class ExpandingInput(TextArea):
+class EmacsBaseTextArea(TextArea):
+    """Base TextArea with standard Emacs keys, cursor selection synchronization, and clipboard."""
+
+    def on_mount(self) -> None:
+        self.soft_wrap = True
+        self._prefix_c_c = False
+        self._mark_point: tuple[int, int] | None = None
+
+    def _sync_selection(self) -> None:
+        if self._mark_point is not None:
+            self.selection = Selection(self._mark_point, self.cursor_location)
+
+    def _clear_mark(self) -> None:
+        self._mark_point = None
+        self.move_cursor(self.cursor_location, select=False)
+
+    def _on_key(self, event: events.Key) -> None:
+        if self._prefix_c_c:
+            self._prefix_c_c = False
+            if event.key in ("ctrl+n", "n"):
+                event.prevent_default(); event.stop()
+                self.app.action_new_chat()
+                return
+            elif event.key in ("ctrl+b", "b"):
+                event.prevent_default(); event.stop()
+                self.app.action_toggle_history()
+                return
+            elif event.key in ("ctrl+e", "e"):
+                event.prevent_default(); event.stop()
+                self.app.action_open_in_editor()
+                return
+            elif event.key in ("ctrl+y", "y"):
+                event.prevent_default(); event.stop()
+                self.app.action_copy_last_response()
+                return
+            elif event.key in ("ctrl+t", "t"):
+                event.prevent_default(); event.stop()
+                self.app.action_rename_chat()
+                return
+            elif event.key in ("ctrl+c", "ctrl+g", "escape"):
+                event.prevent_default(); event.stop()
+                return
+
+        if event.key == "ctrl+c":
+            event.prevent_default(); event.stop()
+            self._prefix_c_c = True
+            return
+
+        if event.key in ("ctrl+space", "ctrl+at", "ctrl+tilde") or (
+            event.character and ord(event.character) == 0
+        ):
+            event.prevent_default(); event.stop()
+            self._mark_point = self.cursor_location
+            self.selection = Selection(self._mark_point, self._mark_point)
+            self.app.notify("Mark set", timeout=1.5)
+            return
+
+        if event.key in ("alt+x", "meta+x"):
+            event.prevent_default(); event.stop()
+            self.app.action_command_palette()
+            return
+
+        is_selecting = self._mark_point is not None
+
+        if event.key in ("ctrl+f", "right"):
+            event.prevent_default(); event.stop()
+            self.action_cursor_right(select=is_selecting)
+            self._sync_selection()
+            return
+        elif event.key in ("ctrl+b", "left"):
+            event.prevent_default(); event.stop()
+            self.action_cursor_left(select=is_selecting)
+            self._sync_selection()
+            return
+        elif event.key in ("ctrl+n", "down"):
+            event.prevent_default(); event.stop()
+            self.action_cursor_down(select=is_selecting)
+            self._sync_selection()
+            return
+        elif event.key in ("ctrl+p", "up"):
+            event.prevent_default(); event.stop()
+            self.action_cursor_up(select=is_selecting)
+            self._sync_selection()
+            return
+        elif event.key == "ctrl+a":
+            event.prevent_default(); event.stop()
+            self.action_cursor_line_start(select=is_selecting)
+            self._sync_selection()
+            return
+        elif event.key == "ctrl+e":
+            event.prevent_default(); event.stop()
+            self.action_cursor_line_end(select=is_selecting)
+            self._sync_selection()
+            return
+        elif event.key in ("alt+f", "meta+f"):
+            event.prevent_default(); event.stop()
+            self.action_cursor_word_right(select=is_selecting)
+            self._sync_selection()
+            return
+        elif event.key in ("alt+b", "meta+b"):
+            event.prevent_default(); event.stop()
+            self.action_cursor_word_left(select=is_selecting)
+            self._sync_selection()
+            return
+        elif event.key in ("ctrl+home", "alt+<", "meta+<", "alt+comma"):
+            event.prevent_default(); event.stop()
+            self.move_cursor((0, 0), select=is_selecting)
+            self._sync_selection()
+            return
+        elif event.key in ("ctrl+end", "alt+>", "meta+>", "alt+period"):
+            event.prevent_default(); event.stop()
+            self.move_cursor(self.document.end, select=is_selecting)
+            self._sync_selection()
+            return
+        elif event.key in ("ctrl+v", "pagedown"):
+            event.prevent_default(); event.stop()
+            self.action_cursor_page_down()
+            self._sync_selection()
+            return
+        elif event.key in ("alt+v", "meta+v", "pageup"):
+            event.prevent_default(); event.stop()
+            self.action_cursor_page_up()
+            self._sync_selection()
+            return
+        elif event.key == "ctrl+d":
+            event.prevent_default(); event.stop()
+            self.action_delete_right()
+            self._clear_mark()
+            return
+        elif event.key == "ctrl+k":
+            event.prevent_default(); event.stop()
+            self._kill_line_forward()
+            self._clear_mark()
+            return
+        elif event.key == "ctrl+u":
+            event.prevent_default(); event.stop()
+            self._kill_line_backward()
+            self._clear_mark()
+            return
+        elif event.key in ("alt+d", "meta+d"):
+            event.prevent_default(); event.stop()
+            self._kill_word_forward()
+            self._clear_mark()
+            return
+        elif event.key in ("ctrl+w", "alt+backspace", "meta+backspace"):
+            event.prevent_default(); event.stop()
+            if self.selected_text:
+                self.app.copy_to_clipboard(self.selected_text)
+                self.delete(self.selection.start, self.selection.end)
+                self._clear_mark()
+            else:
+                self._kill_word_backward()
+            return
+        elif event.key == "ctrl+y":
+            event.prevent_default(); event.stop()
+            try:
+                paste_text = pyperclip.paste()
+                if paste_text:
+                    if self.selected_text:
+                        self.delete(self.selection.start, self.selection.end)
+                    self.insert(paste_text)
+                    self._clear_mark()
+            except Exception:
+                pass
+            return
+        elif event.key in ("alt+w", "meta+w"):
+            event.prevent_default(); event.stop()
+            if self.selected_text:
+                self.app.copy_to_clipboard(self.selected_text)
+                self._clear_mark()
+                self.app.notify("Copied region", timeout=1.5)
+            return
+        elif event.key in ("ctrl+slash", "ctrl+underscore"):
+            event.prevent_default(); event.stop()
+            self.action_undo()
+            self._clear_mark()
+            return
+
+        if event.is_printable or event.key in ("backspace", "delete"):
+            self._mark_point = None
+
+        super()._on_key(event)
+
+    def _kill_line_forward(self) -> None:
+        row, col = self.cursor_location
+        line = self.document.get_line(row)
+        if col < len(line):
+            killed = line[col:]
+            self.delete((row, col), (row, len(line)))
+        else:
+            if row < self.document.line_count - 1:
+                killed = "\n"
+                self.delete((row, col), (row + 1, 0))
+            else:
+                return
+        self.app.copy_to_clipboard(killed)
+
+    def _kill_line_backward(self) -> None:
+        row, col = self.cursor_location
+        if col > 0:
+            line = self.document.get_line(row)
+            killed = line[:col]
+            self.delete((row, 0), (row, col))
+            self.app.copy_to_clipboard(killed)
+
+    def _kill_word_forward(self) -> None:
+        start = self.cursor_location
+        self.action_cursor_word_right(select=False)
+        end = self.cursor_location
+        if start != end:
+            killed = self.get_text_range(start, end)
+            self.delete(start, end)
+            self.app.copy_to_clipboard(killed)
+
+    def _kill_word_backward(self) -> None:
+        start = self.cursor_location
+        self.action_cursor_word_left(select=False)
+        end = self.cursor_location
+        if start != end:
+            killed = self.get_text_range(end, start)
+            self.delete(end, start)
+            self.app.copy_to_clipboard(killed)
+
+
+class SnippetPreview(EmacsBaseTextArea):
+    """Editable preview box displaying the most recent snippet with accurate file line numbers."""
+
+    def __init__(self, **kwargs) -> None:
+        kwargs["show_line_numbers"] = True
+        super().__init__(**kwargs)
+        self.active_tag: str = ""
+
+    def on_mount(self) -> None:
+        super().on_mount()
+        self.show_line_numbers = True
+
+    def show_snippet(
+        self,
+        tag: str,
+        num: int | str,
+        code: str,
+        lang: str = "text",
+        file: str = "",
+        start_line: int | None = None,
+        end_line: int | None = None,
+    ) -> None:
+        self.active_tag = tag
+        self.show_line_numbers = True
+        self.line_number_start = start_line if (start_line and start_line > 0) else 1
+
+        lang_label = lang if lang else "text"
+        file_label = f" {file}" if file else ""
+        line_label = ""
+        if start_line is not None and end_line is not None:
+            line_label = f":{start_line}" if start_line == end_line else f":{start_line}-{end_line}"
+
+        self.border_title = f" Edit Snippet {num}{file_label}{line_label} ({lang_label}) "
+        self.load_text(code)
+        try:
+            self.language = lang if lang else None
+        except Exception:
+            self.language = None
+
+        lines = self.document.line_count if self.document else 1
+        target_height = min(max(lines + 2, 4), 10)
+        self.styles.height = target_height
+        self.styles.display = "block"
+        self.scroll_home(animate=False)
+        self.refresh()
+
+    def hide_preview(self) -> None:
+        self.text = ""
+        self.active_tag = ""
+        self.styles.display = "none"
+
+    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        if self.active_tag:
+            input_box = self.app.query_one("#input", ExpandingInput)
+            if self.active_tag in input_box._snippets:
+                input_box._snippets[self.active_tag]["code"] = self.text.rstrip("\n")
+
+        lines = self.document.line_count if self.document else 1
+        target_height = min(max(lines + 2, 4), 10)
+        if self.styles.height != target_height:
+            self.styles.height = target_height
+
+    def _on_key(self, event: events.Key) -> None:
+        if event.key in ("shift+enter", "ctrl+j"):
+            event.prevent_default(); event.stop()
+            self.app.query_one("#input", ExpandingInput).action_submit()
+            return
+
+        row, _ = self.cursor_location
+        if row == self.document.line_count - 1 and event.key in ("down", "ctrl+n"):
+            event.prevent_default(); event.stop()
+            self.app.query_one("#input", ExpandingInput).focus()
+            return
+
+        if event.key in ("ctrl+g", "escape"):
+            event.prevent_default(); event.stop()
+            if self._mark_point is not None or self.selected_text:
+                self._clear_mark()
+                self.app.notify("Quit", timeout=1.0)
+            else:
+                self.app.query_one("#input", ExpandingInput).focus()
+            return
+
+        super()._on_key(event)
+
+
+class ExpandingInput(EmacsBaseTextArea):
     class Submitted(Message):
         def __init__(self, value: str) -> None:
             super().__init__()
             self.value = value
 
     def on_mount(self) -> None:
+        super().on_mount()
         self.show_line_numbers = False
-        self._update_layout()
+        self._snippets: dict[str, dict] = {}
+        self._snippet_counter: int = 1
+        self.call_after_refresh(self._update_layout)
+
+    def register_and_insert_snippet(
+        self,
+        code: str,
+        lang: str = "",
+        file: str = "",
+        start_line: int | None = None,
+        end_line: int | None = None,
+    ) -> tuple[str, int]:
+        current_num = self._snippet_counter
+        tag = f"{{&snippet{current_num}}}"
+        clean_code = code.rstrip("\n")
+
+        self._snippets[tag] = {
+            "code": clean_code,
+            "lang": (lang or "").strip(),
+            "number": str(current_num),
+            "file": (file or "").strip(),
+            "start_line": start_line,
+            "end_line": end_line,
+        }
+        self._snippet_counter += 1
+
+        self.insert(f" {tag} ")
+        self._clear_mark()
+        self.call_after_refresh(self._update_layout)
+        return tag, current_num
+
+    def reset_snippets(self) -> None:
+        self._snippets.clear()
+        self._snippet_counter = 1
 
     def _on_key(self, event: events.Key) -> None:
-        # Submit & Newlines
-        if event.key == "enter":
-            event.prevent_default()
-            event.stop()
-            self.action_submit()
-        elif event.key in ("shift+enter", "ctrl+j"):
-            event.prevent_default()
-            event.stop()
+        if event.key in ("shift+enter", "shift+return", "ctrl+j", "alt+enter", "meta+enter"):
+            event.prevent_default(); event.stop()
             self.action_newline()
-        elif event.key in ("ctrl+c", "y"):
-            if self.selected_text:
-                event.prevent_default()
-                event.stop()
-                self.app.copy_to_clipboard(self.selected_text)
+            return
+        elif event.key == "enter":
+            event.prevent_default(); event.stop()
+            self.action_submit()
+            return
 
-        # Snippet cycling hotkeys directly from input
+        row, _ = self.cursor_location
+        if row == 0 and event.key in ("up", "ctrl+p"):
+            preview_box = self.app.query_one("#snippet_preview", SnippetPreview)
+            if preview_box.styles.display != "none":
+                event.prevent_default(); event.stop()
+                preview_box.focus()
+                return
+
+        if event.key in ("ctrl+g", "escape"):
+            event.prevent_default(); event.stop()
+            if self._mark_point is not None or self.selected_text:
+                self._clear_mark()
+                self.app.notify("Quit", timeout=1.0)
+            else:
+                self.app.query_one("#feed", FeedArea).focus()
+            return
+
         elif event.key in ("alt+n", "alt+down"):
-            event.prevent_default()
-            event.stop()
+            event.prevent_default(); event.stop()
             self.app.action_next_snippet()
+            return
         elif event.key in ("alt+p", "alt+up"):
-            event.prevent_default()
-            event.stop()
+            event.prevent_default(); event.stop()
             self.app.action_prev_snippet()
+            return
 
-        # Emacs / CLI power tools
-        elif event.key == "ctrl+u":
-            event.prevent_default()
-            event.stop()
-            self.clear()
-            self._update_layout()
-        elif event.key in ("pageup",):
-            event.prevent_default()
-            event.stop()
-            self.app.query_one("#feed", FeedArea).focus()
-
-        # App Actions passed through
-        elif event.key == "ctrl+b":
-            event.prevent_default()
-            event.stop()
-            self.app.action_toggle_history()
-        elif event.key == "ctrl+n":
-            event.prevent_default()
-            event.stop()
-            self.app.action_new_chat()
-        elif event.key == "ctrl+t":
-            event.prevent_default()
-            event.stop()
-            self.app.action_rename_chat()
-        elif event.key == "ctrl+y":
-            event.prevent_default()
-            event.stop()
-            self.app.action_copy_last_response()
-        elif event.key == "ctrl+e":
-            event.prevent_default()
-            event.stop()
-            self.app.action_open_in_editor()
-        elif event.key in ("escape", "ctrl+o"):
-            event.prevent_default()
-            event.stop()
-            self.app.action_toggle_focus()
-        else:
-            super()._on_key(event)
+        super()._on_key(event)
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
-        self._update_layout()
+        self.call_after_refresh(self._update_layout)
 
     def _update_layout(self) -> None:
-        lines = self.document.line_count
-        self.styles.height = min(max(lines, 1), 5) + 2
+        lines = 1
+        if hasattr(self, "wrapped_document") and self.wrapped_document:
+            lines = self.wrapped_document.height
+        elif hasattr(self, "document") and self.document:
+            lines = self.document.line_count
+
+        target_height = min(max(lines, 1), 6) + 2
+        if self.styles.height != target_height:
+            self.styles.height = target_height
+
         self.scroll_cursor_visible()
 
     def action_newline(self) -> None:
@@ -195,15 +584,50 @@ class ExpandingInput(TextArea):
         self.scroll_cursor_visible()
 
     def action_submit(self) -> None:
-        text = self.text.strip()
-        if text:
-            self.post_message(self.Submitted(text))
+        raw_text = self.text.strip()
+        if not raw_text:
+            return
+
+        def replacer(match):
+            token = match.group(0).replace(" ", "")
+            if token in self._snippets:
+                item = self._snippets[token]
+                lang = item["lang"]
+                num = item["number"]
+                code = item["code"]
+                file = item.get("file", "")
+                start_l = item.get("start_line")
+                end_l = item.get("end_line")
+
+                file_part = ""
+                if file:
+                    line_part = ""
+                    if start_l is not None and end_l is not None:
+                        if start_l == end_l:
+                            line_part = f" (Line {start_l})"
+                        else:
+                            line_part = f" (Lines {start_l}-{end_l})"
+                    file_part = f" - `{file}`{line_part}"
+
+                lang_part = f" - `{lang}`" if lang else ""
+                title = f"#### (Snippet {num}){file_part}{lang_part}"
+                return f"\n\n{title}\n```{lang}\n{code}\n```\n\n"
+            return match.group(0)
+
+        resolved_text = re.sub(r"\{\s*&snippet\d+\s*\}", replacer, raw_text)
+        resolved_text = re.sub(r"\n{3,}", "\n\n", resolved_text).strip()
+
+        self.post_message(self.Submitted(resolved_text))
         self.clear()
-        self._update_layout()
+        self.reset_snippets()
+        self._clear_mark()
+        self.call_after_refresh(self._update_layout)
+
+        self.app.query_one("#snippet_preview", SnippetPreview).hide_preview()
 
 
 class FeedArea(Markdown):
-    """Feed Markdown viewer with code snippet navigation, syntax highlighting, and touch selection."""
+    """Feed Markdown viewer with code snippet navigation and touch selection."""
 
     can_focus = True
 
@@ -212,26 +636,12 @@ class FeedArea(Markdown):
         self._raw_markdown = ""
         self.selected_snippet_index: int = -1
 
-    def _enable_fence_wrapping(self) -> None:
-        """Walks mounted markdown widgets and enforces word-wrapping on code blocks."""
-        for fence in self.query(MarkdownFence):
-            if hasattr(fence, "renderable") and isinstance(fence.renderable, Syntax):
-                fence.renderable.word_wrap = True
-                fence.renderable.padding = 0
-                fence.refresh()
-            for child in fence.walk_children():
-                if hasattr(child, "renderable") and isinstance(child.renderable, Syntax):
-                    child.renderable.word_wrap = True
-                    child.renderable.padding = 0
-                    child.refresh()
-
     def clear(self) -> None:
         self._raw_markdown = ""
         self.selected_snippet_index = -1
         self.update("")
 
     def _scroll_to_bottom(self) -> None:
-        self._enable_fence_wrapping()
         self.scroll_end(animate=False)
 
     async def set_messages(self, messages: list[dict]) -> None:
@@ -250,8 +660,6 @@ class FeedArea(Markdown):
         self._raw_markdown += f"{prefix}{header}{text}"
         await self.update(self._raw_markdown)
         self.call_after_refresh(self._scroll_to_bottom)
-
-    # --- Snippet Navigation & Touch Selection ---
 
     def _get_fences(self) -> list[MarkdownFence]:
         return list(self.query(MarkdownFence))
@@ -306,7 +714,6 @@ class FeedArea(Markdown):
 
     @on(events.Click)
     def _on_feed_click(self, event: events.Click) -> None:
-        """Allow selecting code snippets by tapping / clicking them on screen."""
         curr = event.widget
         while curr and curr is not self:
             if isinstance(curr, MarkdownFence):
@@ -320,168 +727,80 @@ class FeedArea(Markdown):
 
     def _on_key(self, event: events.Key) -> None:
         if event.key in ("escape", "i", "ctrl+o"):
-            event.prevent_default()
-            event.stop()
+            event.prevent_default(); event.stop()
             self.app.query_one("#input", ExpandingInput).focus()
         elif event.key == "ctrl+b":
-            event.prevent_default()
-            event.stop()
+            event.prevent_default(); event.stop()
             self.app.action_toggle_history()
         elif event.key == "ctrl+n":
-            event.prevent_default()
-            event.stop()
+            event.prevent_default(); event.stop()
             self.app.action_new_chat()
         elif event.key == "ctrl+t":
-            event.prevent_default()
-            event.stop()
+            event.prevent_default(); event.stop()
             self.app.action_rename_chat()
         elif event.key == "ctrl+y":
-            event.prevent_default()
-            event.stop()
+            event.prevent_default(); event.stop()
             self.app.action_copy_last_response()
         elif event.key in ("ctrl+e", "v"):
-            event.prevent_default()
-            event.stop()
+            event.prevent_default(); event.stop()
             self.app.action_open_in_editor()
 
-        # Snippet cycling
-        elif event.key in ("down", "n"):
-            event.prevent_default()
-            event.stop()
-            fences = self._get_fences()
-            if fences:
-                self.navigate_snippet(1)
-            else:
-                self.scroll_down()
-        elif event.key in ("up", "p"):
-            event.prevent_default()
-            event.stop()
-            fences = self._get_fences()
-            if fences:
-                self.navigate_snippet(-1)
-            else:
-                self.scroll_up()
-
-        # Regular scrolling
-        elif event.key in ("j",):
-            event.prevent_default()
-            event.stop()
-            self.scroll_down()
-        elif event.key in ("k",):
-            event.prevent_default()
-            event.stop()
-            self.scroll_up()
-        elif event.key in ("pageup",):
-            event.prevent_default()
-            event.stop()
-            self.scroll_page_up()
-        elif event.key in ("pagedown",):
-            event.prevent_default()
-            event.stop()
-            self.scroll_page_down()
-        elif event.key in ("home",):
-            event.prevent_default()
-            event.stop()
-            self.scroll_home()
-        elif event.key in ("end",):
-            event.prevent_default()
-            event.stop()
-            self.scroll_end()
-        else:
-            super()._on_key(event)
-    def _on_key(self, event: events.Key) -> None:
-        if event.key in ("escape", "i", "ctrl+o"):
-            event.prevent_default()
-            event.stop()
-            self.app.query_one("#input", ExpandingInput).focus()
-        elif event.key == "ctrl+b":
-            event.prevent_default()
-            event.stop()
-            self.app.action_toggle_history()
-        elif event.key == "ctrl+n":
-            event.prevent_default()
-            event.stop()
-            self.app.action_new_chat()
-        elif event.key == "ctrl+t":
-            event.prevent_default()
-            event.stop()
-            self.app.action_rename_chat()
-        elif event.key == "ctrl+y":
-            event.prevent_default()
-            event.stop()
-            self.app.action_copy_last_response()
-        elif event.key in ("ctrl+e", "v"):
-            event.prevent_default()
-            event.stop()
-            self.app.action_open_in_editor()
-
-        # Snippet cycling (now strictly alt+n / alt+p)
         elif event.key in ("alt+n", "alt+down"):
-            event.prevent_default()
-            event.stop()
+            event.prevent_default(); event.stop()
             self.navigate_snippet(1)
         elif event.key in ("alt+p", "alt+up"):
-            event.prevent_default()
-            event.stop()
+            event.prevent_default(); event.stop()
             self.navigate_snippet(-1)
 
-        # Regular scrolling (arrow keys restored here)
         elif event.key in ("down", "j"):
-            event.prevent_default()
-            event.stop()
+            event.prevent_default(); event.stop()
             self.scroll_down()
         elif event.key in ("up", "k"):
-            event.prevent_default()
-            event.stop()
+            event.prevent_default(); event.stop()
             self.scroll_up()
         elif event.key in ("pageup",):
-            event.prevent_default()
-            event.stop()
+            event.prevent_default(); event.stop()
             self.scroll_page_up()
         elif event.key in ("pagedown",):
-            event.prevent_default()
-            event.stop()
+            event.prevent_default(); event.stop()
             self.scroll_page_down()
         elif event.key in ("home",):
-            event.prevent_default()
-            event.stop()
+            event.prevent_default(); event.stop()
             self.scroll_home()
         elif event.key in ("end",):
-            event.prevent_default()
-            event.stop()
+            event.prevent_default(); event.stop()
             self.scroll_end()
         else:
             super()._on_key(event)
+
 
 class HistoryList(OptionList):
     """OptionList with Vim/Emacs navigation, instant deletion, and renaming."""
 
     async def _on_key(self, event: events.Key) -> None:
         if event.key in ("escape", "ctrl+b", "ctrl+g", "q"):
-            event.prevent_default()
-            event.stop()
+            event.prevent_default(); event.stop()
             self.app.action_toggle_history()
         elif event.key in ("delete", "backspace", "d", "x"):
-            event.prevent_default()
-            event.stop()
+            event.prevent_default(); event.stop()
             await self.app.delete_highlighted_chat()
         elif event.key in ("r",):
-            event.prevent_default()
-            event.stop()
+            event.prevent_default(); event.stop()
             self.app.rename_highlighted_chat()
-        elif event.key in ("k", "ctrl+p"):
-            event.prevent_default()
-            event.stop()
+        elif event.key in ("k", "ctrl+p", "up"):
+            event.prevent_default(); event.stop()
             self.action_cursor_up()
-        elif event.key in ("j", "ctrl+n"):
-            event.prevent_default()
-            event.stop()
+        elif event.key in ("j", "ctrl+n", "down"):
+            event.prevent_default(); event.stop()
             self.action_cursor_down()
         else:
             super()._on_key(event)
 
 
 class ChatApp(App):
+    COMMAND_PALETTE_BINDING = "alt+x"
+    COMMAND_PALETTE = MenuPalette
+
     CSS = """
     Screen {
         layout: vertical;
@@ -527,6 +846,16 @@ class ChatApp(App):
         border: solid yellow;
         display: none;
     }
+    #snippet_preview {
+        width: 100%;
+        max-height: 10;
+        border: round dodgerblue;
+        display: none;
+        margin-bottom: 0;
+    }
+    #snippet_preview:focus {
+        border: double cyan;
+    }
     #input {
         border: solid dodgerblue;
     }
@@ -543,6 +872,7 @@ class ChatApp(App):
         super().copy_to_clipboard(text)
 
     BINDINGS = [
+        Binding("alt+x", "command_palette", "Menu", show=True),
         Binding("ctrl+n", "new_chat", "New Chat", show=True),
         Binding("ctrl+t", "rename_chat", "Rename", show=True),
         Binding("ctrl+b", "toggle_history", "History", show=True),
@@ -564,6 +894,7 @@ class ChatApp(App):
         with Vertical():
             yield FeedArea(id="feed")
             yield HistoryList(id="history")
+            yield SnippetPreview(id="snippet_preview")
             yield ExpandingInput(id="input")
         yield Footer()
 
@@ -582,7 +913,6 @@ class ChatApp(App):
     # --- Unix Domain Socket Server ---
 
     async def start_socket_server(self) -> None:
-        """Ensure socket at /tmp/gemini_textual.sock exists and listen."""
         if SOCKET_PATH.exists():
             SOCKET_PATH.unlink()
 
@@ -602,7 +932,13 @@ class ChatApp(App):
             try:
                 payload = json.loads(data.decode("utf-8"))
                 if payload.get("action") == "insert":
-                    self.post_message(RemoteInsert(payload.get("text", "")))
+                    self.post_message(RemoteInsert(
+                        text=payload.get("text", ""),
+                        lang=payload.get("lang", ""),
+                        file=payload.get("file", ""),
+                        start_line=payload.get("start_line"),
+                        end_line=payload.get("end_line"),
+                    ))
             except Exception:
                 pass
         writer.close()
@@ -610,10 +946,30 @@ class ChatApp(App):
 
     @on(RemoteInsert)
     def on_remote_insert(self, event: RemoteInsert) -> None:
-        """Insert text at current input cursor silently."""
         input_widget = self.query_one("#input", ExpandingInput)
-        input_widget.insert(event.text)
-        input_widget._update_layout()
+        preview_widget = self.query_one("#snippet_preview", SnippetPreview)
+
+        input_widget.focus()
+        tag, num = input_widget.register_and_insert_snippet(
+            code=event.text,
+            lang=event.lang,
+            file=event.file,
+            start_line=event.start_line,
+            end_line=event.end_line,
+        )
+
+        preview_widget.show_snippet(
+            tag=tag,
+            num=num,
+            code=event.text,
+            lang=event.lang,
+            file=event.file,
+            start_line=event.start_line,
+            end_line=event.end_line,
+        )
+
+        loc = f" ({event.file}:{event.start_line}-{event.end_line})" if event.file else ""
+        self.notify(f"Inserted {tag}{loc} at cursor")
 
     def on_unmount(self) -> None:
         if self._server:
@@ -662,6 +1018,8 @@ class ChatApp(App):
 
         feed = self.query_one("#feed", FeedArea)
         await feed.set_messages(self.history)
+        self.query_one("#input", ExpandingInput).reset_snippets()
+        self.query_one("#snippet_preview", SnippetPreview).hide_preview()
 
     def save_current_chat(self) -> None:
         if not self.current_chat_id or not self.history:
@@ -768,8 +1126,15 @@ class ChatApp(App):
 
     def action_toggle_focus(self) -> None:
         feed = self.query_one("#feed", FeedArea)
+        preview_box = self.query_one("#snippet_preview", SnippetPreview)
         input_widget = self.query_one("#input", ExpandingInput)
+
         if feed.has_focus:
+            if preview_box.styles.display != "none":
+                preview_box.focus()
+            else:
+                input_widget.focus()
+        elif preview_box.has_focus:
             input_widget.focus()
         else:
             feed.focus()
@@ -810,7 +1175,10 @@ class ChatApp(App):
 
         feed = self.query_one("#feed", FeedArea)
         feed.clear()
-        self.query_one("#input").focus()
+        input_widget = self.query_one("#input", ExpandingInput)
+        input_widget.reset_snippets()
+        self.query_one("#snippet_preview", SnippetPreview).hide_preview()
+        input_widget.focus()
 
     def _send_to_emacs_buffer(self, code_text: str) -> bool:
         """Injects text into current active Emacs buffer."""
@@ -836,7 +1204,6 @@ class ChatApp(App):
             self._send_to_emacs_buffer(snippet_text)
             return
 
-        # Fallback to copying last model turn
         for turn in reversed(self.history):
             if turn["role"] == "model":
                 self.copy_to_clipboard(turn["text"])

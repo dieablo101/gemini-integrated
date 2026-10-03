@@ -12,17 +12,91 @@ from uuid import uuid4
 import pyperclip
 from google import genai
 from rich.syntax import Syntax
-from textual import events, work
+from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical
+from textual.containers import Horizontal, Vertical
 from textual.message import Message
-from textual.widgets import Footer, Markdown, OptionList, TextArea
+from textual.screen import ModalScreen
+from textual.widgets import Button, Footer, Input, Label, Markdown, OptionList, TextArea
 from textual.widgets.markdown import MarkdownFence
 from textual.widgets.option_list import Option
 
 CHATS_DIR = Path("chats")
 CHATS_DIR.mkdir(exist_ok=True)
+
+
+class TitlePromptModal(ModalScreen[str | None]):
+    """Modal dialog prompting the user for a chat topic/title."""
+
+    DEFAULT_CSS = """
+    TitlePromptModal {
+        align: center middle;
+    }
+
+    #dialog {
+        padding: 1 2;
+        width: 60;
+        height: auto;
+        border: thick dodgerblue;
+        background: $surface;
+    }
+
+    #dialog Label {
+        margin-bottom: 1;
+        text-style: bold;
+    }
+
+    #dialog Input {
+        margin-bottom: 1;
+    }
+
+    #dialog-buttons {
+        width: 100%;
+        align-horizontal: right;
+    }
+
+    #dialog-buttons Button {
+        margin-left: 1;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+    ]
+
+    def __init__(self, prompt: str = "Enter chat topic / title:", default_title: str = "") -> None:
+        super().__init__()
+        self.prompt_text = prompt
+        self.default_title = default_title
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="dialog"):
+            yield Label(self.prompt_text)
+            yield Input(
+                placeholder="Leave blank for auto-generated title...",
+                value=self.default_title,
+                id="title_input",
+            )
+            with Horizontal(id="dialog-buttons"):
+                yield Button("Cancel", variant="error", id="cancel_btn")
+                yield Button("Confirm", variant="primary", id="confirm_btn")
+
+    def on_mount(self) -> None:
+        self.query_one(Input).focus()
+
+    @on(Input.Submitted, "#title_input")
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self.dismiss(event.value.strip())
+
+    @on(Button.Pressed, "#confirm_btn")
+    def on_confirm_pressed(self) -> None:
+        val = self.query_one(Input).value.strip()
+        self.dismiss(val)
+
+    @on(Button.Pressed, "#cancel_btn")
+    def action_cancel(self) -> None:
+        self.dismiss(None)
 
 
 class ExpandingInput(TextArea):
@@ -71,6 +145,10 @@ class ExpandingInput(TextArea):
             event.prevent_default()
             event.stop()
             self.app.action_new_chat()
+        elif event.key == "ctrl+t":
+            event.prevent_default()
+            event.stop()
+            self.app.action_rename_chat()
         elif event.key == "ctrl+y":
             event.prevent_default()
             event.stop()
@@ -118,12 +196,10 @@ class FeedArea(Markdown):
     def _enable_fence_wrapping(self) -> None:
         """Walks mounted markdown widgets and enforces word-wrapping on code blocks."""
         for fence in self.query(MarkdownFence):
-            # If the fence itself holds a Rich Syntax object:
             if hasattr(fence, "renderable") and isinstance(fence.renderable, Syntax):
                 fence.renderable.word_wrap = True
                 fence.renderable.padding = 0
                 fence.refresh()
-            # If the fence holds static children that contain the Syntax renderable:
             for child in fence.walk_children():
                 if hasattr(child, "renderable") and isinstance(child.renderable, Syntax):
                     child.renderable.word_wrap = True
@@ -167,6 +243,10 @@ class FeedArea(Markdown):
             event.prevent_default()
             event.stop()
             self.app.action_new_chat()
+        elif event.key == "ctrl+t":
+            event.prevent_default()
+            event.stop()
+            self.app.action_rename_chat()
         elif event.key == "ctrl+y":
             event.prevent_default()
             event.stop()
@@ -205,7 +285,7 @@ class FeedArea(Markdown):
 
 
 class HistoryList(OptionList):
-    """OptionList with Vim/Emacs navigation and instant deletion."""
+    """OptionList with Vim/Emacs navigation, instant deletion, and renaming."""
 
     async def _on_key(self, event: events.Key) -> None:
         if event.key in ("escape", "ctrl+b", "ctrl+g", "q"):
@@ -216,6 +296,10 @@ class HistoryList(OptionList):
             event.prevent_default()
             event.stop()
             await self.app.delete_highlighted_chat()
+        elif event.key in ("r",):
+            event.prevent_default()
+            event.stop()
+            self.app.rename_highlighted_chat()
         elif event.key in ("k", "ctrl+p"):
             event.prevent_default()
             event.stop()
@@ -286,6 +370,7 @@ class ChatApp(App):
 
     BINDINGS = [
         Binding("ctrl+n", "new_chat", "New Chat", show=True),
+        Binding("ctrl+t", "rename_chat", "Rename", show=True),
         Binding("ctrl+b", "toggle_history", "History", show=True),
         Binding("ctrl+y", "copy_last_response", "Yank Last", show=True),
         Binding("ctrl+e", "open_in_editor", "Editor", show=True),
@@ -297,6 +382,7 @@ class ChatApp(App):
         super().__init__()
         self.client = genai.Client()
         self.current_chat_id: str = ""
+        self.current_chat_title: str = ""
         self.history: list[dict] = []
 
     def compose(self) -> ComposeResult:
@@ -312,7 +398,7 @@ class ChatApp(App):
             first_id = files[0].stem
             await self.load_chat(first_id)
         else:
-            self.action_new_chat()
+            self._start_new_chat(title="")
 
         self.query_one("#input").focus()
 
@@ -350,8 +436,10 @@ class ChatApp(App):
         if path.exists():
             data = json.loads(path.read_text())
             self.history = data.get("messages", [])
+            self.current_chat_title = data.get("title", "")
         else:
             self.history = []
+            self.current_chat_title = ""
 
         feed = self.query_one("#feed", FeedArea)
         await feed.set_messages(self.history)
@@ -361,13 +449,19 @@ class ChatApp(App):
             return
 
         path = self._get_chat_file(self.current_chat_id)
-        title = "New Chat"
-        if self.history:
+
+        # Retain explicit title if given, otherwise auto-generate from 1st message
+        title = self.current_chat_title.strip()
+        if not title and self.history:
             title = self.history[0]["text"][:28].replace("\n", " ")
+        if not title:
+            title = "New Chat"
+
+        self.current_chat_title = title
 
         data = {
             "id": self.current_chat_id,
-            "title": title,
+            "title": self.current_chat_title,
             "updated_at": time.time(),
             "messages": self.history,
         }
@@ -390,7 +484,7 @@ class ChatApp(App):
             if files:
                 await self.load_chat(files[0].stem)
             else:
-                self.action_new_chat()
+                self._start_new_chat(title="")
                 return
 
         current_idx = history_widget.highlighted
@@ -400,7 +494,53 @@ class ChatApp(App):
                 current_idx, history_widget.option_count - 1
             )
 
+    def rename_highlighted_chat(self) -> None:
+        """Rename the chat selected in the History view."""
+        history_widget = self.query_one("#history", HistoryList)
+        if history_widget.highlighted is None or history_widget.option_count == 0:
+            return
+
+        option = history_widget.get_option_at_index(history_widget.highlighted)
+        target_id = str(option.id)
+        target_file = self._get_chat_file(target_id)
+        if not target_file.exists():
+            return
+
+        data = json.loads(target_file.read_text())
+        current_title = data.get("title", "")
+
+        def on_rename(new_title: str | None) -> None:
+            if new_title is not None and new_title.strip():
+                data["title"] = new_title.strip()
+                data["updated_at"] = time.time()
+                target_file.write_text(json.dumps(data, indent=2))
+                if target_id == self.current_chat_id:
+                    self.current_chat_title = new_title.strip()
+                self.refresh_history_list()
+                self.notify("Chat renamed.")
+
+        self.push_screen(
+            TitlePromptModal(prompt="Edit chat title:", default_title=current_title),
+            callback=on_rename,
+        )
+
     # --- Actions & Focus ---
+
+    def action_rename_chat(self) -> None:
+        """Edit the title of the current chat."""
+        def on_renamed(new_title: str | None) -> None:
+            if new_title is not None and new_title.strip():
+                self.current_chat_title = new_title.strip()
+                self.save_current_chat()
+                self.notify(f"Renamed chat to: {self.current_chat_title}")
+
+        self.push_screen(
+            TitlePromptModal(
+                prompt="Edit chat title:",
+                default_title=self.current_chat_title,
+            ),
+            callback=on_renamed,
+        )
 
     def action_toggle_focus(self) -> None:
         feed = self.query_one("#feed", FeedArea)
@@ -426,10 +566,23 @@ class ChatApp(App):
             input_widget.focus()
 
     def action_new_chat(self) -> None:
+        """Opens a modal asking for a title, then creates the session."""
+        def on_title_chosen(chosen_title: str | None) -> None:
+            if chosen_title is None:
+                return
+            self._start_new_chat(title=chosen_title)
+
+        self.push_screen(
+            TitlePromptModal(prompt="Enter topic for new chat:"),
+            callback=on_title_chosen,
+        )
+
+    def _start_new_chat(self, title: str) -> None:
         self.query_one("#history").styles.display = "none"
         self.query_one("#feed").styles.display = "block"
 
         self.current_chat_id = uuid4().hex[:8]
+        self.current_chat_title = title
         self.history = []
 
         feed = self.query_one("#feed", FeedArea)

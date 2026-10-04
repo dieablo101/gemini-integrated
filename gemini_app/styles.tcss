@@ -1,0 +1,127 @@
+Screen {
+    layout: vertical;
+}
+
+#feed {
+    height: 1fr;
+    border: solid green;
+    overflow-y: auto;
+    overflow-x: hidden;
+    scrollbar-gutter: stable;
+    padding: 0 2 0 1;
+    width: 100%;
+    max-width: 100%;
+}
+
+#feed MarkdownBlock,
+#feed MarkdownParagraph,
+#feed MarkdownTable {
+    width: 100%;
+    max-width: 100%;
+    overflow-x: hidden;
+}
+
+#feed MarkdownFence {
+    width: 100%;
+    max-width: 100%;
+    height: auto;
+    overflow-x: hidden;
+    margin: 1 0;
+    border: solid #444444;
+}
+
+#feed MarkdownFence.active-snippet {
+    border: thick yellow !important;
+    background: #2b2600 !important;
+}
+
+#feed MarkdownFence > * {
+    width: 100%;
+    max-width: 100%;
+}
+
+#feed:focus {
+    border: double lightgreen;
+}
+
+#history {
+    height: 1fr;
+    border: solid yellow;
+    display: none;
+}
+
+#snippet_preview {
+    width: 100%;
+    max-height: 10;
+    border: round dodgerblue;
+    display: none;
+    margin-bottom: 0;
+}
+
+#snippet_preview:focus {
+    border: double cyan;
+}
+
+#input {
+    border: solid dodgerblue;
+}
+
+#input:focus {
+    border: double cyan;
+}
+
+/* Modals */
+
+TitlePromptModal {
+    align: center middle;
+}
+
+#dialog {
+    padding: 1 2;
+    width: 60;
+    height: auto;
+    border: thick dodgerblue;
+    background: $surface;
+}
+
+#dialog Label {
+    margin-bottom: 1;
+    text-style: bold;
+}
+
+#dialog Input {
+    margin-bottom: 1;
+}
+
+#dialog-buttons {
+    width: 100%;
+    align-horizontal: right;
+}
+
+#dialog-buttons Button {
+    margin-left: 1;
+}
+
+FrameSelectModal {
+    align: center middle;
+}
+
+#frame_dialog {
+    padding: 1 2;
+    width: 70;
+    height: auto;
+    border: thick dodgerblue;
+    background: $surface;
+}
+
+#frame_dialog Label {
+    margin-bottom: 1;
+    text-style: bold;
+}
+
+#frame_options {
+    height: auto;
+    max-height: 14;
+    margin-bottom: 1;
+    border: solid #444444;
+}

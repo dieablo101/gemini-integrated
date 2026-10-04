@@ -19,13 +19,13 @@ This project requires **Python 3.10+** (Python 3.11+ recommended).
 ### Additionals - important
 
 - Install emacs 
--- add to ~/.bashrc at the bottom 
+add to ~/.bashrc at the bottom 
 alias emacs="emacsclient -nw -a ''"   
---- copy or move file additional/init.el into ~/.emacs.d folder and replace default
+copy or move file additional/init.el into ~/.emacs.d folder and replace default
 
 ### Create and Activate Virtual Environment
 
-# Create virtual environment (adjust path if needed, e.g., /opt/gemini/.venv)
+Create virtual environment (adjust path if needed, e.g., /opt/gemini/.venv)
 python3 -m venv .venv
 
 # Activate virtual environment
@@ -60,6 +60,7 @@ sudo pacman -S xclip     # Arch Linux
 
 The project follows a decoupled, modular package architecture separating rendering logic, backend integrations, and UI state:
 
+```text
 gemini_tui/
 ├── gemini.py                   # Main CLI executable / entrypoint script
 ├── chats/                      # Directory where conversation JSON files are saved
@@ -95,7 +96,7 @@ gemini_tui/
         ├── title_modal.py      # Modal popup for naming/renaming chat threads
         ├── frame_modal.py      # Modal picker for targeting destination Emacs windows
         └── palette.py          # Emacs-styled CommandPalette (M-x menu)
-
+```
 ---
 
 ## 3. Running the Application

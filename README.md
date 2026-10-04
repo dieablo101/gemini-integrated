@@ -90,6 +90,8 @@ gemini_tui/
 
 ## 3. Running the Application
 
+NOTE: Run app from installed location via terminal. ie. navigate to folder, run app execution command. ./gemini
+
 Make gemini.py executable, or launch via python:
 
 chmod +x gemini.py

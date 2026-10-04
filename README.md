@@ -18,9 +18,12 @@ This project requires **Python 3.10+** (Python 3.11+ recommended).
 
 ### Additionals - important
 
-- Install emacs 
+- Install emacs
+ 
 add to ~/.bashrc at the bottom 
-alias emacs="emacsclient -nw -a ''"   
+
+alias emacs="emacsclient -nw -a ''"
+
 copy or move file additional/init.el into ~/.emacs.d folder and replace default
 
 ### Create and Activate Virtual Environment
@@ -28,7 +31,7 @@ copy or move file additional/init.el into ~/.emacs.d folder and replace default
 Create virtual environment (adjust path if needed, e.g., /opt/gemini/.venv)
 python3 -m venv .venv
 
-# Activate virtual environment
+### Activate virtual environment
 source .venv/bin/activate
 
 ### Install Required Python Packages

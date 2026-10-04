@@ -1,221 +1,368 @@
-### Gemini
+# Gemini Textual TUI Client
 
-# Gemini Textual TUI
-
-A full-featured, terminal-based AI chat interface powered by the official **Google GenAI SDK** and built on top of **Textual**. 
-
-Designed specifically for Emacs-style keyboard workflows, this application features full Mark/Kill-ring text manipulation, dynamic code snippet reference insertion, multi-chat local persistence, and direct two-way integration with running Emacs instances via `emacsclient`.
-
-Lamens: Open this program in a terminal window and emacs in another, even multiple frames of emacs with various windows. Simply select a code snippet from gemini with alt + n or alt + p and ctrl + y it directly into your emacs file at cursor location. In emacs, to send a code snippet to gemini through this app, simply press ctrl + c then g then i while in an emacs frame / window  and it will paste into this app from your emacs client frame / window. You can edit the code snippet also from within this app before finalizing it to send to Gemini. Want to move around your recent chats with gemini? press ctrl + c then b and change the chat, this app keeps persistant chat history by default. This app allows you to communicate and program with the google LLM ( large language model ) aka Gemini at high speed by integrating the IDE emacs with Gemini AI integration.
-
-I have full intention of making this more robust as time goes on, ill work on it as I see fit. No requests or ideas taken into consideration. Cannot be sold, redistributed for profit or used for any unlawful acts.
+A keyboard-centric, feature-rich Terminal User Interface (TUI) chat client for the Google Gemini API built with [Textual](https://textual.textualize.io/) and Python. Designed specifically for power users, developers, and Emacs enthusiasts who want fluid code-snippet staging, deep Git/filesystem awareness, and bidirectional editor integration.
 
 ---
 
-## 1. Installation & Environment Setup
+## Features
 
-This project requires **Python 3.10+** (Python 3.11+ recommended).
+- **Emacs-Inspired Navigation & Ergonomics:**
+  - Standard keybindings throughout text inputs (`C-a`, `C-e`, `C-p`, `C-n`, `C-f`, `C-b`, `M-f`, `M-b`, `C-k`, `C-u`, `M-d`, `C-w`, `M-w`, `C-y`, etc.).
+  - Two-key `C-c` leader prefixes for primary app actions.
+  - Interactive command palette bound to `M-x` (`Alt+x`).
 
-### Additionals - important
+- **Bidirectional Emacs Integration & IPC:**
+  - Unix Domain Socket (`/tmp/gemini_textual.sock`) listener allowing external tools (like Emacs) to insert snippets directly into your prompt buffer.
+  - Frame & window introspection via `emacsclient`: yank responses or active snippets directly into active or selected Emacs buffers.
 
-- Install emacs on your system via command line
-Add to ~/.bashrc at the bottom 
-- alias emacs="emacsclient -nw -a ''"
+- **Dynamic Snippet Staging System:**
+  - Insert code snippets using references like `{&snippet1}` inside your prompt.
+  - Automatic floating preview box displays and allows real-time edits to the snippet at the cursor.
+  - Accurate file-relative start and end line numbering in code fence headers.
 
-AND
-- copy or move file additionals/init.el into ~/.emacs.d folder and replace default
+- **Git & Filesystem Intelligence:**
+  - **Interactive Git Tree Explorer (`C-c g` / `Ctrl+\`):** Dual-tree explorer displaying both Git-tracked files and `.gitignore`-ignored files. Select files individually or whole directories to inject ASCII project trees and staged file snippets directly into the prompt.
+  - **Insert File (`C-c f` / `Ctrl+f`):** Path auto-completion with language detection from file extensions.
+  - **Write to Disk (`C-c r` / `Ctrl+r`):** Save any selected code snippet from the chat feed directly to disk, with conflict detection and overwrite confirmation.
+  - Chat-scoped vs. global working directory tracking.
 
-RECOMENDED / WORKING INSTALL LOCATION:
-- /opt/gemini/
-
-### Create and Activate Virtual Environment
-
-Create virtual environment (adjust path if needed, e.g., /opt/gemini/.venv)
-python3 -m venv .venv
-
-### Activate virtual environment
-source .venv/bin/activate
-
-### Install Required Python Packages
-
-Install the necessary dependencies using pip:
-
-pip install google-genai textual rich pyperclip
-
-| Package | Purpose |
-| :--- | :--- |
-| google-genai | Official Google GenAI SDK (Gemini API calls) |
-| textual | Terminal User Interface (TUI) application framework |
-| rich | Terminal markup, Markdown rendering, and code syntax highlighting |
-| pyperclip | Cross-platform OS clipboard access (Kill ring / Yank support) |
-
-### API Key Configuration
-
-Ensure your Google Gemini API key is exported into your environment before running the app:
-
-export GEMINI_API_KEY="your-gemini-api-key-here"
-
-(Optional) If you want system-wide clipboard integration on Linux without a native display manager clipboard, install xclip or xsel:
-sudo apt install xclip   # Debian/Ubuntu
-sudo pacman -S xclip     # Arch Linux
+- **Chat Persistence & History Management:**
+  - Automatic JSON persistence under `chats/`.
+  - Full history drawer (`C-c b` / `Ctrl+b`) with live chat search, renaming (`r`), and deletion (`d` / `x`).
+  - Open full chat transcripts directly into your favorite editor/pager via `$EDITOR` (`C-c e`).
 
 ---
 
-## 2. Project & Folder Structure
+## Requirements
 
-The project follows a decoupled, modular package architecture separating rendering logic, backend integrations, and UI state:
+- Python 3.10+
+- A Google Gemini API Key (`GEMINI_API_KEY` set in your environment)
+- Optional: `git` and `emacsclient` for repository browsing and Emacs integration
 
-```text
-gemini_tui/
-├── gemini.py                   # Main CLI executable / entrypoint script
-├── chats/                      # Directory where conversation JSON files are saved
-│
-└── gemini_app/
-    ├── __init__.py             # Exports top-level ChatApp
-    ├── app.py                  # Core application orchestration & event lifecycle
-    ├── config.py               # Constants, filesystem paths, and model configurations
-    ├── events.py               # Custom Textual Message definitions (RemoteInsert, etc.)
-    ├── styles.tcss             # Textual CSS stylesheet (supports textual dev live-reload)
-    │
-    ├── hooks/
-    │   ├── __init__.py
-    │   └── markdown.py         # Monkeys-patches MarkdownFence for real source line numbers
-    │
-    ├── services/
-    │   ├── __init__.py
-    │   ├── chat_store.py       # Persistence layer: saves, loads, and deletes chat JSON
-    │   ├── emacs.py            # emacsclient IPC wrapper & frame/window query evaluator
-    │   ├── gemini.py           # GenAI client wrapper & background generation worker
-    │   └── socket_server.py    # Async Unix domain socket server (/tmp/gemini_textual.sock)
-    │
-    ├── widgets/
-    │   ├── __init__.py
-    │   ├── emacs_text_area.py  # Base TextArea with Emacs cursor, mark, and kill-ring keys
-    │   ├── input_area.py       # Multi-line input area resolving snippet tokens
-    │   ├── snippet_preview.py  # Floating editable snippet review box
-    │   ├── feed.py             # Markdown stream renderer with snippet jumping
-    │   └── history_list.py     # Interactive conversation history drawer
-    │
-    └── screens/
-        ├── __init__.py
-        ├── title_modal.py      # Modal popup for naming/renaming chat threads
-        ├── frame_modal.py      # Modal picker for targeting destination Emacs windows
-        └── palette.py          # Emacs-styled CommandPalette (M-x menu)
+### Python Dependencies
+
+- `textual`
+- `google-genai`
+- `pyperclip`
+- `rich`
+
+---
+
+## Installation & Setup
+
+1. **Clone the repository or save `gemini.py` locally:**
+
+   ```bash
+   git clone <repo-url>
+   cd <repo-folder>
+   ```
+
+2. **Set up a virtual environment and install dependencies:**
+
+   ```bash
+   python3 -m venv .venv
+   source .venv/bin/activate
+   pip install textual google-genai pyperclip rich
+   ```
+
+3. **Export your Gemini API Key:**
+
+   ```bash
+   export GEMINI_API_KEY="your-gemini-api-key-here"
+   ```
+
+4. **Run the application:**
+
+   ```bash
+   python gemini.py
+   ```
+
+---
+
+## Keyboard Shortcuts
+
+### Global / Application Actions
+
+| Keybinding | Emacs Prefix | Action |
+|---|---|---|
+| `Alt+x` | — | Open Menu / Command Palette (`M-x`) |
+| `Ctrl+n` | `C-c n` | Start a new chat session |
+| `Ctrl+b` | `C-c b` | Toggle Chat History sidebar |
+| `Ctrl+t` | `C-c t` | Rename active chat session |
+| `Ctrl+f` | `C-c f` | Insert file from disk as a snippet |
+| `Ctrl+\` | `C-c g` | Open Interactive Git Tree Explorer |
+| `Ctrl+r` | `C-c r` | Save active snippet from feed to disk |
+| `Ctrl+y` | `C-c y` | Yank active snippet / response (copies to clipboard & Emacs) |
+| `Ctrl+e` | `C-c e` | Open conversation in `$EDITOR` / `$PAGER` |
+| `Escape` | — | Cycle focus (Feed Area ↔ Snippet Preview ↔ Prompt Input) |
+| `Ctrl+q` | — | Quit application |
+
+---
+
+### Text Input & Snippet Preview (Emacs Navigation)
+
+| Key | Description |
+|---|---|
+| `Ctrl+a` / `Ctrl+e` | Move to start / end of line |
+| `Ctrl+f` / `Ctrl+b` | Move cursor character forward / backward |
+| `Alt+f` / `Alt+b` | Move cursor word forward / backward |
+| `Ctrl+p` / `Ctrl+n` | Move cursor line up / down (or jump into snippet preview) |
+| `Ctrl+Space` | Set selection mark |
+| `Ctrl+k` | Kill from cursor to end of line |
+| `Ctrl+u` | Kill from cursor to beginning of line |
+| `Alt+d` | Kill word forward |
+| `Ctrl+w` | Kill region (or kill word backward if no mark set) |
+| `Alt+w` | Copy selected region |
+| `Ctrl+y` | Paste / Yank from clipboard |
+| `Ctrl+/` | Undo |
+| `Enter` | Submit prompt |
+| `Shift+Enter` / `Ctrl+j` | Insert newline |
+
+---
+
+### Feed Navigation
+
+| Key | Description |
+|---|---|
+| `j` / `k` or `Down` / `Up` | Scroll conversation up / down |
+| `PageUp` / `PageDown` | Scroll page up / down |
+| `Home` / `End` | Jump to conversation start / end |
+| `Alt+n` / `Alt+Down` | Focus / cycle to next code snippet block |
+| `Alt+p` / `Alt+Up` | Focus / cycle to previous code snippet block |
+| `i` / `Ctrl+o` / `Escape` | Return focus to prompt input |
+
+---
+
+### History Drawer Navigation
+
+| Key | Description |
+|---|---|
+| `j` / `k` or `Down` / `Up` | Select chat session |
+| `Enter` | Load highlighted chat session |
+| `r` | Rename highlighted chat session |
+| `d` / `x` / `Delete` | Delete highlighted chat session |
+| `Escape` / `q` / `Ctrl+g` | Close history drawer |
+
+---
+
+### Path & Directory Completion Inputs
+
+- **Tab (1x):** Auto-completes directory or file path inline.
+- **Tab (2x quickly):** Navigates focus to the next UI element.
+
+---
+
+## Emacs Integration Setup (Optional)
+
+To enable seamless round-trip sending between Emacs and this application:
+
+### 1. Send selected text from Emacs to Gemini Client
+
+Add this Elisp function to your `init.el` to pipe code regions directly to the app's socket at `/tmp/gemini_textual.sock`:
+
+```elisp
+(defun gemini-send-region-to-tui (start end)
+  "Send current selection to the running Gemini TUI client as a snippet."
+  (interactive "r")
+  (let* ((text (buffer-substring-no-properties start end))
+         (lang (replace-regexp-in-string "-mode\\'" "" (symbol-name major-mode)))
+         (file (or (buffer-file-name) (buffer-name)))
+         (start-line (line-number-at-pos start))
+         (end-line (line-number-at-pos end))
+         (payload (json-encode
+                   `((action . "insert")
+                     (text . ,text)
+                     (lang . ,lang)
+                     (file . ,file)
+                     (start_line . ,start-line)
+                     (end_line . ,end-line))))
+         (sock "/tmp/gemini_textual.sock"))
+    (if (file-exists-p sock)
+        (let ((proc (make-network-process
+                     :name "gemini-ipc"
+                     :family 'local
+                     :service sock)))
+          (process-send-string proc payload)
+          (delete-process proc)
+          (message "Snippet sent to Gemini TUI"))
+      (message "Gemini TUI socket not found. Is the app running?"))))
 ```
----
 
-## 3. Running the Application
+### 2. Allow Gemini Client to Inspect & Insert into Emacs Frames
 
-NOTE: Run app from installed location via terminal. ie. navigate to folder, run app execution command. ./gemini
+Add the following Elisp hooks to your configuration so `C-c y` can target open Emacs windows:
 
-Make gemini.py executable, or launch via python:
+```elisp
+;; Turns on global line numbers
+(global-display-line-numbers-mode)
+;; Turns off backup files that clutter
+(setq make-backup-files nil)
+;; NO FILE LOCKS
+(setq create-lockfiles nil)
+;; Remove trailing spaces from cpy pst
+(add-hook 'prog-mode-hook
+  (lambda () (add-hook
+'before-save-hook
+'delete-trailing-whitespace nil t)))
+;; Turn off autosave
+(setq auto-save-default nil)
+;; Fixes issues of cpy pst code into emacs
+(electric-indent-mode -1)
+;; Turns tabs into spaces
+(setq-default indent-tabs-mode nil)
+;; Auto reload files when they change on disk, ie. a buffer change automatically.
+(global-auto-revert-mode 1)
+(setq global-auto-revert-non-file-buffers t)
+(setq auto-revert-interval 2)
+(setq auto-revert-verbose nil)
+;; Set python to Python3 for shell interpreter
+(setq python-shell-interpreter "python3")
+;; Turns on background Daemon
+(when (executable-find "my-daemon")
+  (start-process "my-daemon-proc" nil "my-daemon"))
+;; Starts the Emacs Server
+(require 'server)
+(unless (server-running-p)
+  (server-start))
 
-chmod +x gemini.py
-./gemini.py
+;; Remove top menu bar
+(menu-bar-mode -1)
+;; Line Wrap
+(setq-default truncate-lines nil)
+(setq truncate-partial-width-windows nil)
+(global-visual-line-mode -1)
 
-Or run through an activated virtual environment:
-python gemini.py
+;; EMACS && GEMINI APP CONNECTION
+(require 'json)
 
-To run in live Textual Developer Mode (for editing CSS live):
-textual run --dev gemini.py
+(defun gemini--detect-language ()
+  "Detect programming language identifier for Markdown syntax fences."
+  (let ((mode (symbol-name major-mode))
+        (ext (when buffer-file-name (file-name-extension buffer-file-name))))
+    (cond
+     ((and ext (string= ext "py")) "python")
+     ((and ext (string= ext "el")) "elisp")
+     ((and ext (string= ext "rs")) "rust")
+     ((and ext (string= ext "js")) "javascript")
+     ((and ext (string= ext "ts")) "typescript")
+     ((and ext (string= ext "cpp")) "cpp")
+     ((and ext (string= ext "c")) "c")
+     ((and ext (string= ext "h")) "c")
+     ((and ext (string= ext "sh")) "bash")
+     ((and ext (string= ext "go")) "go")
+     ((and ext (string= ext "html")) "html")
+     ((and ext (string= ext "css")) "css")
+     ((and ext (string= ext "json")) "json")
+     ((and ext (string= ext "yaml")) "yaml")
+     ((and ext (string= ext "yml")) "yaml")
+     ((and ext (string= ext "md")) "markdown")
+     ((string-match "^\\([a-zA-Z0-9+-]+\\)-ts-mode" mode)
+      (match-string 1 mode))
+     ((string-match "^\\([a-zA-Z0-9+-]+\\)-mode" mode)
+      (let ((base (match-string 1 mode)))
+        (cond
+         ((string= base "emacs-lisp") "elisp")
+         ((string= base "c++") "cpp")
+         ((string= base "c") "c")
+         ((string= base "js") "javascript")
+         ((string= base "js2") "javascript")
+         ((string= base "typescript") "typescript")
+         ((string= base "python") "python")
+         ((string= base "rust") "rust")
+         ((string= base "sh") "bash")
+         ((string= base "shell-script") "bash")
+         ((string= base "ruby") "ruby")
+         ((string= base "go") "go")
+         ((string= base "html") "html")
+         ((string= base "css") "css")
+         ((string= base "sql") "sql")
+         ((string= base "yaml") "yaml")
+         ((string= base "json") "json")
+         (t base))))
+     (ext ext)
+     (t ""))))
 
----
+(defun gemini-chat-send-region ()
+  "Send the selected region with file metadata to the Textual Gemini app."
+  (interactive)
+  (if (not (use-region-p))
+      (message "Gemini: No region selected! Set a mark with C-SPC first.")
+    (let* ((beg (region-beginning))
+           (end (region-end))
+           (start-line (line-number-at-pos beg))
+           (end-pos (if (and (> end beg) (eq (char-before end) ?\n))
+                        (max beg (1- end))
+                      end))
+           (end-line (line-number-at-pos end-pos))
+           (file-name (if buffer-file-name
+                          (file-name-nondirectory buffer-file-name)
+                        (buffer-name)))
+           (text (buffer-substring-no-properties beg end))
+           (lang (gemini--detect-language))
+           (socket-path "/tmp/gemini_textual.sock")
+           (payload (json-encode `((action . "insert")
+                                   (text . ,text)
+                                   (lang . ,lang)
+                                   (file . ,file-name)
+                                   (start_line . ,start-line)
+                                   (end_line . ,end-line)))))
+      (if (not (file-exists-p socket-path))
+          (message "Gemini: Socket %s not found. Is your chat app running?" socket-path)
+        (condition-case err
+            (let ((proc (make-network-process
+                         :name "gemini-chat-sender"
+                         :family 'local
+                         :service socket-path
+                         :nowait nil)))
+              (process-send-string proc payload)
+              (delete-process proc)
+              (message "Gemini: Sent %s (Lines %d-%d) [%s]"
+                       file-name start-line end-line (if (string= lang "") "code" lang)))
+          (error
+           (message "Gemini error: %s" (error-message-string err))))))))
 
-## 4. In-App Commands & Keybindings
+(global-set-key (kbd "C-c g i") #'gemini-chat-send-region)
 
-The application is structured into four primary UI zones:
-1. Feed Area (Top conversation stream)
-2. Snippet Preview (Collapsible editor above input when snippets are inserted)
-3. Input Area (Bottom multi-line prompt box)
-4. History Drawer (Collapsible chat manager)
+;; Frame and Window Query / Insertion Helpers for Gemini
 
-### Global Prefix & App Navigation
-The app features an Emacs-style C-c (Ctrl+C) prefix table. Press Ctrl+C followed by the command letter:
+(defun gemini-list-open-frames ()
+  "Return JSON list of all active client terminal frames and their windows."
+  (let ((result '())
+        (frame-counter 1))
+    (dolist (f (frame-list))
+      ;; Filter out dead frames and the headless initial daemon frame
+      (when (and (frame-live-p f)
+                 (not (string= "Finitial" (frame-parameter f 'name)))
+                 (terminal-live-p (frame-terminal f)))
+        (let ((win-list '()))
+          (dolist (w (window-list f 'no-minibuf))
+            (let* ((b (window-buffer w))
+                   (b-name (buffer-name b))
+                   (file-path (or (buffer-file-name b) ""))
+                   (file-disp (if (not (string= file-path ""))
+                                  (file-name-nondirectory file-path)
+                                b-name)))
+              ;; Filter out internal star buffers
+              (unless (and (string-prefix-p " *" b-name)
+                           (not (string= b-name "*scratch*")))
+                (push `((buf_name . ,b-name)
+                        (file_name . ,file-disp)
+                        (path . ,file-path))
+                      win-list))))
+          (when win-list
+            (push `((frame_num . ,frame-counter)
+                    (frame_id . ,(format "%s" f))
+                    (windows . ,(apply 'vector (nreverse win-list))))
+                  result)
+            (setq frame-counter (1+ frame-counter))))))
+    (json-encode (apply 'vector (nreverse result)))))
 
-| Key Chord | Action | Description |
-| :--- | :--- | :--- |
-| M-x / Alt+x | command_palette | Open the Emacs-style Menu / Command Palette. |
-| C-c n / Ctrl+c n | new_chat | Prompt for topic and create a fresh chat session. |
-| C-c b / Ctrl+c b | toggle_history | Toggle chat history drawer open/closed. |
-| C-c y / Ctrl+c y | copy_last_response | Yank active snippet or model response to Emacs buffer & clipboard. |
-| C-c e / Ctrl+c e | open_in_editor | Open full conversation transcript in $EDITOR or $PAGER. |
-| C-c t / Ctrl+c t | rename_chat | Rename the current chat session. |
-| Escape | toggle_focus | Rotate focus: Feed ↔ Snippet Preview ↔ Input Area. |
-| Ctrl+q | quit | Quit application immediately. |
-
----
-
-### Emacs Text-Editing Keys (Input Box & Snippet Preview)
-Both the prompt area and the snippet preview implement Emacs-style navigation and editing shortcuts:
-
-| Key | Action |
-| :--- | :--- |
-| Ctrl+Space / Ctrl+@ | Set Mark (begin active selection region). |
-| Ctrl+f / Ctrl+b | Move cursor Forward / Backward by character. |
-| Alt+f / Alt+b | Move cursor Forward / Backward by word. |
-| Ctrl+a / Ctrl+e | Move to beginning / end of the current line. |
-| Alt+< / Alt+> | Move to beginning / end of entire document. |
-| Ctrl+k | Kill forward from cursor to end of line (copies to clipboard). |
-| Ctrl+u | Kill backward from cursor to beginning of line (copies to clipboard). |
-| Alt+d | Kill word forward. |
-| Ctrl+w | Kill active region (or kill word backward if no selection). |
-| Alt+w | Copy active region to system clipboard without deleting. |
-| Ctrl+y | Yank (Paste from system clipboard). |
-| Ctrl+/ / Ctrl+_ | Undo last edit. |
-| Enter | Submit prompt to Gemini (Input area only). |
-| Shift+Enter / Ctrl+j | Insert literal newline without submitting. |
-
----
-
-### Conversation Feed (FeedArea) Navigation
-When focused on the Feed (top panel):
-
-| Key | Action |
-| :--- | :--- |
-| j / Down | Scroll down one line. |
-| k / Up | Scroll up one line. |
-| PageDown / PageUp | Scroll feed by page. |
-| Home / End | Jump to very beginning / latest message. |
-| Alt+n / Alt+Down | Jump to next code block (highlights and focuses snippet). |
-| Alt+p / Alt+Up | Jump to previous code block. |
-| Click on Code Block | Direct-select a code snippet to make it active for yanking. |
-| i / Escape / Ctrl+o | Drop focus back down to Input Area. |
-
----
-
-### History Drawer (HistoryList)
-Toggle open using C-c b. While inside the history list:
-
-| Key | Action |
-| :--- | :--- |
-| j / Ctrl+n / Down | Move selection down. |
-| k / Ctrl+p / Up | Move selection up. |
-| Enter | Load selected chat and return to feed. |
-| r | Rename highlighted chat. |
-| d / x / Delete | Delete highlighted chat from disk immediately. |
-| q / Escape / Ctrl+g | Close history drawer without changing active chat. |
-
----
-
-## 5. Emacs Two-Way Integration & IPC Socket
-
-### 1. External Ingestion Socket
-When the app launches, it opens a Unix Domain Socket at:
-/tmp/gemini_textual.sock
-
-You can pump code from external scripts or Emacs hooks into the running TUI by sending a JSON payload formatted as:
-{
-  "action": "insert",
-  "text": "print('hello world')",
-  "lang": "python",
-  "file": "main.py",
-  "start_line": 10,
-  "end_line": 12
-}
-
-This triggers an inline {&snippet1} token inside the input prompt, automatically renders the code snippet preview with correct line numbers, and focuses your input box.
-
-### 2. Emacs Yank Dispatcher (C-c y)
-When yanking code out of Gemini back into your editor via C-c y:
-- If 1 Emacs frame is active: Text inserts directly at point in the active buffer.
-- If Multiple frames/windows are active: An Emacs Frame Selection Modal automatically prompts you to choose which window/buffer receives the snippet.
+(defun gemini-insert-into-window (buf-name text)
+  "Insert TEXT at point inside BUF-NAME without moving focus unexpectedly."
+  (let ((buf (get-buffer buf-name)))
+    (if buf
+        (with-current-buffer buf
+          (insert text))
+      (with-current-buffer (window-buffer (selected-window))
+        (insert text)))))
+```

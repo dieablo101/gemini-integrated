@@ -1,6 +1,5 @@
 ### Gemini
 
-```text
 # Gemini Textual TUI
 
 A full-featured, terminal-based AI chat interface powered by the official **Google GenAI SDK** and built on top of **Textual**. 

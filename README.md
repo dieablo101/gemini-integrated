@@ -21,6 +21,7 @@ This project requires **Python 3.10+** (Python 3.11+ recommended).
 - Install emacs on your system via command line
 Add to ~/.bashrc at the bottom 
 - alias emacs="emacsclient -nw -a ''"
+
 AND
 - copy or move file additionals/init.el into ~/.emacs.d folder and replace default
 

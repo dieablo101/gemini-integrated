@@ -7,11 +7,22 @@ A full-featured, terminal-based AI chat interface powered by the official **Goog
 
 Designed specifically for Emacs-style keyboard workflows, this application features full Mark/Kill-ring text manipulation, dynamic code snippet reference insertion, multi-chat local persistence, and direct two-way integration with running Emacs instances via `emacsclient`.
 
+Lamens: Open this program in a terminal window and emacs in another, even multiple frames of emacs with various windows. Simply select a code snippet from gemini with alt + n or alt + p and ctrl + y it directly into your emacs file at cursor location. In emacs, to send a code snippet to gemini through this app, simply press ctrl + c then g then i while in an emacs frame / window  and it will paste into this app from your emacs client frame / window. You can edit the code snippet also from within this app before finalizing it to send to Gemini. Want to move around your recent chats with gemini? press ctrl + c then b and change the chat, this app keeps persistant chat history by default. This app allows you to communicate and program with the google LLM ( large language model ) aka Gemini at high speed by integrating the IDE emacs with Gemini AI integration.
+
+I have full intention of making this more robust as time goes on, ill work on it as I see fit. No requests or ideas taken into consideration. Cannot be sold, redistributed for profit or used for any unlawful acts.
+
 ---
 
 ## 1. Installation & Environment Setup
 
 This project requires **Python 3.10+** (Python 3.11+ recommended).
+
+### Additionals - important
+
+- Install emacs 
+-- add to ~/.bashrc at the bottom 
+alias emacs="emacsclient -nw -a ''"   
+--- copy or move file additional/init.el into ~/.emacs.d folder and replace default
 
 ### Create and Activate Virtual Environment
 

@@ -959,7 +959,6 @@ class ChatApp(App):
 
     def set_c_c_prefix(self) -> None:
         self._prefix_c_c = True
-        self.notify("C-c-", timeout=1.5)
 
     def handle_c_c_prefix(self, event: events.Key) -> bool:
         """Centralized Emacs C-c chord interceptor."""

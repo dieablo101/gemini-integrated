@@ -1,4 +1,4 @@
 chats/
 .venv
 chats/
-modules/__pycache__/
+__pycache__/

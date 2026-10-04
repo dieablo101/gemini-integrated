@@ -158,37 +158,7 @@ To enable seamless round-trip sending between Emacs and this application:
 
 ### 1. Send selected text from Emacs to Gemini Client
 
-Add this Elisp function to your `init.el` to pipe code regions directly to the app's socket at `/tmp/gemini_textual.sock`:
-
-```elisp
-(defun gemini-send-region-to-tui (start end)
-  "Send current selection to the running Gemini TUI client as a snippet."
-  (interactive "r")
-  (let* ((text (buffer-substring-no-properties start end))
-         (lang (replace-regexp-in-string "-mode\\'" "" (symbol-name major-mode)))
-         (file (or (buffer-file-name) (buffer-name)))
-         (start-line (line-number-at-pos start))
-         (end-line (line-number-at-pos end))
-         (payload (json-encode
-                   `((action . "insert")
-                     (text . ,text)
-                     (lang . ,lang)
-                     (file . ,file)
-                     (start_line . ,start-line)
-                     (end_line . ,end-line))))
-         (sock "/tmp/gemini_textual.sock"))
-    (if (file-exists-p sock)
-        (let ((proc (make-network-process
-                     :name "gemini-ipc"
-                     :family 'local
-                     :service sock)))
-          (process-send-string proc payload)
-          (delete-process proc)
-          (message "Snippet sent to Gemini TUI"))
-      (message "Gemini TUI socket not found. Is the app running?"))))
-```
-
-### 2. Allow Gemini Client to Inspect & Insert into Emacs Frames
+Add this Elisp to your `init.el` for flawless victory.
 
 Add the following Elisp hooks to your configuration so `C-c y` can target open Emacs windows:
 
@@ -366,3 +336,5 @@ Add the following Elisp hooks to your configuration so `C-c y` can target open E
       (with-current-buffer (window-buffer (selected-window))
         (insert text)))))
 ```
+
+This program was written by the gemini API.

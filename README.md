@@ -25,6 +25,9 @@ Add to ~/.bashrc at the bottom
 AND
 - copy or move file additionals/init.el into ~/.emacs.d folder and replace default
 
+RECOMENDED / WORKING INSTALL LOCATION:
+- /opt/gemini/
+
 ### Create and Activate Virtual Environment
 
 Create virtual environment (adjust path if needed, e.g., /opt/gemini/.venv)

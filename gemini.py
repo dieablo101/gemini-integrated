@@ -1,6 +1,7 @@
 #!/opt/gemini/.venv/bin/python3
 
 import asyncio
+import copy
 import json
 import os
 from pathlib import Path
@@ -18,7 +19,7 @@ from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.command import CommandPalette
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widgets import (
@@ -42,6 +43,8 @@ from textual.widgets.tree import TreeNode
 CHATS_DIR = Path("chats")
 CHATS_DIR.mkdir(exist_ok=True)
 SOCKET_PATH = Path("/tmp/gemini_textual.sock")
+
+FORK_HEADER_TEXT = "## This chat is a fork of another / previous chat"
 
 # ---------------------------------------------------------------------------
 # Reusable Core File & Git Services (UI & Gemini Tool Use)
@@ -99,11 +102,7 @@ def write_code_to_disk(working_dir: str | Path, filename: str, content: str) -> 
     return target
 
 def get_git_files_catalog(repo_dir: str | Path) -> dict[str, list[str]]:
-    """Returns sorted relative paths for both Git-tracked and .gitignore-ignored files.
-
-    Returns:
-        dict: {"tracked": [...], "ignored": [...]}
-    """
+    """Returns sorted relative paths for both Git-tracked and .gitignore-ignored files."""
     base = Path(os.path.expanduser(str(repo_dir).strip())).resolve()
     check = subprocess.run(
         ["git", "-C", str(base), "rev-parse", "--is-inside-work-tree"],
@@ -486,6 +485,166 @@ class ConfirmModal(ModalScreen[bool]):
     def action_cancel(self) -> None:
         self.dismiss(False)
 
+class ForkModal(ModalScreen[str | None]):
+    """Modal dialog prompting the user to name the forked chat, enforcing permanent 'Fork: ' prefix."""
+
+    DEFAULT_CSS = """
+    ForkModal {
+        align: center middle;
+    }
+    #fork_dialog {
+        padding: 1 2;
+        width: 66;
+        height: auto;
+        border: thick dodgerblue;
+        background: $surface;
+    }
+    #fork_dialog Label {
+        margin-bottom: 1;
+        text-style: bold;
+    }
+    #fork_prefix_hint {
+        color: cyan;
+        margin-bottom: 1;
+    }
+    #fork_title_input {
+        margin-bottom: 1;
+    }
+    #fork_buttons {
+        width: 100%;
+        align-horizontal: right;
+    }
+    #fork_buttons Button {
+        margin-left: 1;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+        Binding("ctrl+g", "cancel", "Cancel"),
+    ]
+
+    def __init__(self, default_title: str = "") -> None:
+        super().__init__()
+        clean_default = default_title
+        if clean_default.startswith("Fork: "):
+            clean_default = clean_default[6:]
+        self.default_title = clean_default
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="fork_dialog"):
+            yield Label("Name forked chat:")
+            yield Label("Prefix 'Fork: ' will be permanently attached to the title.", id="fork_prefix_hint")
+            yield Input(
+                value=self.default_title,
+                placeholder="Enter topic/name...",
+                id="fork_title_input",
+            )
+            with Horizontal(id="fork_buttons"):
+                yield Button("Cancel", variant="error", id="cancel_btn")
+                yield Button("Fork It", variant="primary", id="fork_btn")
+
+    def on_mount(self) -> None:
+        self.query_one("#fork_title_input", Input).focus()
+
+    @on(Input.Submitted, "#fork_title_input")
+    def on_submit(self) -> None:
+        self._confirm()
+
+    @on(Button.Pressed, "#fork_btn")
+    def on_fork_pressed(self) -> None:
+        self._confirm()
+
+    @on(Button.Pressed, "#cancel_btn")
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def _confirm(self) -> None:
+        raw = self.query_one("#fork_title_input", Input).value.strip()
+        if not raw:
+            raw = self.default_title or "Untitled"
+        if not raw.startswith("Fork: "):
+            final_title = f"Fork: {raw}"
+        else:
+            final_title = raw
+        self.dismiss(final_title)
+
+class ForkTurnCard(Vertical):
+    """Focusable container representing a single response turn during Fork mode."""
+
+    can_focus = True
+
+    def __init__(self, index: int, sender: str, text: str, **kwargs) -> None:
+        super().__init__(classes="fork_turn_card", **kwargs)
+        self.turn_index = index
+        self.sender = sender
+        self.text_content = text
+        self.is_selected = True
+
+    def compose(self) -> ComposeResult:
+        with Horizontal(classes="fork_turn_header"):
+            yield Label(self._get_box_label(), classes="fork_turn_box_label")
+        yield Markdown(self.text_content, classes="fork_turn_preview")
+
+    def _get_box_label(self) -> str:
+        box = "[✓]" if self.is_selected else "[ ]"
+        return f"{box}  {self.sender}  (#{self.turn_index + 1})"
+
+    def toggle(self) -> None:
+        self.is_selected = not self.is_selected
+        self.query_one(".fork_turn_box_label", Label).update(self._get_box_label())
+        self.refresh()
+
+    def set_selected(self, value: bool) -> None:
+        self.is_selected = value
+        self.query_one(".fork_turn_box_label", Label).update(self._get_box_label())
+        self.refresh()
+
+    def _on_key(self, event: events.Key) -> None:
+        if event.key == "space":
+            event.prevent_default(); event.stop()
+            self.toggle()
+            return
+        elif event.key in ("enter", "return"):
+            event.prevent_default(); event.stop()
+            self.app.action_fork_chat()
+            return
+        elif event.key in ("alt+n", "alt+down", "j", "down"):
+            event.prevent_default(); event.stop()
+            feed = self.app.query_one("#feed", FeedArea)
+            feed.navigate_fork_cards(1)
+            return
+        elif event.key in ("alt+p", "alt+up", "k", "up"):
+            event.prevent_default(); event.stop()
+            feed = self.app.query_one("#feed", FeedArea)
+            feed.navigate_fork_cards(-1)
+            return
+        elif event.key == "a":
+            event.prevent_default(); event.stop()
+            feed = self.app.query_one("#feed", FeedArea)
+            feed.toggle_all_fork_checkboxes()
+            return
+        elif event.key in ("escape", "ctrl+g"):
+            event.prevent_default(); event.stop()
+            feed = self.app.query_one("#feed", FeedArea)
+            feed.exit_fork_mode()
+            self.app.notify("Fork cancelled.")
+            return
+
+        super()._on_key(event)
+
+    @on(events.Click)
+    def on_card_click(self, event: events.Click) -> None:
+        event.stop()
+        self.focus()
+        # If clicking specifically on or within the header bar, toggle the selection
+        curr = event.widget
+        while curr and curr is not self:
+            if "fork_turn_header" in curr.classes:
+                self.toggle()
+                return
+            curr = curr.parent
+
 class WriteSnippetModal(ModalScreen[dict | None]):
     """Modal dialog prompting for working directory and filename to write code to disk."""
 
@@ -720,7 +879,7 @@ class GitTreeModal(ModalScreen[dict | None]):
     #git_dialog {
         padding: 1 2;
         width: 110;
-        height: 92vh;          /* Responsive viewport-relative height */
+        height: 92vh;
         max-height: 95vh;
         border: thick dodgerblue;
         background: $surface;
@@ -736,13 +895,13 @@ class GitTreeModal(ModalScreen[dict | None]):
         margin-left: 1;
     }
     #dual_tree_row {
-        height: 1fr;           /* Takes all remaining flex vertical space */
+        height: 1fr;
         min-height: 10;
         margin-bottom: 1;
     }
     .tree_pane {
         width: 1fr;
-        height: 1fr;           /* Flexes vertically inside #dual_tree_row */
+        height: 1fr;
     }
     #pane_tracked {
         margin-right: 1;
@@ -754,7 +913,7 @@ class GitTreeModal(ModalScreen[dict | None]):
     }
     .tree_pane Tree {
         border: solid #555555;
-        height: 1fr;           /* Takes all remaining space inside .tree_pane */
+        height: 1fr;
         min-height: 5;
     }
     #tree_ignored {
@@ -945,7 +1104,6 @@ class GitTreeModal(ModalScreen[dict | None]):
             else:
                 self.selected_files.add(file_path)
         else:
-            # Folder toggle: select/deselect all descendant files without collapsing
             descendant_files: list[str] = []
 
             def collect_files(n: TreeNode) -> None:
@@ -1065,7 +1223,6 @@ class TitlePromptModal(ModalScreen[str | None]):
     TitlePromptModal {
         align: center middle;
     }
-
     #dialog {
         padding: 1 2;
         width: 60;
@@ -1073,21 +1230,17 @@ class TitlePromptModal(ModalScreen[str | None]):
         border: thick dodgerblue;
         background: $surface;
     }
-
     #dialog Label {
         margin-bottom: 1;
         text-style: bold;
     }
-
     #dialog Input {
         margin-bottom: 1;
     }
-
     #dialog-buttons {
         width: 100%;
         align-horizontal: right;
     }
-
     #dialog-buttons Button {
         margin-left: 1;
     }
@@ -1547,7 +1700,6 @@ class ExpandingInput(EmacsBaseTextArea):
         self.insert(f" {tag} ")
         self._clear_mark()
 
-        # Place cursor directly on the tag so it immediately previews
         row, col = self.cursor_location
         if col > 0:
             self.move_cursor((row, col - 1), select=False)
@@ -1561,7 +1713,6 @@ class ExpandingInput(EmacsBaseTextArea):
         self._snippet_counter = 1
 
     def _get_snippet_at_cursor(self) -> tuple[str, dict] | None:
-        """Finds if the cursor is positioned on or touching any {&snippetN} tag."""
         try:
             row, col = self.cursor_location
             line = self.document.get_line(row)
@@ -1576,13 +1727,11 @@ class ExpandingInput(EmacsBaseTextArea):
         return None
 
     def _sync_snippet_preview(self) -> None:
-        """Shows the preview box if over a snippet; hides it if not."""
         try:
             preview_box = self.app.query_one("#snippet_preview", SnippetPreview)
         except Exception:
             return
 
-        # Do not hide preview while the user has focused into it to edit
         if preview_box.has_focus:
             return
 
@@ -1711,8 +1860,11 @@ class ExpandingInput(EmacsBaseTextArea):
 
         self.app.query_one("#snippet_preview", SnippetPreview).hide_preview()
 
-class FeedArea(Markdown):
-    """Feed Markdown viewer with code snippet navigation and touch selection."""
+class FeedArea(VerticalScroll):
+    """Feed container supporting standard rich Markdown views, code snippet navigation,
+
+    and an interactive checkbox mode for chat forking.
+    """
 
     can_focus = True
 
@@ -1720,30 +1872,45 @@ class FeedArea(Markdown):
         super().__init__(**kwargs)
         self._raw_markdown = ""
         self.selected_snippet_index: int = -1
+        self.fork_mode: bool = False
+
+    def compose(self) -> ComposeResult:
+        yield Markdown(id="feed_markdown")
+        yield Vertical(id="fork_view")
+
+    def on_mount(self) -> None:
+        self.query_one("#fork_view").styles.display = "none"
 
     def clear(self) -> None:
+        self.exit_fork_mode()
         self._raw_markdown = ""
         self.selected_snippet_index = -1
-        self.update("")
+        try:
+            self.query_one("#feed_markdown", Markdown).update("")
+        except Exception:
+            pass
 
     def _scroll_to_bottom(self) -> None:
         self.scroll_end(animate=False)
 
     async def set_messages(self, messages: list[dict]) -> None:
+        self.exit_fork_mode()
         blocks = []
         for turn in messages:
             label = "You" if turn["role"] == "user" else "Gemini"
             blocks.append(f"### {label}\n\n{turn['text']}")
         self._raw_markdown = "\n\n---\n\n".join(blocks)
         self.selected_snippet_index = -1
-        await self.update(self._raw_markdown)
+        md = self.query_one("#feed_markdown", Markdown)
+        await md.update(self._raw_markdown)
         self.call_after_refresh(self._scroll_to_bottom)
 
     async def append_message(self, sender: str, text: str) -> None:
         prefix = "\n\n---\n\n" if self._raw_markdown else ""
         header = f"### {sender}\n\n"
         self._raw_markdown += f"{prefix}{header}{text}"
-        await self.update(self._raw_markdown)
+        md = self.query_one("#feed_markdown", Markdown)
+        await md.update(self._raw_markdown)
         self.call_after_refresh(self._scroll_to_bottom)
 
     def _get_fences(self) -> list[MarkdownFence]:
@@ -1779,6 +1946,10 @@ class FeedArea(Markdown):
                 f.refresh()
 
     def navigate_snippet(self, delta: int) -> None:
+        if self.fork_mode:
+            self.navigate_fork_cards(delta)
+            return
+
         fences = self._get_fences()
         if not fences:
             return
@@ -1799,8 +1970,91 @@ class FeedArea(Markdown):
             return self._extract_code_from_fence(fences[-1])
         return None
 
+    # --- Fork Selection Operations ---
+
+    def enter_fork_mode(self, messages: list[dict]) -> None:
+        """Enters fork mode without instruction banner and presents focusable turn cards."""
+        if not messages:
+            return
+
+        self.fork_mode = True
+        md = self.query_one("#feed_markdown", Markdown)
+        md.styles.display = "none"
+
+        fork_view = self.query_one("#fork_view", Vertical)
+        fork_view.remove_children()
+        fork_view.styles.display = "block"
+
+        for idx, turn in enumerate(messages):
+            sender = "You" if turn["role"] == "user" else "Gemini"
+            card = ForkTurnCard(
+                index=idx,
+                sender=sender,
+                text=turn["text"],
+                id=f"fork_card_{idx}",
+            )
+            fork_view.mount(card)
+
+        self.scroll_home(animate=False)
+        self.call_after_refresh(self._focus_first_fork_card)
+
+    def _focus_first_fork_card(self) -> None:
+        cards = list(self.query_one("#fork_view").query(ForkTurnCard))
+        if cards:
+            cards[0].focus()
+
+    def exit_fork_mode(self) -> None:
+        """Restores standard markdown feed."""
+        if not self.fork_mode:
+            return
+
+        self.fork_mode = False
+        fork_view = self.query_one("#fork_view", Vertical)
+        fork_view.styles.display = "none"
+        fork_view.remove_children()
+
+        md = self.query_one("#feed_markdown", Markdown)
+        md.styles.display = "block"
+        self.focus()
+
+    def get_selected_fork_indices(self) -> list[int]:
+        fork_view = self.query_one("#fork_view", Vertical)
+        cards = list(fork_view.query(ForkTurnCard))
+        return [card.turn_index for card in cards if card.is_selected]
+
+    def toggle_all_fork_checkboxes(self) -> None:
+        fork_view = self.query_one("#fork_view", Vertical)
+        cards = list(fork_view.query(ForkTurnCard))
+        if not cards:
+            return
+        all_checked = all(c.is_selected for c in cards)
+        for c in cards:
+            c.set_selected(not all_checked)
+
+    def navigate_fork_cards(self, delta: int) -> None:
+        cards = list(self.query_one("#fork_view").query(ForkTurnCard))
+        if not cards:
+            return
+
+        curr_focused = self.app.focused
+        idx = -1
+        if curr_focused in cards:
+            idx = cards.index(curr_focused)
+
+        if idx == -1:
+            target_idx = 0 if delta > 0 else len(cards) - 1
+        else:
+            target_idx = (idx + delta) % len(cards)
+
+        target = cards[target_idx]
+        target.focus()
+        target.scroll_visible(animate=True)
+
     @on(events.Click)
     def _on_feed_click(self, event: events.Click) -> None:
+        if self.fork_mode:
+            return
+
         curr = event.widget
         while curr and curr is not self:
             if isinstance(curr, MarkdownFence):
@@ -1813,6 +2067,41 @@ class FeedArea(Markdown):
             curr = curr.parent
 
     def _on_key(self, event: events.Key) -> None:
+        if event.key in ("ctrl+full_stop", "ctrl+period", "ctrl+."):
+            event.prevent_default(); event.stop()
+            self.app.action_fork_chat()
+            return
+
+        if self.fork_mode:
+            if event.key in ("escape", "ctrl+g"):
+                event.prevent_default(); event.stop()
+                self.exit_fork_mode()
+                self.app.notify("Fork cancelled.")
+                return
+            elif event.key == "a":
+                event.prevent_default(); event.stop()
+                self.toggle_all_fork_checkboxes()
+                self.app.notify("Toggled all selections.")
+                return
+            elif event.key in ("enter", "return"):
+                event.prevent_default(); event.stop()
+                self.app.action_fork_chat()
+                return
+            elif event.key in ("alt+n", "alt+down", "j", "down"):
+                event.prevent_default(); event.stop()
+                self.navigate_fork_cards(1)
+                return
+            elif event.key in ("alt+p", "alt+up", "k", "up"):
+                event.prevent_default(); event.stop()
+                self.navigate_fork_cards(-1)
+                return
+
+        # Fallback when terminal strips Ctrl from Ctrl+. on the feed container
+        if not self.fork_mode and event.key in ("full_stop", ".", "f"):
+            event.prevent_default(); event.stop()
+            self.app.action_fork_chat()
+            return
+
         if self.app.handle_c_c_prefix(event):
             return
 
@@ -1912,6 +2201,48 @@ class ChatApp(App):
         width: 100%;
         max-width: 100%;
     }
+    #feed #feed_markdown {
+        width: 100%;
+        max-width: 100%;
+        height: auto;
+    }
+    #feed #fork_view {
+        width: 100%;
+        max-width: 100%;
+        height: auto;
+    }
+    .fork_turn_card {
+        width: 100%;
+        height: auto;
+        margin-bottom: 1;
+        padding: 0;
+        border: solid #444444;
+        background: $surface;
+    }
+    .fork_turn_card:focus {
+        border: thick cyan;
+        background: #101c28;
+    }
+    .fork_turn_header {
+        width: 100%;
+        height: auto;
+        padding: 0 1;
+        background: #1f3044;
+        border-bottom: solid #334455;
+    }
+    .fork_turn_card:focus .fork_turn_header {
+        background: dodgerblue;
+    }
+    .fork_turn_box_label {
+        width: 100%;
+        text-style: bold;
+        color: #ffffff;
+    }
+    .fork_turn_preview {
+        width: 100%;
+        height: auto;
+        padding: 1 1;
+    }
     #feed MarkdownBlock,
     #feed MarkdownParagraph,
     #feed MarkdownTable {
@@ -1965,6 +2296,7 @@ class ChatApp(App):
         Binding("alt+x", "command_palette", "Menu (M-x)", show=True),
         Binding("ctrl+n", "new_chat", "C-c n (New)", show=True),
         Binding("ctrl+b", "toggle_history", "C-c b (History)", show=True),
+        Binding("ctrl+full_stop", "fork_chat", "C-. (Fork)", show=True),
         Binding("ctrl+y", "copy_last_response", "C-c y (Yank/Emacs)", show=True),
         Binding("ctrl+r", "save_snippet_to_disk", "C-c r (Save File)", show=True),
         Binding("ctrl+f", "insert_file_from_disk", "C-c f (File)", show=True),
@@ -1980,6 +2312,7 @@ class ChatApp(App):
         self.client = genai.Client()
         self.current_chat_id: str = ""
         self.current_chat_title: str = ""
+        self.current_chat_parent_id: str | None = None
         self.history: list[dict] = []
         self._server: asyncio.AbstractServer | None = None
         self._prefix_c_c: bool = False
@@ -2037,6 +2370,10 @@ class ChatApp(App):
             event.prevent_default(); event.stop()
             self.action_rename_chat()
             return True
+        elif event.key in ("period", "full_stop", "."):
+            event.prevent_default(); event.stop()
+            self.action_fork_chat()
+            return True
         elif event.key in ("ctrl+c", "escape"):
             event.prevent_default(); event.stop()
             self.notify("Quit", timeout=1.0)
@@ -2045,11 +2382,39 @@ class ChatApp(App):
         return False
 
     def on_key(self, event: events.Key) -> None:
-        """Application-level key interceptor guaranteeing C-c chords resolve anywhere."""
+        """Application-level key interceptor guaranteeing chords resolve reliably."""
+        feed = self.query_one("#feed", FeedArea)
+
+        # In fork mode, prioritize Alt+n/p for navigating fork cards
+        if feed.fork_mode and event.key in ("alt+n", "alt+down"):
+            event.prevent_default(); event.stop()
+            feed.navigate_fork_cards(1)
+            return
+        elif feed.fork_mode and event.key in ("alt+p", "alt+up"):
+            event.prevent_default(); event.stop()
+            feed.navigate_fork_cards(-1)
+            return
+
         if self._prefix_c_c:
             if self.handle_c_c_prefix(event):
                 event.prevent_default()
                 event.stop()
+                return
+
+        # Centralized C-. / Ctrl+full_stop check
+        if event.key in ("ctrl+full_stop", "ctrl+period", "ctrl+."):
+            event.prevent_default()
+            event.stop()
+            self.action_fork_chat()
+            return
+
+        # If already in fork mode, pressing Enter confirms and prompts for naming
+        if feed.fork_mode and event.key in ("enter", "return"):
+            focused = self.focused
+            if focused and (focused is feed or focused in feed.query("*")):
+                event.prevent_default()
+                event.stop()
+                self.action_fork_chat()
                 return
 
         if event.key == "ctrl+c":
@@ -2173,20 +2538,61 @@ class ChatApp(App):
         )
 
     def refresh_history_list(self) -> None:
+        """Renders chats with sub-chat indentation and automatically un-subs orphans."""
         history_widget = self.query_one("#history", HistoryList)
         history_widget.clear_options()
 
         files = self._get_sorted_files()
-        for idx, f in enumerate(files):
+        chats_by_id: dict[str, dict] = {}
+        for f in files:
             try:
                 data = json.loads(f.read_text())
-                title = data.get("title", f.stem)
-                active = " (Active)" if data["id"] == self.current_chat_id else ""
-                history_widget.add_option(
-                    Option(prompt=f"{idx + 1}. {title}{active}", id=data["id"])
-                )
+                cid = data.get("id", f.stem)
+                chats_by_id[cid] = data
             except Exception:
                 continue
+
+        # If parent was deleted, auto turn sub-chat into a non-sub chat
+        for cid, data in chats_by_id.items():
+            parent_id = data.get("parent_id")
+            if parent_id and parent_id not in chats_by_id:
+                data["parent_id"] = None
+                target_file = self._get_chat_file(cid)
+                if target_file.exists():
+                    target_file.write_text(json.dumps(data, indent=2))
+
+        # Build hierarchy
+        children_map: dict[str, list[dict]] = {}
+        roots: list[dict] = []
+        for cid, data in chats_by_id.items():
+            parent_id = data.get("parent_id")
+            if parent_id and parent_id in chats_by_id and parent_id != cid:
+                children_map.setdefault(parent_id, []).append(data)
+            else:
+                roots.append(data)
+
+        roots.sort(key=lambda d: d.get("updated_at", 0), reverse=True)
+        for pid in children_map:
+            children_map[pid].sort(key=lambda d: d.get("updated_at", 0), reverse=False)
+
+        def add_chat_node(chat_data: dict, depth: int, index_label: str) -> None:
+            cid = chat_data["id"]
+            title = chat_data.get("title", cid)
+            active = " (Active)" if cid == self.current_chat_id else ""
+            if depth == 0:
+                prompt = f"{index_label}. {title}{active}"
+            else:
+                indent = "   " * depth + "└─ "
+                prompt = f"{indent}{title}{active}"
+            history_widget.add_option(Option(prompt=prompt, id=cid))
+
+            for child in children_map.get(cid, []):
+                add_chat_node(child, depth + 1, "")
+
+        root_counter = 1
+        for root in roots:
+            add_chat_node(root, depth=0, index_label=str(root_counter))
+            root_counter += 1
 
     async def load_chat(self, chat_id: str) -> None:
         self.current_chat_id = chat_id
@@ -2196,10 +2602,12 @@ class ChatApp(App):
             self.history = data.get("messages", [])
             self.current_chat_title = data.get("title", "")
             self.current_chat_working_dir = data.get("working_dir")
+            self.current_chat_parent_id = data.get("parent_id")
         else:
             self.history = []
             self.current_chat_title = ""
             self.current_chat_working_dir = None
+            self.current_chat_parent_id = None
 
         feed = self.query_one("#feed", FeedArea)
         await feed.set_messages(self.history)
@@ -2223,6 +2631,7 @@ class ChatApp(App):
         data = {
             "id": self.current_chat_id,
             "title": self.current_chat_title,
+            "parent_id": self.current_chat_parent_id,
             "updated_at": time.time(),
             "working_dir": self.current_chat_working_dir,
             "messages": self.history,
@@ -2240,6 +2649,16 @@ class ChatApp(App):
         target_file = self._get_chat_file(target_id)
         if target_file.exists():
             target_file.unlink()
+
+        # Update any sub-chats attached to this chat to become non-sub chats
+        for f in self._get_sorted_files():
+            try:
+                data = json.loads(f.read_text())
+                if data.get("parent_id") == target_id:
+                    data["parent_id"] = None
+                    f.write_text(json.dumps(data, indent=2))
+            except Exception:
+                pass
 
         files = self._get_sorted_files()
         if self.current_chat_id == target_id:
@@ -2310,12 +2729,86 @@ class ChatApp(App):
             callback=on_renamed,
         )
 
+    def action_fork_chat(self) -> None:
+        """Handles initiation and finalization of chat forking."""
+        feed = self.query_one("#feed", FeedArea)
+
+        if feed.fork_mode:
+            selected_indices = feed.get_selected_fork_indices()
+            if not selected_indices:
+                self.notify("Please select at least one response to fork.", severity="warning")
+                return
+
+            def on_fork_named(fork_title: str | None) -> None:
+                if not fork_title:
+                    self.notify("Fork cancelled.")
+                    feed.exit_fork_mode()
+                    return
+                self._execute_chat_fork(selected_indices, fork_title)
+
+            self.push_screen(
+                ForkModal(default_title=self.current_chat_title),
+                callback=on_fork_named,
+            )
+            return
+
+        if not self.history:
+            self.notify("No conversation history to fork.", severity="warning")
+            return
+
+        feed.enter_fork_mode(self.history)
+        self.notify("Fork mode: Select responses with Space/Click, Alt+n/p to navigate, Enter to fork.", timeout=4.0)
+
+    def _execute_chat_fork(self, selected_indices: list[int], fork_title: str) -> None:
+        """Constructs and switches to the new forked chat without triggering Gemini API call."""
+        feed = self.query_one("#feed", FeedArea)
+        feed.exit_fork_mode()
+
+        selected_turns = [copy.deepcopy(self.history[i]) for i in selected_indices]
+        if not selected_turns:
+            return
+
+        # Ensure Header is present at the very beginning of the chat
+        if selected_turns[0]["role"] == "user":
+            selected_turns[0]["text"] = f"{FORK_HEADER_TEXT}\n\n{selected_turns[0]['text']}"
+        else:
+            selected_turns.insert(0, {"role": "user", "text": FORK_HEADER_TEXT})
+
+        # Save previous state
+        self.save_current_chat()
+
+        parent_chat_id = self.current_chat_id
+        new_chat_id = uuid4().hex[:8]
+
+        self.current_chat_id = new_chat_id
+        self.current_chat_title = fork_title
+        self.current_chat_parent_id = parent_chat_id
+        self.history = selected_turns
+
+        # Persist new forked chat
+        self.save_current_chat()
+
+        # Update feed and input without calling Gemini
+        self.run_worker(self._render_forked_chat(selected_turns))
+
+    async def _render_forked_chat(self, turns: list[dict]) -> None:
+        feed = self.query_one("#feed", FeedArea)
+        await feed.set_messages(turns)
+        input_widget = self.query_one("#input", ExpandingInput)
+        input_widget.reset_snippets()
+        self.query_one("#snippet_preview", SnippetPreview).hide_preview()
+        input_widget.focus()
+        self.refresh_history_list()
+        self.notify(f"Fork created: '{self.current_chat_title}' (Awaiting response)", timeout=4.0)
+
     def action_toggle_focus(self) -> None:
         feed = self.query_one("#feed", FeedArea)
         preview_box = self.query_one("#snippet_preview", SnippetPreview)
         input_widget = self.query_one("#input", ExpandingInput)
 
-        if feed.has_focus:
+        feed_focused = feed.has_focus or (self.focused is not None and self.focused in feed.query("*"))
+
+        if feed_focused:
             if preview_box.styles.display != "none":
                 preview_box.focus()
             else:
@@ -2357,6 +2850,7 @@ class ChatApp(App):
 
         self.current_chat_id = uuid4().hex[:8]
         self.current_chat_title = title
+        self.current_chat_parent_id = None
         self.current_chat_working_dir = None
         self.history = []
 
@@ -2509,7 +3003,6 @@ class ChatApp(App):
             root_label = Path(repo_dir).name or repo_dir
             ignored_set = set(ignored_files)
 
-            # 1. Format ASCII tree view
             if tree_mode == "full":
                 all_files = tracked_files + [f for f in selected_files if f in ignored_set]
                 if all_files:
@@ -2519,7 +3012,6 @@ class ChatApp(App):
                 ascii_tree = build_ascii_tree(selected_files, root_name=root_label, ignored_set=ignored_set)
                 sections.append(f"Selected Files Tree (`{root_label}`):\n```text\n{ascii_tree}\n```")
 
-            # 2. Stage each selected file as a snippet
             last_tag = ""
             last_num = 1
             last_code = ""
@@ -2573,7 +3065,6 @@ class ChatApp(App):
         )
 
     def _get_emacs_frames(self) -> list[dict]:
-        """Queries Emacs for active frames and their open windows."""
         try:
             res = subprocess.run(
                 ["emacsclient", "--eval", "(gemini-list-open-frames)"],
@@ -2593,7 +3084,6 @@ class ChatApp(App):
         return []
 
     def _send_to_emacs_buffer(self, code_text: str, target_buf: str | None = None) -> bool:
-        """Injects text into target buffer, or active window if None."""
         try:
             escaped_text = json.dumps(code_text)
             if target_buf:
@@ -2630,7 +3120,6 @@ class ChatApp(App):
             return
 
         self.copy_to_clipboard(text_to_send)
-
         frames = self._get_emacs_frames()
 
         if len(frames) <= 1:
@@ -2694,10 +3183,17 @@ class ChatApp(App):
     @work(exclusive=True)
     async def ask_gemini(self) -> None:
         chat_id_snapshot = self.current_chat_id
-        payload = [
-            {"role": t["role"], "parts": [{"text": t["text"]}]}
-            for t in self.history
-        ]
+
+        # Normalize multiturn talk to ensure alternating turns and leading user role
+        payload = []
+        for t in self.history:
+            if payload and payload[-1]["role"] == t["role"]:
+                payload[-1]["parts"][0]["text"] += "\n\n" + t["text"]
+            else:
+                payload.append({"role": t["role"], "parts": [{"text": t["text"]}]})
+
+        if payload and payload[0]["role"] != "user":
+            payload.insert(0, {"role": "user", "parts": [{"text": FORK_HEADER_TEXT}]})
 
         try:
             response = await asyncio.to_thread(

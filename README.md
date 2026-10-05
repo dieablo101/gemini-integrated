@@ -1,156 +1,173 @@
-# Gemini Textual TUI Client
+# Gemini
 
-A keyboard-centric, feature-rich Terminal User Interface (TUI) chat client for the Google Gemini API built with [Textual](https://textual.textualize.io/) and Python. Designed specifically for power users, developers, and Emacs enthusiasts who want fluid code-snippet staging, deep Git/filesystem awareness, and bidirectional editor integration.
+A terminal-based AI chat application built with **Textual** and the **Google GenAI SDK** (`gemini-3.8-flash`), featuring interactive chat branching (forking), code snippet insertion and extraction, Git tree exploration, and tight Emacs integration.
 
 ---
 
 ## Features
 
-- **Emacs-Inspired Navigation & Ergonomics:**
-  - Standard keybindings throughout text inputs (`C-a`, `C-e`, `C-p`, `C-n`, `C-f`, `C-b`, `M-f`, `M-b`, `C-k`, `C-u`, `M-d`, `C-w`, `M-w`, `C-y`, etc.).
-  - Two-key `C-c` leader prefixes for primary app actions.
-  - Interactive command palette bound to `M-x` (`Alt+x`).
+### 1. Interactive Chat Forking
+- Branch conversations at any arbitrary point (`C-.` or `C-c .`).
+- Card-based selection interface to cherry-pick turns from the conversation history.
+- Automatically inserts a fork header notice and preserves hierarchy relationships without immediately re-prompting the model.
+- Forked chats are assigned sub-chat hierarchy in the chat list.
 
-- **Bidirectional Emacs Integration & IPC:**
-  - Unix Domain Socket (`/tmp/gemini_textual.sock`) listener allowing external tools (like Emacs) to insert snippets directly into your prompt buffer.
-  - Frame & window introspection via `emacsclient`: yank responses or active snippets directly into active or selected Emacs buffers.
+### 2. File & Git Integration
+- **Git Tree Explorer (`C-c g` / `Ctrl+\`)**: Browse tracked and `.gitignore`-ignored files side-by-side. Supports full or partial tree visualization insertion and toggling entire subtrees.
+- **Insert File (`C-c f` / `Ctrl+f`)**: Insert any file from disk into your prompt with automatic syntax detection and line range tracking.
+- **Write Snippet to Disk (`C-c r` / `Ctrl+r`)**: Save the active code block directly to disk with overwrite protection and path auto-completion.
+- **Scoping**: Switch between a global working directory or chat-scoped working directories.
 
-- **Dynamic Snippet Staging System:**
-  - Insert code snippets using references like `{&snippet1}` inside your prompt.
-  - Automatic floating preview box displays and allows real-time edits to the snippet at the cursor.
-  - Accurate file-relative start and end line numbering in code fence headers.
+### 3. Snippet Management & Live Preview
+- Snippets use tokens (`{&snippet1}`, `{&snippet2}`) inside the prompt input.
+- Move the cursor onto a snippet token in the input box to open an editable, syntax-highlighted preview pane (`SnippetPreview`).
+- Dynamic Markdown code fence renderer hooks into line numbers to reflect real source line spans accurately.
 
-- **Git & Filesystem Intelligence:**
-  - **Interactive Git Tree Explorer (`C-c g` / `Ctrl+\`):** Dual-tree explorer displaying both Git-tracked files and `.gitignore`-ignored files. Select files individually or whole directories to inject ASCII project trees and staged file snippets directly into the prompt.
-  - **Insert File (`C-c f` / `Ctrl+f`):** Path auto-completion with language detection from file extensions.
-  - **Write to Disk (`C-c r` / `Ctrl+r`):** Save any selected code snippet from the chat feed directly to disk, with conflict detection and overwrite confirmation.
-  - Chat-scoped vs. global working directory tracking.
+### 4. Emacs Integration & Keybindings
+- **Unix Domain Socket Server** (`/tmp/gemini_textual.sock`): Allows external scripts or Emacs processes to push code selections directly into the active prompt input.
+- **Emacs Yank Integration (`C-c y` / `Ctrl+y`)**: Sends active code snippets or responses directly into an active Emacs buffer/window via `emacsclient`. When multiple frames/windows exist, an interactive frame selector dialog appears.
+- **Emacs Keybindings**: Full suite of readline/Emacs keybindings across input areas (`C-a`, `C-e`, `C-f`, `C-b`, `M-f`, `M-b`, `C-k`, `C-u`, `M-d`, `C-w`, `C-y`, `M-w`, `C-/`, `C-c` prefix chords).
+- **Command Palette (`M-x` / `Alt+x`)**: Built-in menu palette for discovering and executing commands.
 
-- **Chat Persistence & History Management:**
-  - Automatic JSON persistence under `chats/`.
-  - Full history drawer (`C-c b` / `Ctrl+b`) with live chat search, renaming (`r`), and deletion (`d` / `x`).
-  - Open full chat transcripts directly into your favorite editor/pager via `$EDITOR` (`C-c e`).
+### 5. Chat History & Persistence
+- Automatically saves conversations as JSON under `chats/`.
+- Visual tree display for parent chats and forks.
+- Renaming (`r` or `C-c t`) and deletion (`d`, `x`, `Delete`).
+- Automatic orphan resolution: If a parent chat is deleted, children gracefully detach to top-level chats.
 
 ---
 
-## Requirements
+## Installation
 
+### Prerequisites
 - Python 3.10+
-- A Google Gemini API Key (`GEMINI_API_KEY` set in your environment)
-- Optional: `git` and `emacsclient` for repository browsing and Emacs integration
+- A Google Gemini API key configured (via `GEMINI_API_KEY` environment variable).
+- Optional: `emacs` / `emacsclient` running as a daemon or server if using Emacs frame-pasting features.
 
-### Python Dependencies
+### Dependencies
+Install the required dependencies:
 
-- `textual`
-- `google-genai`
-- `pyperclip`
-- `rich`
+```bash
+pip install textual google-genai rich pyperclip
+```
 
----
+Ensure `forkit.py` is executable:
 
-## Installation & Setup
-
-1. **Clone the repository or save `gemini.py` locally:**
-
-   ```bash
-   git clone <repo-url>
-   cd <repo-folder>
-   ```
-
-2. **Set up a virtual environment and install dependencies:**
-
-   ```bash
-   python3 -m venv .venv
-   source .venv/bin/activate
-   pip install textual google-genai pyperclip rich
-   ```
-
-3. **Export your Gemini API Key:**
-
-   ```bash
-   export GEMINI_API_KEY="your-gemini-api-key-here"
-   ```
-
-4. **Run the application:**
-
-   ```bash
-   python gemini.py
-   ```
+```bash
+chmod +x forkit.py
+```
 
 ---
 
-## Keyboard Shortcuts
+## Usage
 
-### Global / Application Actions
+Set your Gemini API key and run the script:
 
-| Keybinding | Emacs Prefix | Action |
-|---|---|---|
-| `Alt+x` | — | Open Menu / Command Palette (`M-x`) |
-| `Ctrl+n` | `C-c n` | Start a new chat session |
-| `Ctrl+b` | `C-c b` | Toggle Chat History sidebar |
-| `Ctrl+t` | `C-c t` | Rename active chat session |
-| `Ctrl+f` | `C-c f` | Insert file from disk as a snippet |
-| `Ctrl+\` | `C-c g` | Open Interactive Git Tree Explorer |
-| `Ctrl+r` | `C-c r` | Save active snippet from feed to disk |
-| `Ctrl+y` | `C-c y` | Yank active snippet / response (copies to clipboard & Emacs) |
-| `Ctrl+e` | `C-c e` | Open conversation in `$EDITOR` / `$PAGER` |
-| `Escape` | — | Cycle focus (Feed Area ↔ Snippet Preview ↔ Prompt Input) |
-| `Ctrl+q` | — | Quit application |
+```bash
+export GEMINI_API_KEY="your-api-key-here"
+./forkit.py
+```
+
+### Remote Code Insertion (from Bash / External Tools)
+
+You can send text directly to the running application input buffer over the Unix socket:
+
+```bash
+python3 -c '
+import socket, json
+
+payload = {
+    "action": "insert",
+    "text": "def hello():\n    print(\"Hello world\")",
+    "lang": "python",
+    "file": "test.py",
+    "start_line": 1,
+    "end_line": 2
+}
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.connect("/tmp/gemini_textual.sock")
+s.sendall(json.dumps(payload).encode("utf-8"))
+s.close()
+'
+```
 
 ---
 
-### Text Input & Snippet Preview (Emacs Navigation)
+## Keybindings Reference
 
-| Key | Description |
-|---|---|
-| `Ctrl+a` / `Ctrl+e` | Move to start / end of line |
-| `Ctrl+f` / `Ctrl+b` | Move cursor character forward / backward |
-| `Alt+f` / `Alt+b` | Move cursor word forward / backward |
-| `Ctrl+p` / `Ctrl+n` | Move cursor line up / down (or jump into snippet preview) |
-| `Ctrl+Space` | Set selection mark |
-| `Ctrl+k` | Kill from cursor to end of line |
-| `Ctrl+u` | Kill from cursor to beginning of line |
-| `Alt+d` | Kill word forward |
-| `Ctrl+w` | Kill region (or kill word backward if no mark set) |
+### Global / Emacs Prefix (`C-c`)
+| Key | Command | Description |
+| :--- | :--- | :--- |
+| `Alt+x` / `M-x` | `command_palette` | Open Command Palette / Menu |
+| `C-c n` / `Ctrl+n` | `new_chat` | Start a new chat session |
+| `C-c b` / `Ctrl+b` | `toggle_history` | Toggle chat history list view |
+| `C-.` / `C-c .` | `fork_chat` | Enter fork mode / confirm fork |
+| `C-c y` / `Ctrl+y` | `copy_last_response` | Yank active snippet/response to clipboard & Emacs |
+| `C-c r` / `Ctrl+r` | `save_snippet_to_disk` | Save active snippet to disk |
+| `C-c f` / `Ctrl+f` | `insert_file_from_disk`| Insert a file as a snippet into prompt |
+| `C-c g` / `Ctrl+\` | `open_git_tree` | Open Git Tree modal dialog |
+| `C-c e` / `Ctrl+e` | `open_in_editor` | Open current chat transcript in `$EDITOR` |
+| `C-c t` / `Ctrl+t` | `rename_chat` | Rename current chat session |
+| `Escape` | `toggle_focus` | Cycle focus between Feed, Preview, and Input |
+| `Ctrl+q` | `quit` | Exit application |
+
+### Input Area (`ExpandingInput` & `SnippetPreview`)
+| Key | Action |
+| :--- | :--- |
+| `Enter` | Submit prompt to Gemini |
+| `Shift+Enter` / `Ctrl+j` | Insert a newline |
+| `Up` / `Ctrl+p` (line 0) | Focus Snippet Preview (when active) |
+| `Alt+n` / `Alt+p` | Select next / previous snippet in feed |
+| `Ctrl+Space` / `Ctrl+@` | Set selection mark |
+| `Ctrl+a` / `Ctrl+e` | Beginning / End of line |
+| `Alt+f` / `Alt+b` | Forward / Backward word |
+| `Ctrl+k` | Kill to end of line |
+| `Ctrl+u` | Kill to beginning of line |
+| `Alt+d` | Kill next word |
+| `Ctrl+w` | Cut selection or kill previous word |
+| `Ctrl+y` | Paste from system clipboard |
 | `Alt+w` | Copy selected region |
-| `Ctrl+y` | Paste / Yank from clipboard |
 | `Ctrl+/` | Undo |
-| `Enter` | Submit prompt |
-| `Shift+Enter` / `Ctrl+j` | Insert newline |
 
----
+### Feed Area (`FeedArea`)
+| Key | Action |
+| :--- | :--- |
+| `j` / `k` / `Down` / `Up` | Scroll feed down / up |
+| `Alt+n` / `Alt+p` | Navigate through syntax-highlighted code fences |
+| `Ctrl+r` | Save the currently highlighted code fence to disk |
+| `Ctrl+f` | Insert a file into prompt |
+| `Escape` / `i` / `Ctrl+o` | Return focus to prompt input |
+| `.` / `f` | Initiate chat fork mode |
 
-### Feed Navigation
+### Fork Mode (`ForkTurnCard`)
+| Key | Action |
+| :--- | :--- |
+| `Space` / Click | Toggle selection of conversation turn card |
+| `Alt+n` / `Alt+down` / `j` / `Down` | Move to next turn card |
+| `Alt+p` / `Alt+up` / `k` / `Up` | Move to previous turn card |
+| `a` | Toggle selection of all turns |
+| `Enter` | Confirm turn selection and proceed to fork naming |
+| `Escape` / `C-g` | Cancel fork mode |
 
-| Key | Description |
-|---|---|
-| `j` / `k` or `Down` / `Up` | Scroll conversation up / down |
-| `PageUp` / `PageDown` | Scroll page up / down |
-| `Home` / `End` | Jump to conversation start / end |
-| `Alt+n` / `Alt+Down` | Focus / cycle to next code snippet block |
-| `Alt+p` / `Alt+Up` | Focus / cycle to previous code snippet block |
-| `i` / `Ctrl+o` / `Escape` | Return focus to prompt input |
-
----
-
-### History Drawer Navigation
-
-| Key | Description |
-|---|---|
-| `j` / `k` or `Down` / `Up` | Select chat session |
+### Chat History View (`HistoryList`)
+| Key | Action |
+| :--- | :--- |
+| `j` / `k` / `Down` / `Up` | Navigate chat entries |
 | `Enter` | Load highlighted chat session |
-| `r` | Rename highlighted chat session |
-| `d` / `x` / `Delete` | Delete highlighted chat session |
-| `Escape` / `q` / `Ctrl+g` | Close history drawer |
+| `d` / `x` / `Delete` | Delete highlighted chat |
+| `r` | Rename highlighted chat |
+| `Escape` / `q` / `C-g` | Exit history view back to conversation |
 
 ---
 
-### Path & Directory Completion Inputs
+## File Structure
 
-- **Tab (1x):** Auto-completes directory or file path inline.
-- **Tab (2x quickly):** Navigates focus to the next UI element.
-
----
+```text
+├── gemini.py             # Main application executable
+└── chats/                # Conversation sessions stored as JSON
+    ├── <id>.json
+    └── ...
+```
 
 ## Emacs Integration Setup (Optional)
 

@@ -51,10 +51,10 @@ Install the required dependencies:
 pip install textual google-genai rich pyperclip
 ```
 
-Ensure `forkit.py` is executable:
+Ensure `gemini.py` is executable:
 
 ```bash
-chmod +x forkit.py
+chmod +x gemini.py
 ```
 
 ---
@@ -65,7 +65,7 @@ Set your Gemini API key and run the script:
 
 ```bash
 export GEMINI_API_KEY="your-api-key-here"
-./forkit.py
+./gemini.py
 ```
 
 ### Remote Code Insertion (from Bash / External Tools)

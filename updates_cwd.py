@@ -39,15 +39,9 @@ from textual.widgets.option_list import Option
 from textual.widgets.text_area import Selection
 from textual.widgets.tree import TreeNode
 
-# User-specific directory and socket paths
-GEMINI_HOME = Path.home() / ".gemini"
-GEMINI_HOME.mkdir(mode=0o700, parents=True, exist_ok=True)
-
-CHATS_DIR = GEMINI_HOME / "chats"
-CHATS_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
-
-STATE_FILE = GEMINI_HOME / "state.json"
-SOCKET_PATH = GEMINI_HOME / "gemini_textual.sock"
+CHATS_DIR = Path("chats")
+CHATS_DIR.mkdir(exist_ok=True)
+SOCKET_PATH = Path("/tmp/gemini_textual.sock")
 
 FORK_HEADER_TEXT = "## This chat is a fork of another / previous chat"
 
@@ -642,6 +636,7 @@ class ForkTurnCard(Vertical):
     def on_card_click(self, event: events.Click) -> None:
         event.stop()
         self.focus()
+        # If clicking specifically on or within the header bar, toggle the selection
         curr = event.widget
         while curr and curr is not self:
             if "fork_turn_header" in curr.classes:
@@ -2417,43 +2412,14 @@ class ChatApp(App):
     async def on_mount(self) -> None:
         await self.start_socket_server()
 
-        last_active_id = self._read_active_chat_from_state()
-        if last_active_id and self._get_chat_file(last_active_id).exists():
-            await self.load_chat(last_active_id)
+        files = self._get_sorted_files()
+        if files:
+            first_id = files[0].stem
+            await self.load_chat(first_id)
         else:
-            files = self._get_sorted_files()
-            if files:
-                first_id = files[0].stem
-                await self.load_chat(first_id)
-            else:
-                self._start_new_chat(title="")
+            self._start_new_chat(title="")
 
         self.query_one("#input").focus()
-
-    # --- Persistent Active Chat State Management ---
-
-    def _read_active_chat_from_state(self) -> str | None:
-        if STATE_FILE.exists():
-            try:
-                data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
-                return data.get("active_chat")
-            except Exception:
-                pass
-        return None
-
-    def _save_active_chat_to_state(self, chat_id: str) -> None:
-        try:
-            state: dict = {}
-            if STATE_FILE.exists():
-                try:
-                    state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
-                except Exception:
-                    state = {}
-            state["active_chat"] = chat_id
-            STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
-            STATE_FILE.chmod(0o600)
-        except Exception:
-            pass
 
     # --- Working Directory Scope Management ---
 
@@ -2478,7 +2444,6 @@ class ChatApp(App):
                 self._handle_socket_client,
                 path=str(SOCKET_PATH),
             )
-            SOCKET_PATH.chmod(0o600)
         except Exception as e:
             self.notify(f"Socket server error: {e}", severity="error")
 
@@ -2606,8 +2571,6 @@ class ChatApp(App):
 
     async def load_chat(self, chat_id: str) -> None:
         self.current_chat_id = chat_id
-        self._save_active_chat_to_state(chat_id)
-
         path = self._get_chat_file(chat_id)
         if path.exists():
             data = json.loads(path.read_text())
@@ -2649,7 +2612,6 @@ class ChatApp(App):
             "messages": self.history,
         }
         path.write_text(json.dumps(data, indent=2))
-        self._save_active_chat_to_state(self.current_chat_id)
 
     async def delete_highlighted_chat(self) -> None:
         history_widget = self.query_one("#history", HistoryList)
@@ -2875,7 +2837,6 @@ class ChatApp(App):
         input_widget.reset_snippets()
         self.query_one("#snippet_preview", SnippetPreview).hide_preview()
         input_widget.focus()
-        self._save_active_chat_to_state(self.current_chat_id)
 
     def action_save_snippet_to_disk(self) -> None:
         """Write active feed snippet directly to a file on disk with overwrite protection."""

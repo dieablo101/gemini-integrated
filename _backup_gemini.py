@@ -24,6 +24,7 @@ from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widgets import (
     Button,
+    Checkbox,
     Footer,
     Input,
     Label,
@@ -39,15 +40,9 @@ from textual.widgets.option_list import Option
 from textual.widgets.text_area import Selection
 from textual.widgets.tree import TreeNode
 
-# User-specific directory and socket paths
-GEMINI_HOME = Path.home() / ".gemini"
-GEMINI_HOME.mkdir(mode=0o700, parents=True, exist_ok=True)
-
-CHATS_DIR = GEMINI_HOME / "chats"
-CHATS_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
-
-STATE_FILE = GEMINI_HOME / "state.json"
-SOCKET_PATH = GEMINI_HOME / "gemini_textual.sock"
+CHATS_DIR = Path("chats")
+CHATS_DIR.mkdir(exist_ok=True)
+SOCKET_PATH = Path("/tmp/gemini_textual.sock")
 
 FORK_HEADER_TEXT = "## This chat is a fork of another / previous chat"
 
@@ -642,6 +637,7 @@ class ForkTurnCard(Vertical):
     def on_card_click(self, event: events.Click) -> None:
         event.stop()
         self.focus()
+        # If clicking specifically on or within the header bar, toggle the selection
         curr = event.widget
         while curr and curr is not self:
             if "fork_turn_header" in curr.classes:
@@ -671,10 +667,12 @@ class WriteSnippetModal(ModalScreen[dict | None]):
     #save_dialog Input {
         margin-bottom: 1;
     }
+    #chat_scoped_cb {
+        margin: 1 0;
+    }
     #dialog_buttons {
         width: 100%;
         align-horizontal: right;
-        margin-top: 1;
     }
     #dialog_buttons Button {
         margin-left: 1;
@@ -690,10 +688,12 @@ class WriteSnippetModal(ModalScreen[dict | None]):
         self,
         snippet_content: str,
         initial_dir: str,
+        is_chat_scoped: bool = False,
     ) -> None:
         super().__init__()
         self.snippet_content = snippet_content
         self.initial_dir = initial_dir
+        self.is_chat_scoped = is_chat_scoped
 
     def compose(self) -> ComposeResult:
         with Vertical(id="save_dialog"):
@@ -701,6 +701,7 @@ class WriteSnippetModal(ModalScreen[dict | None]):
             yield DirectoryPathInput(value=self.initial_dir, id="dir_input")
             yield Label("Filename to write:")
             yield Input(placeholder="e.g. main.py, server.go, script.sh", id="filename_input")
+            yield Checkbox("Chat session specific working directory", value=self.is_chat_scoped, id="chat_scoped_cb")
             with Horizontal(id="dialog_buttons"):
                 yield Button("Cancel", variant="error", id="cancel_btn")
                 yield Button("Write to Disk", variant="primary", id="confirm_btn")
@@ -727,6 +728,7 @@ class WriteSnippetModal(ModalScreen[dict | None]):
     def _submit(self) -> None:
         working_dir = self.query_one("#dir_input", DirectoryPathInput).value.strip()
         filename = self.query_one("#filename_input", Input).value.strip()
+        chat_scoped = self.query_one("#chat_scoped_cb", Checkbox).value
 
         if not filename:
             self.notify("Filename cannot be blank.", severity="error")
@@ -739,6 +741,7 @@ class WriteSnippetModal(ModalScreen[dict | None]):
         self.dismiss({
             "working_dir": working_dir,
             "filename": filename,
+            "chat_scoped": chat_scoped,
             "content": self.snippet_content,
         })
 
@@ -764,10 +767,12 @@ class InsertFileModal(ModalScreen[dict | None]):
     #insert_file_dialog Input {
         margin-bottom: 1;
     }
+    #insert_chat_scoped_cb {
+        margin: 1 0;
+    }
     #dialog_buttons {
         width: 100%;
         align-horizontal: right;
-        margin-top: 1;
     }
     #dialog_buttons Button {
         margin-left: 1;
@@ -779,9 +784,10 @@ class InsertFileModal(ModalScreen[dict | None]):
         Binding("ctrl+g", "cancel", "Cancel"),
     ]
 
-    def __init__(self, initial_dir: str) -> None:
+    def __init__(self, initial_dir: str, is_chat_scoped: bool = False) -> None:
         super().__init__()
         self.initial_dir = initial_dir
+        self.is_chat_scoped = is_chat_scoped
 
     def compose(self) -> ComposeResult:
         with Vertical(id="insert_file_dialog"):
@@ -793,6 +799,7 @@ class InsertFileModal(ModalScreen[dict | None]):
                 id="file_input",
                 base_dir_getter=self._get_working_dir,
             )
+            yield Checkbox("Chat session specific working directory", value=self.is_chat_scoped, id="insert_chat_scoped_cb")
             with Horizontal(id="dialog_buttons"):
                 yield Button("Cancel", variant="error", id="cancel_btn")
                 yield Button("Insert File", variant="primary", id="confirm_btn")
@@ -828,6 +835,7 @@ class InsertFileModal(ModalScreen[dict | None]):
     def _submit(self) -> None:
         working_dir = self.query_one("#dir_input", DirectoryPathInput).value.strip()
         file_path_raw = self.query_one("#file_input", FilePathInput).value.strip()
+        chat_scoped = self.query_one("#insert_chat_scoped_cb", Checkbox).value
 
         if not file_path_raw:
             self.notify("File path cannot be blank.", severity="error")
@@ -858,6 +866,7 @@ class InsertFileModal(ModalScreen[dict | None]):
             "working_dir": working_dir,
             "file_path": str(resolved_file),
             "rel_path": file_path_raw,
+            "chat_scoped": chat_scoped,
         })
 
 class GitTreeModal(ModalScreen[dict | None]):
@@ -924,10 +933,15 @@ class GitTreeModal(ModalScreen[dict | None]):
     #tree_options_row RadioButton {
         margin-right: 2;
     }
+    #git_chat_scoped_cb {
+        height: auto;
+        margin-top: 0;
+        margin-bottom: 0;
+    }
     #status_label {
         height: auto;
         color: #888888;
-        margin-top: 1;
+        margin-top: 0;
         margin-bottom: 1;
     }
     #git_buttons {
@@ -945,9 +959,10 @@ class GitTreeModal(ModalScreen[dict | None]):
         Binding("ctrl+g", "cancel", "Cancel"),
     ]
 
-    def __init__(self, initial_dir: str) -> None:
+    def __init__(self, initial_dir: str, is_chat_scoped: bool = False) -> None:
         super().__init__()
         self.repo_dir = initial_dir
+        self.is_chat_scoped = is_chat_scoped
         self.tracked_files: list[str] = []
         self.ignored_files: list[str] = []
         self.selected_files: set[str] = set()
@@ -974,6 +989,7 @@ class GitTreeModal(ModalScreen[dict | None]):
                     yield RadioButton("Selected Files Only", id="radio_selected")
                     yield RadioButton("None", id="radio_none")
 
+            yield Checkbox("Chat session specific working directory", value=self.is_chat_scoped, id="git_chat_scoped_cb")
             yield Label("0 files selected. [Space]/Click to toggle file/folder, [a] all in tree", id="status_label")
 
             with Horizontal(id="git_buttons"):
@@ -990,10 +1006,6 @@ class GitTreeModal(ModalScreen[dict | None]):
         raw_dir = self.query_one("#git_dir_input", DirectoryPathInput).value.strip()
         expanded = os.path.expanduser(raw_dir) if raw_dir else os.getcwd()
         self.repo_dir = expanded
-
-        # Persist repo path to chat upon explicit or implicit scan
-        if hasattr(self.app, "set_working_dir"):
-            self.app.set_working_dir(self.repo_dir)
 
         tree_tracked = self.query_one("#tree_tracked", Tree)
         tree_ignored = self.query_one("#tree_ignored", Tree)
@@ -1186,6 +1198,7 @@ class GitTreeModal(ModalScreen[dict | None]):
 
     def _submit(self) -> None:
         radios = self.query_one("#tree_mode_radios", RadioSet)
+        chat_scoped = self.query_one("#git_chat_scoped_cb", Checkbox).value
 
         tree_mode = "full"
         if radios.pressed_button:
@@ -1200,6 +1213,7 @@ class GitTreeModal(ModalScreen[dict | None]):
             "tracked_files": self.tracked_files,
             "ignored_files": self.ignored_files,
             "tree_mode": tree_mode,
+            "chat_scoped": chat_scoped,
         })
 
 class TitlePromptModal(ModalScreen[str | None]):
@@ -2299,10 +2313,12 @@ class ChatApp(App):
         self.current_chat_id: str = ""
         self.current_chat_title: str = ""
         self.current_chat_parent_id: str | None = None
-        self.current_chat_working_dir: str | None = None
         self.history: list[dict] = []
         self._server: asyncio.AbstractServer | None = None
         self._prefix_c_c: bool = False
+
+        self.global_working_dir: str = os.getcwd()
+        self.current_chat_working_dir: str | None = None
 
     def copy_to_clipboard(self, text: str) -> None:
         try:
@@ -2417,54 +2433,29 @@ class ChatApp(App):
     async def on_mount(self) -> None:
         await self.start_socket_server()
 
-        last_active_id = self._read_active_chat_from_state()
-        if last_active_id and self._get_chat_file(last_active_id).exists():
-            await self.load_chat(last_active_id)
+        files = self._get_sorted_files()
+        if files:
+            first_id = files[0].stem
+            await self.load_chat(first_id)
         else:
-            files = self._get_sorted_files()
-            if files:
-                first_id = files[0].stem
-                await self.load_chat(first_id)
-            else:
-                self._start_new_chat(title="")
+            self._start_new_chat(title="")
 
         self.query_one("#input").focus()
-
-    # --- Persistent Active Chat State Management ---
-
-    def _read_active_chat_from_state(self) -> str | None:
-        if STATE_FILE.exists():
-            try:
-                data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
-                return data.get("active_chat")
-            except Exception:
-                pass
-        return None
-
-    def _save_active_chat_to_state(self, chat_id: str) -> None:
-        try:
-            state: dict = {}
-            if STATE_FILE.exists():
-                try:
-                    state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
-                except Exception:
-                    state = {}
-            state["active_chat"] = chat_id
-            STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
-            STATE_FILE.chmod(0o600)
-        except Exception:
-            pass
 
     # --- Working Directory Scope Management ---
 
     def get_effective_working_dir(self) -> str:
         if self.current_chat_working_dir:
             return self.current_chat_working_dir
-        return os.getcwd()
+        return self.global_working_dir or os.getcwd()
 
-    def set_working_dir(self, directory: str) -> None:
+    def set_working_dir(self, directory: str, chat_scoped: bool) -> None:
         expanded = os.path.expanduser(directory.strip())
-        self.current_chat_working_dir = expanded
+        if chat_scoped:
+            self.current_chat_working_dir = expanded
+        else:
+            self.global_working_dir = expanded
+            self.current_chat_working_dir = None
         self.save_current_chat()
 
     # --- Unix Domain Socket Server ---
@@ -2478,7 +2469,6 @@ class ChatApp(App):
                 self._handle_socket_client,
                 path=str(SOCKET_PATH),
             )
-            SOCKET_PATH.chmod(0o600)
         except Exception as e:
             self.notify(f"Socket server error: {e}", severity="error")
 
@@ -2606,8 +2596,6 @@ class ChatApp(App):
 
     async def load_chat(self, chat_id: str) -> None:
         self.current_chat_id = chat_id
-        self._save_active_chat_to_state(chat_id)
-
         path = self._get_chat_file(chat_id)
         if path.exists():
             data = json.loads(path.read_text())
@@ -2627,7 +2615,7 @@ class ChatApp(App):
         self.query_one("#snippet_preview", SnippetPreview).hide_preview()
 
     def save_current_chat(self) -> None:
-        if not self.current_chat_id:
+        if not self.current_chat_id or not self.history:
             return
 
         path = self._get_chat_file(self.current_chat_id)
@@ -2649,7 +2637,6 @@ class ChatApp(App):
             "messages": self.history,
         }
         path.write_text(json.dumps(data, indent=2))
-        self._save_active_chat_to_state(self.current_chat_id)
 
     async def delete_highlighted_chat(self) -> None:
         history_widget = self.query_one("#history", HistoryList)
@@ -2791,13 +2778,11 @@ class ChatApp(App):
         self.save_current_chat()
 
         parent_chat_id = self.current_chat_id
-        parent_working_dir = self.current_chat_working_dir
         new_chat_id = uuid4().hex[:8]
 
         self.current_chat_id = new_chat_id
         self.current_chat_title = fork_title
         self.current_chat_parent_id = parent_chat_id
-        self.current_chat_working_dir = parent_working_dir
         self.history = selected_turns
 
         # Persist new forked chat
@@ -2875,7 +2860,6 @@ class ChatApp(App):
         input_widget.reset_snippets()
         self.query_one("#snippet_preview", SnippetPreview).hide_preview()
         input_widget.focus()
-        self._save_active_chat_to_state(self.current_chat_id)
 
     def action_save_snippet_to_disk(self) -> None:
         """Write active feed snippet directly to a file on disk with overwrite protection."""
@@ -2887,6 +2871,7 @@ class ChatApp(App):
             return
 
         initial_dir = self.get_effective_working_dir()
+        is_chat_scoped = self.current_chat_working_dir is not None
 
         def on_save_modal_result(result: dict | None) -> None:
             if not result:
@@ -2894,6 +2879,7 @@ class ChatApp(App):
 
             working_dir = result["working_dir"]
             filename = result["filename"]
+            chat_scoped = result["chat_scoped"]
             code = result["content"]
 
             base = Path(os.path.expanduser(str(working_dir).strip())).resolve()
@@ -2902,7 +2888,7 @@ class ChatApp(App):
             def do_write() -> None:
                 try:
                     written_path = write_code_to_disk(working_dir, filename, code)
-                    self.set_working_dir(working_dir)
+                    self.set_working_dir(working_dir, chat_scoped)
                     self.notify(f"Saved: {written_path}", timeout=3.5)
                 except Exception as e:
                     self.notify(f"Failed to write file: {e}", severity="error")
@@ -2925,6 +2911,7 @@ class ChatApp(App):
             WriteSnippetModal(
                 snippet_content=content,
                 initial_dir=initial_dir,
+                is_chat_scoped=is_chat_scoped,
             ),
             callback=on_save_modal_result,
         )
@@ -2932,6 +2919,7 @@ class ChatApp(App):
     def action_insert_file_from_disk(self) -> None:
         """Prompt user to select a file from disk and insert it as a snippet."""
         initial_dir = self.get_effective_working_dir()
+        is_chat_scoped = self.current_chat_working_dir is not None
 
         def on_file_result(result: dict | None) -> None:
             if not result:
@@ -2940,8 +2928,9 @@ class ChatApp(App):
             working_dir = result["working_dir"]
             file_path_str = result["file_path"]
             rel_path = result["rel_path"]
+            chat_scoped = result["chat_scoped"]
 
-            self.set_working_dir(working_dir)
+            self.set_working_dir(working_dir, chat_scoped)
 
             target_file = Path(file_path_str)
             try:
@@ -2985,13 +2974,14 @@ class ChatApp(App):
             self.notify(f"Inserted {tag} ({display_path})")
 
         self.push_screen(
-            InsertFileModal(initial_dir=initial_dir),
+            InsertFileModal(initial_dir=initial_dir, is_chat_scoped=is_chat_scoped),
             callback=on_file_result,
         )
 
     def action_open_git_tree(self) -> None:
         """Scans and presents Git repository tree with selectable files."""
         initial_dir = self.get_effective_working_dir()
+        is_chat_scoped = self.current_chat_working_dir is not None
 
         def on_git_tree_result(result: dict | None) -> None:
             if not result:
@@ -3002,8 +2992,9 @@ class ChatApp(App):
             tracked_files: list[str] = result["tracked_files"]
             ignored_files: list[str] = result["ignored_files"]
             tree_mode: str = result["tree_mode"]
+            chat_scoped: bool = result["chat_scoped"]
 
-            self.set_working_dir(repo_dir)
+            self.set_working_dir(repo_dir, chat_scoped)
 
             input_widget = self.query_one("#input", ExpandingInput)
             preview_widget = self.query_one("#snippet_preview", SnippetPreview)
@@ -3069,7 +3060,7 @@ class ChatApp(App):
             self.notify(f"Inserted tree & {len(selected_files)} file(s).")
 
         self.push_screen(
-            GitTreeModal(initial_dir=initial_dir),
+            GitTreeModal(initial_dir=initial_dir, is_chat_scoped=is_chat_scoped),
             callback=on_git_tree_result,
         )
 

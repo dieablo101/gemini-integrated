@@ -22,6 +22,7 @@ from textual.command import CommandPalette
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.message import Message
 from textual.screen import ModalScreen
+from textual.timer import Timer
 from textual.widgets import (
     Button,
     Footer,
@@ -31,6 +32,7 @@ from textual.widgets import (
     OptionList,
     RadioButton,
     RadioSet,
+    Static,
     TextArea,
     Tree,
 )
@@ -50,6 +52,10 @@ STATE_FILE = GEMINI_HOME / "state.json"
 SOCKET_PATH = GEMINI_HOME / "gemini_textual.sock"
 
 FORK_HEADER_TEXT = "## This chat is a fork of another / previous chat"
+
+SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
+DEFAULT_WINDOW_CAPACITY = 10
 
 # ---------------------------------------------------------------------------
 # Reusable Core File & Git Services (UI & Gemini Tool Use)
@@ -219,6 +225,10 @@ def _enhanced_markdown_fence_render(self: MarkdownFence) -> RenderableType:
 
 MarkdownFence.render = _enhanced_markdown_fence_render
 
+# ---------------------------------------------------------------------------
+# Event & Message System
+# ---------------------------------------------------------------------------
+
 class RemoteInsert(Message):
     """Event posted when external process sends text to insert."""
     def __init__(
@@ -235,6 +245,30 @@ class RemoteInsert(Message):
         self.file = file
         self.start_line = start_line
         self.end_line = end_line
+
+class RequestPhaseUpdate(Message):
+    """Event posted when Gemini API request phase changes (connecting, waiting)."""
+    def __init__(self, phase: str) -> None:
+        super().__init__()
+        self.phase = phase
+
+class RequestFinished(Message):
+    """Event posted when Gemini API returns full response."""
+    def __init__(self, full_text: str, elapsed: float, words: int) -> None:
+        super().__init__()
+        self.full_text = full_text
+        self.elapsed = elapsed
+        self.words = words
+
+class RequestFailed(Message):
+    """Event posted when Gemini API request encounters an error."""
+    def __init__(self, error_message: str) -> None:
+        super().__init__()
+        self.error_message = error_message
+
+# ---------------------------------------------------------------------------
+# Modals & Dialog Widgets
+# ---------------------------------------------------------------------------
 
 class MenuPalette(CommandPalette):
     """Command palette customized as the Emacs-style Menu (M-x)."""
@@ -991,7 +1025,6 @@ class GitTreeModal(ModalScreen[dict | None]):
         expanded = os.path.expanduser(raw_dir) if raw_dir else os.getcwd()
         self.repo_dir = expanded
 
-        # Persist repo path to chat upon explicit or implicit scan
         if hasattr(self.app, "set_working_dir"):
             self.app.set_working_dir(self.repo_dir)
 
@@ -1643,7 +1676,7 @@ class SnippetPreview(EmacsBaseTextArea):
                 self._clear_mark()
                 self.app.notify("Quit", timeout=1.0)
             else:
-                self.app.query_one("#input", ExpandingInput).focus()
+                self.app.query_one("#feed", FeedArea).focus()
             return
 
         super()._on_key(event)
@@ -1846,58 +1879,539 @@ class ExpandingInput(EmacsBaseTextArea):
 
         self.app.query_one("#snippet_preview", SnippetPreview).hide_preview()
 
-class FeedArea(VerticalScroll):
-    """Feed container supporting standard rich Markdown views, code snippet navigation,
+# ---------------------------------------------------------------------------
+# Feed View & Response Area (Strict 10-Widget Sliding Window & Smooth Slide)
+# ---------------------------------------------------------------------------
 
-    and an interactive checkbox mode for chat forking.
+class FeedArea(VerticalScroll):
+    """Feed featuring Strict 10-Widget Sliding Window, Incremental DOM Sliders,
+    and Debounced Boundary Hold for Ctrl+Shift+PageUp/Down.
     """
 
     can_focus = True
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
-        self._raw_markdown = ""
         self.selected_snippet_index: int = -1
         self.fork_mode: bool = False
 
+        # Conversation state with discrete turn tracking
+        self._all_messages: list[dict] = []
+        self._win_start: int = 0
+        self._win_end: int = 0
+        self.active_turn_index: int = 0
+
+        # State lock preventing overlapping mutations
+        self._window_busy: bool = False
+
+        # Ctrl+Shift+Page boundary release debounce timer
+        self._ctrl_page_timer: Timer | None = None
+        self._pending_edge_direction: int = 0
+
     def compose(self) -> ComposeResult:
-        yield Markdown(id="feed_markdown")
+        yield Vertical(id="turns_container")
         yield Vertical(id="fork_view")
 
     def on_mount(self) -> None:
         self.query_one("#fork_view").styles.display = "none"
 
-    def clear(self) -> None:
-        self.exit_fork_mode()
-        self._raw_markdown = ""
-        self.selected_snippet_index = -1
-        try:
-            self.query_one("#feed_markdown", Markdown).update("")
-        except Exception:
-            pass
+    def get_tier_config(self) -> tuple[int, int]:
+        """Strict 10-widget maximum window capacity with 1-turn incremental stepping."""
+        return (DEFAULT_WINDOW_CAPACITY, 1)
 
-    def _scroll_to_bottom(self) -> None:
-        self.scroll_end(animate=False)
-
-    async def set_messages(self, messages: list[dict]) -> None:
-        self.exit_fork_mode()
+    @property
+    def _raw_markdown(self) -> str:
+        """Dynamically builds full markdown representation of all messages in history."""
         blocks = []
-        for turn in messages:
+        for turn in self._all_messages:
             label = "You" if turn["role"] == "user" else "Gemini"
             blocks.append(f"### {label}\n\n{turn['text']}")
-        self._raw_markdown = "\n\n---\n\n".join(blocks)
-        self.selected_snippet_index = -1
-        md = self.query_one("#feed_markdown", Markdown)
-        await md.update(self._raw_markdown)
-        self.call_after_refresh(self._scroll_to_bottom)
+        return "\n\n---\n\n".join(blocks)
 
-    async def append_message(self, sender: str, text: str) -> None:
-        prefix = "\n\n---\n\n" if self._raw_markdown else ""
-        header = f"### {sender}\n\n"
-        self._raw_markdown += f"{prefix}{header}{text}"
-        md = self.query_one("#feed_markdown", Markdown)
-        await md.update(self._raw_markdown)
-        self.call_after_refresh(self._scroll_to_bottom)
+    def clear(self) -> None:
+        self.exit_fork_mode()
+        self._all_messages.clear()
+        self._win_start = 0
+        self._win_end = 0
+        self.active_turn_index = 0
+        self._window_busy = False
+        self._pending_edge_direction = 0
+        if self._ctrl_page_timer:
+            self._ctrl_page_timer.stop()
+            self._ctrl_page_timer = None
+        self.selected_snippet_index = -1
+        if hasattr(self.app, "hide_status"):
+            self.app.hide_status()
+
+        self.query_one("#turns_container", Vertical).remove_children()
+
+    def _format_turn_markdown(self, sender: str, text: str) -> str:
+        return f"### {sender}\n\n{text}\n\n---"
+
+    def _create_turn_widget(self, idx: int) -> Markdown:
+        """Creates a turn Markdown widget targeting its deterministic DOM target id."""
+        turn = self._all_messages[idx]
+        turn_id = turn.get("turn_id")
+        if not turn_id:
+            turn_id = f"turn_{uuid4().hex[:8]}"
+            turn["turn_id"] = turn_id
+
+        sender = "You" if turn["role"] == "user" else "Gemini"
+        md_text = self._format_turn_markdown(sender, turn["text"])
+        widget = Markdown(md_text, classes="turn_block", id=turn_id)
+        widget.data = {"turn_index": idx, "turn_id": turn_id}
+        return widget
+
+    def set_messages(self, messages: list[dict]) -> None:
+        """Loads chat history through the sliding window target engine."""
+        self.exit_fork_mode()
+        if hasattr(self.app, "hide_status"):
+            self.app.hide_status()
+
+        self.selected_snippet_index = -1
+        self._run_target_mutation("reset_chat", new_messages=messages)
+
+    def _get_target_widget(self, idx: int) -> Markdown | None:
+        if 0 <= idx < len(self._all_messages):
+            turn_id = self._all_messages[idx].get("turn_id")
+            if turn_id:
+                try:
+                    return self.query_one(f"#{turn_id}", Markdown)
+                except Exception:
+                    return None
+        return None
+
+    def _get_current_visible_turn_index(self) -> int:
+        """Returns the index of the turn currently at the viewport top."""
+        container = self.query_one("#turns_container", Vertical)
+        children = list(container.children)
+        if not children:
+            return 0
+
+        curr_y = self.scroll_y
+        for child in children:
+            r = child.virtual_region
+            if r.y <= curr_y < (r.y + r.height):
+                return child.data.get("turn_index", self.active_turn_index)
+
+        closest_child = min(children, key=lambda c: abs(c.virtual_region.y - curr_y))
+        return closest_child.data.get("turn_index", self.active_turn_index)
+
+    @work(exclusive=True)
+    async def _run_target_mutation(
+        self,
+        action: str,
+        new_messages: list[dict] | None = None,
+        target_index: int | None = None,
+        lock_turn_index: int | None = None,
+    ) -> None:
+        """Exclusive target-anchored state machine maintaining strict 10-turn window."""
+        if self._window_busy:
+            return
+
+        self._window_busy = True
+        container = self.query_one("#turns_container", Vertical)
+        capacity, batch_size = self.get_tier_config()
+
+        try:
+            if action == "reset_chat":
+                self._all_messages = list(new_messages or [])
+                total = len(self._all_messages)
+
+                await container.remove_children()
+
+                if total > capacity:
+                    self._win_start = total - capacity
+                    self._win_end = total
+                else:
+                    self._win_start = 0
+                    self._win_end = total
+
+                for idx in range(self._win_start, self._win_end):
+                    await container.mount(self._create_turn_widget(idx))
+
+                settle_event = asyncio.Event()
+
+                def _on_initial_settle() -> None:
+                    try:
+                        if total > 0:
+                            self.active_turn_index = total - 1
+                            target_w = self._get_target_widget(self.active_turn_index)
+                            if target_w:
+                                self.scroll_to_widget(target_w, top=True, animate=False)
+                            else:
+                                self.scroll_end(animate=False)
+                        else:
+                            self.active_turn_index = 0
+                            self.scroll_to(y=0, animate=False)
+                    finally:
+                        settle_event.set()
+
+                self.call_after_refresh(_on_initial_settle)
+                await settle_event.wait()
+
+            elif action == "scroll_to_target":
+                req_idx = max(0, min(len(self._all_messages) - 1, target_index or 0))
+                total = len(self._all_messages)
+
+                # Explicit ceiling settlement
+                if req_idx == 0 and self._win_start == 0:
+                    self.active_turn_index = 0
+                    self.scroll_to(y=0, animate=False)
+                    return
+
+                # CASE 1: Target is already loaded inside the current 10-turn window
+                if self._win_start <= req_idx < self._win_end:
+                    self.active_turn_index = req_idx
+                    target_w = self._get_target_widget(req_idx)
+                    if target_w:
+                        self.scroll_to_widget(target_w, top=True, animate=False)
+                    return
+
+                # CASE 2: Forward 1-turn boundary slide
+                if req_idx >= self._win_end and req_idx < total:
+                    new_widget = self._create_turn_widget(req_idx)
+                    await container.mount(new_widget)
+                    self._win_end += 1
+
+                    while (self._win_end - self._win_start) > capacity and len(container.children) > 0:
+                        first_child = container.children[0]
+                        await first_child.remove()
+                        self._win_start += 1
+
+                    settle_event = asyncio.Event()
+
+                    def _on_forward_settle() -> None:
+                        try:
+                            self.active_turn_index = req_idx
+                            target_w = self._get_target_widget(req_idx)
+                            if target_w:
+                                self.scroll_to_widget(target_w, top=True, animate=False)
+                        finally:
+                            settle_event.set()
+
+                    self.call_after_refresh(_on_forward_settle)
+                    await settle_event.wait()
+                    return
+
+                # CASE 3: Backward 1-turn boundary slide
+                if req_idx < self._win_start and req_idx >= 0:
+                    new_widget = self._create_turn_widget(req_idx)
+                    first_child = container.children[0] if container.children else None
+                    if first_child:
+                        await container.mount(new_widget, before=first_child)
+                    else:
+                        await container.mount(new_widget)
+                    self._win_start = req_idx
+
+                    while (self._win_end - self._win_start) > capacity and len(container.children) > 0:
+                        last_child = container.children[-1]
+                        await last_child.remove()
+                        self._win_end -= 1
+
+                    settle_event = asyncio.Event()
+
+                    def _on_backward_settle() -> None:
+                        try:
+                            self.active_turn_index = req_idx
+                            if req_idx == 0:
+                                self.scroll_to(y=0, animate=False)
+                            else:
+                                target_w = self._get_target_widget(req_idx)
+                                if target_w:
+                                    self.scroll_to_widget(target_w, top=True, animate=False)
+                        finally:
+                            settle_event.set()
+
+                    self.call_after_refresh(_on_backward_settle)
+                    await settle_event.wait()
+                    return
+
+                # CASE 4: Discontinuous jump
+                self.app.show_loader_banner()
+                if req_idx < self._win_start:
+                    new_start = max(0, req_idx)
+                    new_end = min(total, new_start + capacity)
+                else:
+                    new_end = min(total, req_idx + 1)
+                    new_start = max(0, new_end - capacity)
+
+                await container.remove_children()
+                for idx in range(new_start, new_end):
+                    await container.mount(self._create_turn_widget(idx))
+
+                self._win_start = new_start
+                self._win_end = new_end
+
+                settle_event = asyncio.Event()
+
+                def _on_jump_settle() -> None:
+                    try:
+                        self.active_turn_index = req_idx
+                        if req_idx == 0:
+                            self.scroll_to(y=0, animate=False)
+                        else:
+                            target_w = self._get_target_widget(req_idx)
+                            if target_w:
+                                self.scroll_to_widget(target_w, top=True, animate=False)
+                    finally:
+                        settle_event.set()
+
+                self.call_after_refresh(_on_jump_settle)
+                await settle_event.wait()
+
+            elif action == "locale_lock_load":
+                total = len(self._all_messages)
+                direction = target_index or -1
+
+                if direction < 0 and self._win_start > 0:
+                    self.app.show_loader_banner()
+                    new_widget = self._create_turn_widget(self._win_start - 1)
+                    first_child = container.children[0]
+                    await container.mount(new_widget, before=first_child)
+                    self._win_start -= 1
+
+                    if (self._win_end - self._win_start) > capacity and len(container.children) > 0:
+                        await container.children[-1].remove()
+                        self._win_end -= 1
+
+                    settle_event = asyncio.Event()
+
+                    def _on_locale_up_settle() -> None:
+                        try:
+                            # Re-anchor firmly to current top visible turn
+                            lock_widget = self._get_target_widget(lock_turn_index or self._win_start + 1)
+                            if lock_widget:
+                                self.scroll_to_widget(lock_widget, top=True, animate=False)
+                        finally:
+                            settle_event.set()
+
+                    self.call_after_refresh(_on_locale_up_settle)
+                    await settle_event.wait()
+
+                elif direction > 0 and self._win_end < total:
+                    self.app.show_loader_banner()
+                    new_widget = self._create_turn_widget(self._win_end)
+                    await container.mount(new_widget)
+                    self._win_end += 1
+
+                    if (self._win_end - self._win_start) > capacity and len(container.children) > 0:
+                        first_child = container.children[0]
+                        first_h = first_child.virtual_region.height
+                        await first_child.remove()
+                        self._win_start += 1
+                        if first_h > 0:
+                            self.scroll_to(y=max(0, self.scroll_y - first_h), animate=False)
+
+                    settle_event = asyncio.Event()
+
+                    def _on_locale_down_settle() -> None:
+                        try:
+                            target_w = self._get_target_widget(self._win_end - 1)
+                            if target_w:
+                                self.scroll_to_widget(target_w, top=False, animate=False)
+                        finally:
+                            settle_event.set()
+
+                    self.call_after_refresh(_on_locale_down_settle)
+                    await settle_event.wait()
+
+            elif action == "jump_home":
+                total = len(self._all_messages)
+                if total == 0:
+                    self.scroll_home(animate=False)
+                    return
+
+                self.app.show_loader_banner()
+                self._win_start = 0
+                self._win_end = min(capacity, total)
+
+                await container.remove_children()
+                for idx in range(self._win_start, self._win_end):
+                    await container.mount(self._create_turn_widget(idx))
+
+                settle_event = asyncio.Event()
+
+                def _on_home_settle() -> None:
+                    try:
+                        self.active_turn_index = 0
+                        self.scroll_to(y=0, animate=False)
+                    finally:
+                        settle_event.set()
+
+                self.call_after_refresh(_on_home_settle)
+                await settle_event.wait()
+
+            elif action == "jump_end":
+                total = len(self._all_messages)
+                if total == 0:
+                    self.scroll_end(animate=False)
+                    return
+
+                self.app.show_loader_banner()
+                self._win_start = max(0, total - capacity)
+                self._win_end = total
+
+                await container.remove_children()
+                for idx in range(self._win_start, self._win_end):
+                    await container.mount(self._create_turn_widget(idx))
+
+                settle_event = asyncio.Event()
+
+                def _on_end_settle() -> None:
+                    try:
+                        self.active_turn_index = total - 1
+                        target_w = self._get_target_widget(self.active_turn_index)
+                        if target_w:
+                            self.scroll_to_widget(target_w, top=True, animate=False)
+                        else:
+                            self.scroll_end(animate=False)
+                    finally:
+                        settle_event.set()
+
+                self.call_after_refresh(_on_end_settle)
+                await settle_event.wait()
+
+        finally:
+            self.app.hide_loader_banner()
+            self._window_busy = False
+
+    def page_navigate(self, direction: int) -> None:
+        """Target-by-target stepping with floor clamps and bottom re-anchoring."""
+        if not self._all_messages or self._window_busy:
+            return
+
+        max_scroll = max(0, self.virtual_size.height - self.container_size.height)
+        is_at_bottom = (self.scroll_y >= max_scroll - 1) and (self._win_end == len(self._all_messages))
+
+        if direction > 0:
+            # Floor clamp: do not advance past what is already fully visible
+            if is_at_bottom:
+                return
+
+            # Check if active turn cannot scroll higher because max_scroll is reached
+            curr_target = self._get_target_widget(self.active_turn_index)
+            if curr_target and self.scroll_y >= max_scroll - 1 and self._win_end < len(self._all_messages):
+                target_idx = self._win_end
+            else:
+                target_idx = min(len(self._all_messages) - 1, self.active_turn_index + 1)
+        else:
+            # Bottom escape: immediately re-anchor to top visible turn
+            if is_at_bottom:
+                top_visible = self._get_current_visible_turn_index()
+                target_idx = max(0, top_visible - 1)
+            else:
+                target_idx = max(0, self.active_turn_index - 1)
+
+        self._run_target_mutation("scroll_to_target", target_index=target_idx)
+
+    def ctrl_shift_page_navigate(self, direction: int) -> None:
+        """Standard OS viewport page scrolling with edge-hold trailing release buffer."""
+        page_step = max(self.container_size.height - 3, 5)
+        max_scroll = max(0, self.virtual_size.height - self.container_size.height)
+
+        if direction < 0:
+            target_y = max(0, self.scroll_y - page_step)
+            if self.scroll_y == 0 and self._win_start > 0:
+                self._trigger_edge_hold(-1)
+                return
+            self.scroll_to(y=target_y, animate=False)
+        else:
+            target_y = min(max_scroll, self.scroll_y + page_step)
+            if self.scroll_y >= max_scroll and self._win_end < len(self._all_messages):
+                self._trigger_edge_hold(1)
+                return
+            self.scroll_to(y=target_y, animate=False)
+
+    def _trigger_edge_hold(self, direction: int) -> None:
+        """Debounces load execution until user releases held keys at boundary."""
+        self._pending_edge_direction = direction
+        if self._ctrl_page_timer:
+            self._ctrl_page_timer.stop()
+
+        self._ctrl_page_timer = self.set_timer(0.22, self._execute_edge_hold_release)
+
+    def _execute_edge_hold_release(self) -> None:
+        if self._pending_edge_direction != 0 and not self._window_busy:
+            curr_idx = self._get_current_visible_turn_index()
+            dir_val = self._pending_edge_direction
+            self._pending_edge_direction = 0
+            self._run_target_mutation(
+                "locale_lock_load",
+                target_index=dir_val,
+                lock_turn_index=curr_idx,
+            )
+
+    def arrow_navigate(self, direction: int) -> None:
+        """Fine-grained 1-line smooth scroll with locale target locking upon hitting load wall."""
+        if self._window_busy:
+            return
+
+        if direction < 0:
+            if self.scroll_y <= 1 and self._win_start > 0:
+                curr_idx = self._get_current_visible_turn_index()
+                self._run_target_mutation(
+                    "locale_lock_load",
+                    target_index=-1,
+                    lock_turn_index=curr_idx,
+                )
+            else:
+                self.scroll_up()
+        else:
+            max_scroll = max(0, self.virtual_size.height - self.container_size.height)
+            if (max_scroll - self.scroll_y) <= 1 and self._win_end < len(self._all_messages):
+                curr_idx = self._get_current_visible_turn_index()
+                self._run_target_mutation(
+                    "locale_lock_load",
+                    target_index=1,
+                    lock_turn_index=curr_idx,
+                )
+            else:
+                self.scroll_down()
+
+    def jump_to_home(self) -> None:
+        """Instantly jumps and snaps to target of the first turn."""
+        self._run_target_mutation("jump_home")
+
+    def jump_to_end(self) -> None:
+        """Instantly jumps and snaps to the final target turn."""
+        self._run_target_mutation("jump_end")
+
+    async def append_message(self, sender: str, text: str, jump_to_start: bool = False) -> None:
+        """Appends a new turn, strictly maintaining 10-turn window capacity."""
+        new_idx = len(self._all_messages)
+        turn_data = {
+            "turn_id": f"turn_{uuid4().hex[:8]}",
+            "role": "user" if sender == "You" else "model",
+            "text": text,
+        }
+        self._all_messages.append(turn_data)
+
+        container = self.query_one("#turns_container", Vertical)
+        capacity, _ = self.get_tier_config()
+
+        if self._win_end == new_idx:
+            new_widget = self._create_turn_widget(new_idx)
+            await container.mount(new_widget)
+            self._win_end += 1
+
+            if (self._win_end - self._win_start) > capacity and len(container.children) > 0:
+                first_child = container.children[0]
+                first_h = first_child.virtual_region.height
+                await first_child.remove()
+                self._win_start += 1
+                if first_h > 0 and not jump_to_start:
+                    self.scroll_to(y=max(0, self.scroll_y - first_h), animate=False)
+
+            self.active_turn_index = new_idx
+            if jump_to_start:
+                self.call_after_refresh(lambda: self.scroll_to_widget(new_widget, top=True, animate=False))
+            else:
+                self.call_after_refresh(lambda: self.scroll_end(animate=False))
+        else:
+            self.jump_to_end()
+
+    # --- Snippets & Fences ---
 
     def _get_fences(self) -> list[MarkdownFence]:
         return list(self.query(MarkdownFence))
@@ -1964,8 +2478,10 @@ class FeedArea(VerticalScroll):
             return
 
         self.fork_mode = True
-        md = self.query_one("#feed_markdown", Markdown)
-        md.styles.display = "none"
+        if hasattr(self.app, "hide_status"):
+            self.app.hide_status()
+
+        self.query_one("#turns_container").styles.display = "none"
 
         fork_view = self.query_one("#fork_view", Vertical)
         fork_view.remove_children()
@@ -1990,7 +2506,7 @@ class FeedArea(VerticalScroll):
             cards[0].focus()
 
     def exit_fork_mode(self) -> None:
-        """Restores standard markdown feed."""
+        """Restores standard segmented turn feed."""
         if not self.fork_mode:
             return
 
@@ -1999,8 +2515,7 @@ class FeedArea(VerticalScroll):
         fork_view.styles.display = "none"
         fork_view.remove_children()
 
-        md = self.query_one("#feed_markdown", Markdown)
-        md.styles.display = "block"
+        self.query_one("#turns_container").styles.display = "block"
         self.focus()
 
     def get_selected_fork_indices(self) -> list[int]:
@@ -2082,7 +2597,6 @@ class FeedArea(VerticalScroll):
                 self.navigate_fork_cards(-1)
                 return
 
-        # Fallback when terminal strips Ctrl from Ctrl+. on the feed container
         if not self.fork_mode and event.key in ("full_stop", ".", "f"):
             event.prevent_default(); event.stop()
             self.app.action_fork_chat()
@@ -2118,24 +2632,39 @@ class FeedArea(VerticalScroll):
             event.prevent_default(); event.stop()
             self.navigate_snippet(-1)
 
-        elif event.key in ("down", "j"):
+        # 1. Standard OS Viewport Paging via Ctrl+Shift+PageUp / Ctrl+Shift+PageDown (or Alt+PageUp / Alt+PageDown)
+        if event.key in (
+            "ctrl+shift+pageup", "ctrl+shift+page_up",
+            "ctrl+shift+pagedown", "ctrl+shift+page_down",
+            "alt+pageup", "alt+page_up",
+            "alt+pagedown", "alt+page_down",
+        ):
             event.prevent_default(); event.stop()
-            self.scroll_down()
-        elif event.key in ("up", "k"):
+            direction = -1 if "up" in event.key else 1
+            self.ctrl_shift_page_navigate(direction)
+            return
+
+        # 2. Discrete Turn-Target Snapping via PageUp / PageDown
+        elif event.key in ("pageup", "pagedown"):
             event.prevent_default(); event.stop()
-            self.scroll_up()
-        elif event.key in ("pageup",):
-            event.prevent_default(); event.stop()
-            self.scroll_page_up()
-        elif event.key in ("pagedown",):
-            event.prevent_default(); event.stop()
-            self.scroll_page_down()
+            direction = -1 if event.key == "pageup" else 1
+            self.page_navigate(direction)
+            return
+
         elif event.key in ("home",):
             event.prevent_default(); event.stop()
-            self.scroll_home()
+            self.jump_to_home()
         elif event.key in ("end",):
             event.prevent_default(); event.stop()
-            self.scroll_end()
+            self.jump_to_end()
+
+        # 3. Fine-grained arrow navigation with Locale Target Lock
+        elif event.key in ("down", "j"):
+            event.prevent_default(); event.stop()
+            self.arrow_navigate(1)
+        elif event.key in ("up", "k"):
+            event.prevent_default(); event.stop()
+            self.arrow_navigate(-1)
         else:
             super()._on_key(event)
 
@@ -2169,12 +2698,33 @@ class HistoryList(OptionList):
         else:
             super()._on_key(event)
 
+# ---------------------------------------------------------------------------
+# Main Chat Application
+# ---------------------------------------------------------------------------
+
 class ChatApp(App):
     COMMAND_PALETTE_BINDING = "alt+x"
     COMMAND_PALETTE = MenuPalette
 
     CSS = """
     Screen {
+        layout: vertical;
+        layers: base overlay;
+    }
+    #feed_loader_banner {
+        layer: overlay;
+        dock: top;
+        width: 100%;
+        height: 1;
+        background: #152436;
+        color: dodgerblue;
+        content-align: center middle;
+        text-style: bold;
+        display: none;
+    }
+    #main_container {
+        height: 1fr;
+        width: 100%;
         layout: vertical;
     }
     #feed {
@@ -2187,15 +2737,31 @@ class ChatApp(App):
         width: 100%;
         max-width: 100%;
     }
-    #feed #feed_markdown {
+    #feed #turns_container {
         width: 100%;
         max-width: 100%;
         height: auto;
+    }
+    #feed .turn_block {
+        width: 100%;
+        max-width: 100%;
+        height: auto;
+        margin-bottom: 1;
     }
     #feed #fork_view {
         width: 100%;
         max-width: 100%;
         height: auto;
+    }
+    #feed_status {
+        width: 100%;
+        height: auto;
+        min-height: 1;
+        padding: 0 1;
+        color: dodgerblue;
+        text-style: bold;
+        background: #14202c;
+        display: none;
     }
     .fork_turn_card {
         width: 100%;
@@ -2304,6 +2870,13 @@ class ChatApp(App):
         self._server: asyncio.AbstractServer | None = None
         self._prefix_c_c: bool = False
 
+        # Live status tracking state
+        self._request_phase: str = "idle"
+        self._request_start_time: float = 0.0
+        self._spinner_idx: int = 0
+        self._status_timer: Timer | None = None
+        self._banner_shown_time: float = 0.0
+
     def copy_to_clipboard(self, text: str) -> None:
         try:
             pyperclip.copy(text)
@@ -2369,7 +2942,6 @@ class ChatApp(App):
         """Application-level key interceptor guaranteeing chords resolve reliably."""
         feed = self.query_one("#feed", FeedArea)
 
-        # In fork mode, prioritize Alt+n/p for navigating fork cards
         if feed.fork_mode and event.key in ("alt+n", "alt+down"):
             event.prevent_default(); event.stop()
             feed.navigate_fork_cards(1)
@@ -2385,14 +2957,12 @@ class ChatApp(App):
                 event.stop()
                 return
 
-        # Centralized C-. / Ctrl+full_stop check
         if event.key in ("ctrl+full_stop", "ctrl+period", "ctrl+."):
             event.prevent_default()
             event.stop()
             self.action_fork_chat()
             return
 
-        # If already in fork mode, pressing Enter confirms and prompts for naming
         if feed.fork_mode and event.key in ("enter", "return"):
             focused = self.focused
             if focused and (focused is feed or focused in feed.query("*")):
@@ -2407,9 +2977,11 @@ class ChatApp(App):
             self.set_c_c_prefix()
 
     def compose(self) -> ComposeResult:
-        with Vertical():
+        yield Static("▲ Loading chat feed...", id="feed_loader_banner")
+        with Vertical(id="main_container"):
             yield FeedArea(id="feed")
             yield HistoryList(id="history")
+            yield Label("", id="feed_status")
             yield SnippetPreview(id="snippet_preview")
             yield ExpandingInput(id="input")
         yield Footer()
@@ -2429,6 +3001,101 @@ class ChatApp(App):
                 self._start_new_chat(title="")
 
         self.query_one("#input").focus()
+
+    # --- Root Overlay Loader Banner Engine ---
+
+    def show_loader_banner(self) -> None:
+        try:
+            banner = self.query_one("#feed_loader_banner", Static)
+            banner.styles.display = "block"
+            self._banner_shown_time = time.monotonic()
+        except Exception:
+            pass
+
+    def hide_loader_banner(self) -> None:
+        try:
+            banner = self.query_one("#feed_loader_banner", Static)
+            elapsed = time.monotonic() - self._banner_shown_time
+            if elapsed < 0.2:
+                self.set_timer(0.2 - elapsed, lambda: setattr(banner.styles, "display", "none"))
+            else:
+                banner.styles.display = "none"
+        except Exception:
+            pass
+
+    # --- Pinned Viewport Status Indicator Engine ---
+
+    def set_status_text(self, text: str) -> None:
+        status_lbl = self.query_one("#feed_status", Label)
+        status_lbl.update(text)
+        if status_lbl.styles.display == "none":
+            status_lbl.styles.display = "block"
+
+    def hide_status(self) -> None:
+        try:
+            status_lbl = self.query_one("#feed_status", Label)
+            status_lbl.update("")
+            status_lbl.styles.display = "none"
+        except Exception:
+            pass
+
+    def _start_status_ticker(self) -> None:
+        if self._status_timer:
+            self._status_timer.stop()
+        self._request_start_time = time.monotonic()
+        self._spinner_idx = 0
+        self._status_timer = self.set_interval(0.1, self._tick_status)
+
+    def _stop_status_ticker(self) -> None:
+        if self._status_timer:
+            self._status_timer.stop()
+            self._status_timer = None
+        self._request_phase = "idle"
+
+    def _tick_status(self) -> None:
+        if self._request_phase == "idle":
+            return
+
+        elapsed = time.monotonic() - self._request_start_time
+        frame = SPINNER_FRAMES[self._spinner_idx % len(SPINNER_FRAMES)]
+        self._spinner_idx += 1
+
+        if self._request_phase == "connecting":
+            status_text = f"{frame} Connecting / Sending request... ({elapsed:.1f}s)"
+        elif self._request_phase == "waiting":
+            status_text = f"{frame} Waiting on Gemini response... ({elapsed:.1f}s)"
+        else:
+            status_text = f"{frame} Working... ({elapsed:.1f}s)"
+
+        self.set_status_text(status_text)
+
+    @on(RequestPhaseUpdate)
+    def on_request_phase_update(self, event: RequestPhaseUpdate) -> None:
+        self._request_phase = event.phase
+
+    @on(RequestFinished)
+    async def on_request_finished(self, event: RequestFinished) -> None:
+        self._stop_status_ticker()
+
+        feed = self.query_one("#feed", FeedArea)
+        await feed.append_message("Gemini", event.full_text, jump_to_start=True)
+
+        new_turn_id = f"turn_{uuid4().hex[:8]}"
+        self.history.append({"turn_id": new_turn_id, "role": "model", "text": event.full_text})
+        self.save_current_chat()
+
+        self.set_status_text(f"✓ Response complete ({event.words} words in {event.elapsed:.1f}s)")
+        self.set_timer(1.0, self.hide_status)
+
+        self.query_one("#input", ExpandingInput).focus()
+
+    @on(RequestFailed)
+    def on_request_failed(self, event: RequestFailed) -> None:
+        self._stop_status_ticker()
+        self.set_status_text(f"✗ Error: {event.error_message}")
+        self.notify(f"API Error: {event.error_message}", severity="error")
+        self.set_timer(5.0, self.hide_status)
+        self.query_one("#input", ExpandingInput).focus()
 
     # --- Persistent Active Chat State Management ---
 
@@ -2530,6 +3197,7 @@ class ChatApp(App):
         self.notify(f"Inserted {tag}{loc} at cursor")
 
     def on_unmount(self) -> None:
+        self._stop_status_ticker()
         if self._server:
             self._server.close()
         if SOCKET_PATH.exists():
@@ -2605,13 +3273,22 @@ class ChatApp(App):
             root_counter += 1
 
     async def load_chat(self, chat_id: str) -> None:
+        self._stop_status_ticker()
+        self.hide_status()
         self.current_chat_id = chat_id
         self._save_active_chat_to_state(chat_id)
 
         path = self._get_chat_file(chat_id)
         if path.exists():
             data = json.loads(path.read_text())
-            self.history = data.get("messages", [])
+            raw_messages = data.get("messages", [])
+            self.history = []
+            for m in raw_messages:
+                m_copy = dict(m)
+                if "turn_id" not in m_copy or not m_copy["turn_id"]:
+                    m_copy["turn_id"] = f"turn_{uuid4().hex[:8]}"
+                self.history.append(m_copy)
+
             self.current_chat_title = data.get("title", "")
             self.current_chat_working_dir = data.get("working_dir")
             self.current_chat_parent_id = data.get("parent_id")
@@ -2622,7 +3299,7 @@ class ChatApp(App):
             self.current_chat_parent_id = None
 
         feed = self.query_one("#feed", FeedArea)
-        await feed.set_messages(self.history)
+        feed.set_messages(self.history)
         self.query_one("#input", ExpandingInput).reset_snippets()
         self.query_one("#snippet_preview", SnippetPreview).hide_preview()
 
@@ -2639,6 +3316,10 @@ class ChatApp(App):
             title = "New Chat"
 
         self.current_chat_title = title
+
+        for m in self.history:
+            if "turn_id" not in m or not m["turn_id"]:
+                m["turn_id"] = f"turn_{uuid4().hex[:8]}"
 
         data = {
             "id": self.current_chat_id,
@@ -2663,7 +3344,6 @@ class ChatApp(App):
         if target_file.exists():
             target_file.unlink()
 
-        # Update any sub-chats attached to this chat to become non-sub chats
         for f in self._get_sorted_files():
             try:
                 data = json.loads(f.read_text())
@@ -2781,13 +3461,19 @@ class ChatApp(App):
         if not selected_turns:
             return
 
-        # Ensure Header is present at the very beginning of the chat
         if selected_turns[0]["role"] == "user":
             selected_turns[0]["text"] = f"{FORK_HEADER_TEXT}\n\n{selected_turns[0]['text']}"
         else:
-            selected_turns.insert(0, {"role": "user", "text": FORK_HEADER_TEXT})
+            selected_turns.insert(0, {
+                "turn_id": f"turn_{uuid4().hex[:8]}",
+                "role": "user",
+                "text": FORK_HEADER_TEXT
+            })
 
-        # Save previous state
+        for turn in selected_turns:
+            if "turn_id" not in turn or not turn["turn_id"]:
+                turn["turn_id"] = f"turn_{uuid4().hex[:8]}"
+
         self.save_current_chat()
 
         parent_chat_id = self.current_chat_id
@@ -2800,15 +3486,12 @@ class ChatApp(App):
         self.current_chat_working_dir = parent_working_dir
         self.history = selected_turns
 
-        # Persist new forked chat
         self.save_current_chat()
+        self._render_forked_chat(selected_turns)
 
-        # Update feed and input without calling Gemini
-        self.run_worker(self._render_forked_chat(selected_turns))
-
-    async def _render_forked_chat(self, turns: list[dict]) -> None:
+    def _render_forked_chat(self, turns: list[dict]) -> None:
         feed = self.query_one("#feed", FeedArea)
-        await feed.set_messages(turns)
+        feed.set_messages(turns)
         input_widget = self.query_one("#input", ExpandingInput)
         input_widget.reset_snippets()
         self.query_one("#snippet_preview", SnippetPreview).hide_preview()
@@ -2840,6 +3523,7 @@ class ChatApp(App):
 
         if history_widget.styles.display == "none":
             self.refresh_history_list()
+            self.hide_status()
             feed.styles.display = "none"
             history_widget.styles.display = "block"
             history_widget.focus()
@@ -2860,6 +3544,8 @@ class ChatApp(App):
         )
 
     def _start_new_chat(self, title: str) -> None:
+        self._stop_status_ticker()
+        self.hide_status()
         self.query_one("#history").styles.display = "none"
         self.query_one("#feed").styles.display = "block"
 
@@ -3149,14 +3835,15 @@ class ChatApp(App):
 
     def action_open_in_editor(self) -> None:
         feed = self.query_one("#feed", FeedArea)
-        if not getattr(feed, "_raw_markdown", ""):
+        full_md = getattr(feed, "_raw_markdown", "")
+        if not full_md:
             self.notify("No conversation to open.", severity="warning")
             return
 
         editor = os.environ.get("EDITOR") or os.environ.get("PAGER") or "nano"
 
         with tempfile.NamedTemporaryFile(suffix=".md", mode="w+", delete=False, encoding="utf-8") as tmp:
-            tmp.write(feed._raw_markdown)
+            tmp.write(full_md)
             tmp.flush()
             tmp_path = tmp.name
 
@@ -3176,24 +3863,25 @@ class ChatApp(App):
             self.query_one("#feed").styles.display = "block"
             self.query_one("#input").focus()
 
-    async def append_to_feed(self, sender: str, text: str) -> None:
+    async def append_to_feed(self, sender: str, text: str, jump_to_start: bool = False) -> None:
         feed = self.query_one("#feed", FeedArea)
-        await feed.append_message(sender, text)
+        await feed.append_message(sender, text, jump_to_start=jump_to_start)
 
     async def on_expanding_input_submitted(self, event: ExpandingInput.Submitted) -> None:
         user_msg = event.value
-        await self.append_to_feed("You", user_msg)
+        await self.append_to_feed("You", user_msg, jump_to_start=False)
 
-        self.history.append({"role": "user", "text": user_msg})
+        new_turn_id = f"turn_{uuid4().hex[:8]}"
+        self.history.append({"turn_id": new_turn_id, "role": "user", "text": user_msg})
         self.save_current_chat()
 
         self.ask_gemini()
 
-    @work(exclusive=True)
-    async def ask_gemini(self) -> None:
+    @work(exclusive=True, thread=True)
+    def ask_gemini(self) -> None:
+        """Call Gemini generate_content in background thread and render response on arrival."""
         chat_id_snapshot = self.current_chat_id
 
-        # Normalize multiturn talk to ensure alternating turns and leading user role
         payload = []
         for t in self.history:
             if payload and payload[-1]["role"] == t["role"]:
@@ -3204,21 +3892,30 @@ class ChatApp(App):
         if payload and payload[0]["role"] != "user":
             payload.insert(0, {"role": "user", "parts": [{"text": FORK_HEADER_TEXT}]})
 
+        self.app.call_from_thread(self._start_status_ticker)
+        self.post_message(RequestPhaseUpdate("connecting"))
+
+        start_time = time.monotonic()
+
         try:
-            response = await asyncio.to_thread(
-                self.client.models.generate_content,
+            self.post_message(RequestPhaseUpdate("waiting"))
+            response = self.client.models.generate_content(
                 model="gemini-3.8-flash",
                 contents=payload,
             )
-            reply = response.text or ""
-        except Exception as e:
-            self.notify(f"API Error: {e}", severity="error")
-            return
 
-        if self.current_chat_id == chat_id_snapshot:
-            self.history.append({"role": "model", "text": reply})
-            self.save_current_chat()
-            await self.append_to_feed("Gemini", reply)
+            if self.current_chat_id != chat_id_snapshot:
+                return
+
+            reply = response.text or ""
+            elapsed = max(time.monotonic() - start_time, 0.1)
+            total_words = len(reply.split())
+
+            self.post_message(RequestFinished(reply, elapsed, total_words))
+
+        except Exception as e:
+            if self.current_chat_id == chat_id_snapshot:
+                self.post_message(RequestFailed(str(e)))
 
 if __name__ == "__main__":
     ChatApp().run()

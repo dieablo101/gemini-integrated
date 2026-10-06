@@ -22,7 +22,6 @@ from textual.command import CommandPalette
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.message import Message
 from textual.screen import ModalScreen
-from textual.timer import Timer
 from textual.widgets import (
     Button,
     Footer,
@@ -51,8 +50,6 @@ STATE_FILE = GEMINI_HOME / "state.json"
 SOCKET_PATH = GEMINI_HOME / "gemini_textual.sock"
 
 FORK_HEADER_TEXT = "## This chat is a fork of another / previous chat"
-
-SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
 # ---------------------------------------------------------------------------
 # Reusable Core File & Git Services (UI & Gemini Tool Use)
@@ -222,10 +219,6 @@ def _enhanced_markdown_fence_render(self: MarkdownFence) -> RenderableType:
 
 MarkdownFence.render = _enhanced_markdown_fence_render
 
-# ---------------------------------------------------------------------------
-# Event & Message System
-# ---------------------------------------------------------------------------
-
 class RemoteInsert(Message):
     """Event posted when external process sends text to insert."""
     def __init__(
@@ -242,30 +235,6 @@ class RemoteInsert(Message):
         self.file = file
         self.start_line = start_line
         self.end_line = end_line
-
-class RequestPhaseUpdate(Message):
-    """Event posted when Gemini API request phase changes (connecting, waiting)."""
-    def __init__(self, phase: str) -> None:
-        super().__init__()
-        self.phase = phase
-
-class RequestFinished(Message):
-    """Event posted when Gemini API returns full response."""
-    def __init__(self, full_text: str, elapsed: float, words: int) -> None:
-        super().__init__()
-        self.full_text = full_text
-        self.elapsed = elapsed
-        self.words = words
-
-class RequestFailed(Message):
-    """Event posted when Gemini API request encounters an error."""
-    def __init__(self, error_message: str) -> None:
-        super().__init__()
-        self.error_message = error_message
-
-# ---------------------------------------------------------------------------
-# Modals & Dialog Widgets
-# ---------------------------------------------------------------------------
 
 class MenuPalette(CommandPalette):
     """Command palette customized as the Emacs-style Menu (M-x)."""
@@ -1022,6 +991,7 @@ class GitTreeModal(ModalScreen[dict | None]):
         expanded = os.path.expanduser(raw_dir) if raw_dir else os.getcwd()
         self.repo_dir = expanded
 
+        # Persist repo path to chat upon explicit or implicit scan
         if hasattr(self.app, "set_working_dir"):
             self.app.set_working_dir(self.repo_dir)
 
@@ -1673,7 +1643,7 @@ class SnippetPreview(EmacsBaseTextArea):
                 self._clear_mark()
                 self.app.notify("Quit", timeout=1.0)
             else:
-                self.app.query_one("#feed", FeedArea).focus()
+                self.app.query_one("#input", ExpandingInput).focus()
             return
 
         super()._on_key(event)
@@ -1876,21 +1846,17 @@ class ExpandingInput(EmacsBaseTextArea):
 
         self.app.query_one("#snippet_preview", SnippetPreview).hide_preview()
 
-# ---------------------------------------------------------------------------
-# Feed View & Response Area
-# ---------------------------------------------------------------------------
-
 class FeedArea(VerticalScroll):
-    """Feed container supporting rich Markdown views, automatic turn scroll-to-top,
+    """Feed container supporting standard rich Markdown views, code snippet navigation,
 
-    interactive code snippet navigation, and checkbox chat forking.
+    and an interactive checkbox mode for chat forking.
     """
 
     can_focus = True
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
-        self._raw_markdown: str = ""
+        self._raw_markdown = ""
         self.selected_snippet_index: int = -1
         self.fork_mode: bool = False
 
@@ -1905,8 +1871,6 @@ class FeedArea(VerticalScroll):
         self.exit_fork_mode()
         self._raw_markdown = ""
         self.selected_snippet_index = -1
-        if hasattr(self.app, "hide_status"):
-            self.app.hide_status()
         try:
             self.query_one("#feed_markdown", Markdown).update("")
         except Exception:
@@ -1917,9 +1881,6 @@ class FeedArea(VerticalScroll):
 
     async def set_messages(self, messages: list[dict]) -> None:
         self.exit_fork_mode()
-        if hasattr(self.app, "hide_status"):
-            self.app.hide_status()
-
         blocks = []
         for turn in messages:
             label = "You" if turn["role"] == "user" else "Gemini"
@@ -1930,22 +1891,13 @@ class FeedArea(VerticalScroll):
         await md.update(self._raw_markdown)
         self.call_after_refresh(self._scroll_to_bottom)
 
-    async def append_message(self, sender: str, text: str, jump_to_start: bool = False) -> None:
-        # Pre-capture the vertical layout offset where the new turn begins
-        jump_y = self.virtual_size.height if jump_to_start else None
-
+    async def append_message(self, sender: str, text: str) -> None:
         prefix = "\n\n---\n\n" if self._raw_markdown else ""
         header = f"### {sender}\n\n"
         self._raw_markdown += f"{prefix}{header}{text}"
         md = self.query_one("#feed_markdown", Markdown)
         await md.update(self._raw_markdown)
-
-        if jump_to_start and jump_y is not None:
-            self.call_after_refresh(lambda: self.scroll_to(y=jump_y, animate=False))
-        else:
-            self.call_after_refresh(self._scroll_to_bottom)
-
-    # --- Snippets & Fences ---
+        self.call_after_refresh(self._scroll_to_bottom)
 
     def _get_fences(self) -> list[MarkdownFence]:
         return list(self.query(MarkdownFence))
@@ -2012,9 +1964,6 @@ class FeedArea(VerticalScroll):
             return
 
         self.fork_mode = True
-        if hasattr(self.app, "hide_status"):
-            self.app.hide_status()
-
         md = self.query_one("#feed_markdown", Markdown)
         md.styles.display = "none"
 
@@ -2133,6 +2082,7 @@ class FeedArea(VerticalScroll):
                 self.navigate_fork_cards(-1)
                 return
 
+        # Fallback when terminal strips Ctrl from Ctrl+. on the feed container
         if not self.fork_mode and event.key in ("full_stop", ".", "f"):
             event.prevent_default(); event.stop()
             self.app.action_fork_chat()
@@ -2219,10 +2169,6 @@ class HistoryList(OptionList):
         else:
             super()._on_key(event)
 
-# ---------------------------------------------------------------------------
-# Main Chat Application
-# ---------------------------------------------------------------------------
-
 class ChatApp(App):
     COMMAND_PALETTE_BINDING = "alt+x"
     COMMAND_PALETTE = MenuPalette
@@ -2250,16 +2196,6 @@ class ChatApp(App):
         width: 100%;
         max-width: 100%;
         height: auto;
-    }
-    #feed_status {
-        width: 100%;
-        height: auto;
-        min-height: 1;
-        padding: 0 1;
-        color: dodgerblue;
-        text-style: bold;
-        background: #14202c;
-        display: none;
     }
     .fork_turn_card {
         width: 100%;
@@ -2368,12 +2304,6 @@ class ChatApp(App):
         self._server: asyncio.AbstractServer | None = None
         self._prefix_c_c: bool = False
 
-        # Live status tracking state
-        self._request_phase: str = "idle"  # "idle" | "connecting" | "waiting"
-        self._request_start_time: float = 0.0
-        self._spinner_idx: int = 0
-        self._status_timer: Timer | None = None
-
     def copy_to_clipboard(self, text: str) -> None:
         try:
             pyperclip.copy(text)
@@ -2439,6 +2369,7 @@ class ChatApp(App):
         """Application-level key interceptor guaranteeing chords resolve reliably."""
         feed = self.query_one("#feed", FeedArea)
 
+        # In fork mode, prioritize Alt+n/p for navigating fork cards
         if feed.fork_mode and event.key in ("alt+n", "alt+down"):
             event.prevent_default(); event.stop()
             feed.navigate_fork_cards(1)
@@ -2454,12 +2385,14 @@ class ChatApp(App):
                 event.stop()
                 return
 
+        # Centralized C-. / Ctrl+full_stop check
         if event.key in ("ctrl+full_stop", "ctrl+period", "ctrl+."):
             event.prevent_default()
             event.stop()
             self.action_fork_chat()
             return
 
+        # If already in fork mode, pressing Enter confirms and prompts for naming
         if feed.fork_mode and event.key in ("enter", "return"):
             focused = self.focused
             if focused and (focused is feed or focused in feed.query("*")):
@@ -2477,7 +2410,6 @@ class ChatApp(App):
         with Vertical():
             yield FeedArea(id="feed")
             yield HistoryList(id="history")
-            yield Label("", id="feed_status")
             yield SnippetPreview(id="snippet_preview")
             yield ExpandingInput(id="input")
         yield Footer()
@@ -2497,80 +2429,6 @@ class ChatApp(App):
                 self._start_new_chat(title="")
 
         self.query_one("#input").focus()
-
-    # --- Pinned Viewport Status Indicator Engine ---
-
-    def set_status_text(self, text: str) -> None:
-        status_lbl = self.query_one("#feed_status", Label)
-        status_lbl.update(text)
-        if status_lbl.styles.display == "none":
-            status_lbl.styles.display = "block"
-
-    def hide_status(self) -> None:
-        try:
-            status_lbl = self.query_one("#feed_status", Label)
-            status_lbl.update("")
-            status_lbl.styles.display = "none"
-        except Exception:
-            pass
-
-    def _start_status_ticker(self) -> None:
-        if self._status_timer:
-            self._status_timer.stop()
-        self._request_start_time = time.monotonic()
-        self._spinner_idx = 0
-        self._status_timer = self.set_interval(0.1, self._tick_status)
-
-    def _stop_status_ticker(self) -> None:
-        if self._status_timer:
-            self._status_timer.stop()
-            self._status_timer = None
-        self._request_phase = "idle"
-
-    def _tick_status(self) -> None:
-        if self._request_phase == "idle":
-            return
-
-        elapsed = time.monotonic() - self._request_start_time
-        frame = SPINNER_FRAMES[self._spinner_idx % len(SPINNER_FRAMES)]
-        self._spinner_idx += 1
-
-        if self._request_phase == "connecting":
-            status_text = f"{frame} Connecting / Sending request... ({elapsed:.1f}s)"
-        elif self._request_phase == "waiting":
-            status_text = f"{frame} Waiting on Gemini response... ({elapsed:.1f}s)"
-        else:
-            status_text = f"{frame} Working... ({elapsed:.1f}s)"
-
-        self.set_status_text(status_text)
-
-    @on(RequestPhaseUpdate)
-    def on_request_phase_update(self, event: RequestPhaseUpdate) -> None:
-        self._request_phase = event.phase
-
-    @on(RequestFinished)
-    async def on_request_finished(self, event: RequestFinished) -> None:
-        self._stop_status_ticker()
-
-        feed = self.query_one("#feed", FeedArea)
-        await feed.append_message("Gemini", event.full_text, jump_to_start=True)
-
-        self.history.append({"role": "model", "text": event.full_text})
-        self.save_current_chat()
-
-        self.set_status_text(f"✓ Response complete ({event.words} words in {event.elapsed:.1f}s)")
-        self.set_timer(1.0, self.hide_status)
-
-        # Retain keyboard focus in prompt input
-        self.query_one("#input", ExpandingInput).focus()
-
-    @on(RequestFailed)
-    def on_request_failed(self, event: RequestFailed) -> None:
-        self._stop_status_ticker()
-        self.set_status_text(f"✗ Error: {event.error_message}")
-        self.notify(f"API Error: {event.error_message}", severity="error")
-        self.set_timer(5.0, self.hide_status)
-        self.query_one("#input", ExpandingInput).focus()
 
     # --- Persistent Active Chat State Management ---
 
@@ -2672,7 +2530,6 @@ class ChatApp(App):
         self.notify(f"Inserted {tag}{loc} at cursor")
 
     def on_unmount(self) -> None:
-        self._stop_status_ticker()
         if self._server:
             self._server.close()
         if SOCKET_PATH.exists():
@@ -2748,8 +2605,6 @@ class ChatApp(App):
             root_counter += 1
 
     async def load_chat(self, chat_id: str) -> None:
-        self._stop_status_ticker()
-        self.hide_status()
         self.current_chat_id = chat_id
         self._save_active_chat_to_state(chat_id)
 
@@ -2808,6 +2663,7 @@ class ChatApp(App):
         if target_file.exists():
             target_file.unlink()
 
+        # Update any sub-chats attached to this chat to become non-sub chats
         for f in self._get_sorted_files():
             try:
                 data = json.loads(f.read_text())
@@ -2925,11 +2781,13 @@ class ChatApp(App):
         if not selected_turns:
             return
 
+        # Ensure Header is present at the very beginning of the chat
         if selected_turns[0]["role"] == "user":
             selected_turns[0]["text"] = f"{FORK_HEADER_TEXT}\n\n{selected_turns[0]['text']}"
         else:
             selected_turns.insert(0, {"role": "user", "text": FORK_HEADER_TEXT})
 
+        # Save previous state
         self.save_current_chat()
 
         parent_chat_id = self.current_chat_id
@@ -2942,7 +2800,10 @@ class ChatApp(App):
         self.current_chat_working_dir = parent_working_dir
         self.history = selected_turns
 
+        # Persist new forked chat
         self.save_current_chat()
+
+        # Update feed and input without calling Gemini
         self.run_worker(self._render_forked_chat(selected_turns))
 
     async def _render_forked_chat(self, turns: list[dict]) -> None:
@@ -2979,7 +2840,6 @@ class ChatApp(App):
 
         if history_widget.styles.display == "none":
             self.refresh_history_list()
-            self.hide_status()
             feed.styles.display = "none"
             history_widget.styles.display = "block"
             history_widget.focus()
@@ -3000,8 +2860,6 @@ class ChatApp(App):
         )
 
     def _start_new_chat(self, title: str) -> None:
-        self._stop_status_ticker()
-        self.hide_status()
         self.query_one("#history").styles.display = "none"
         self.query_one("#feed").styles.display = "block"
 
@@ -3318,24 +3176,24 @@ class ChatApp(App):
             self.query_one("#feed").styles.display = "block"
             self.query_one("#input").focus()
 
-    async def append_to_feed(self, sender: str, text: str, jump_to_start: bool = False) -> None:
+    async def append_to_feed(self, sender: str, text: str) -> None:
         feed = self.query_one("#feed", FeedArea)
-        await feed.append_message(sender, text, jump_to_start=jump_to_start)
+        await feed.append_message(sender, text)
 
     async def on_expanding_input_submitted(self, event: ExpandingInput.Submitted) -> None:
         user_msg = event.value
-        await self.append_to_feed("You", user_msg, jump_to_start=False)
+        await self.append_to_feed("You", user_msg)
 
         self.history.append({"role": "user", "text": user_msg})
         self.save_current_chat()
 
         self.ask_gemini()
 
-    @work(exclusive=True, thread=True)
-    def ask_gemini(self) -> None:
-        """Call Gemini generate_content in background thread and render response on arrival."""
+    @work(exclusive=True)
+    async def ask_gemini(self) -> None:
         chat_id_snapshot = self.current_chat_id
 
+        # Normalize multiturn talk to ensure alternating turns and leading user role
         payload = []
         for t in self.history:
             if payload and payload[-1]["role"] == t["role"]:
@@ -3346,30 +3204,21 @@ class ChatApp(App):
         if payload and payload[0]["role"] != "user":
             payload.insert(0, {"role": "user", "parts": [{"text": FORK_HEADER_TEXT}]})
 
-        self.app.call_from_thread(self._start_status_ticker)
-        self.post_message(RequestPhaseUpdate("connecting"))
-
-        start_time = time.monotonic()
-
         try:
-            self.post_message(RequestPhaseUpdate("waiting"))
-            response = self.client.models.generate_content(
+            response = await asyncio.to_thread(
+                self.client.models.generate_content,
                 model="gemini-3.8-flash",
                 contents=payload,
             )
-
-            if self.current_chat_id != chat_id_snapshot:
-                return
-
             reply = response.text or ""
-            elapsed = max(time.monotonic() - start_time, 0.1)
-            total_words = len(reply.split())
-
-            self.post_message(RequestFinished(reply, elapsed, total_words))
-
         except Exception as e:
-            if self.current_chat_id == chat_id_snapshot:
-                self.post_message(RequestFailed(str(e)))
+            self.notify(f"API Error: {e}", severity="error")
+            return
+
+        if self.current_chat_id == chat_id_snapshot:
+            self.history.append({"role": "model", "text": reply})
+            self.save_current_chat()
+            await self.append_to_feed("Gemini", reply)
 
 if __name__ == "__main__":
     ChatApp().run()

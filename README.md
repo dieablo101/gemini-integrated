@@ -1,5 +1,7 @@
 # Gemini
 
+PLEASE NOTE: THIS IS OUT OF DATE! I WILL UPDATE LATER ;-)
+
 A terminal-based AI chat application built with **Textual** and the **Google GenAI SDK** (`gemini-3.8-flash`), featuring interactive chat branching (forking), code snippet insertion and extraction, Git tree exploration, and tight Emacs integration.
 
 ---

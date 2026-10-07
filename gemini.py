@@ -1999,7 +1999,8 @@ class FeedArea(VerticalScroll):
 
     def set_messages(self, messages: list[dict], initial_target_index: int | None = None) -> None:
         """Loads chat history through the sliding window target engine at targeted index."""
-        self.exit_fork_mode()
+        self.fork_mode = False
+        self._fork_selected_indices.clear()
         if hasattr(self.app, "hide_status"):
             self.app.hide_status()
 
@@ -3543,7 +3544,8 @@ class ChatApp(App):
     def _execute_chat_fork(self, selected_indices: list[int], fork_title: str) -> None:
         """Constructs and switches to the new forked chat without triggering Gemini API call."""
         feed = self.query_one("#feed", FeedArea)
-        feed.exit_fork_mode()
+        feed.fork_mode = False
+        feed._fork_selected_indices.clear()
 
         selected_turns = [copy.deepcopy(self.history[i]) for i in selected_indices]
         if not selected_turns:
@@ -3562,8 +3564,7 @@ class ChatApp(App):
             })
 
         for turn in selected_turns:
-            if "turn_id" not in turn or not turn["turn_id"]:
-                turn["turn_id"] = f"turn_{uuid4().hex[:8]}"
+            turn["turn_id"] = f"turn_{uuid4().hex[:8]}"
 
         self.save_current_chat()
 

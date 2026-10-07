@@ -56,6 +56,7 @@ FORK_HEADER_TEXT = "## This chat is a fork of another / previous chat"
 SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
 DEFAULT_WINDOW_CAPACITY = 20
+DEFAULT_MODEL = "gemini-3.8-flash"
 
 # ---------------------------------------------------------------------------
 # Reusable Core File & Git Services (UI & Gemini Tool Use)
@@ -197,30 +198,34 @@ _orig_markdown_fence_render = MarkdownFence.render
 
 def _enhanced_markdown_fence_render(self: MarkdownFence) -> RenderableType:
     renderable = _orig_markdown_fence_render(self)
-    if isinstance(renderable, Syntax):
-        renderable.word_wrap = True
-        renderable.padding = 0
-        renderable.line_numbers = True
+    try:
+        if isinstance(renderable, Syntax):
+            renderable.word_wrap = True
+            renderable.padding = 0
+            renderable.line_numbers = True
 
-        start_line = 1
-        if self.parent:
-            siblings = list(self.parent.children)
-            if self in siblings:
-                idx = siblings.index(self)
-                for s in reversed(siblings[:idx]):
-                    s_text = getattr(s, "_text", "") or ""
-                    if hasattr(s, "walk_children"):
-                        for child in s.walk_children():
-                            if hasattr(child, "text"):
-                                s_text += " " + str(child.text)
-                    m = re.search(r"\(Lines?\s+(\d+)", s_text)
-                    if m:
-                        start_line = int(m.group(1))
-                        break
-                    if isinstance(s, MarkdownFence):
-                        break
+            start_line = 1
+            if self.parent:
+                siblings = list(self.parent.children)
+                if self in siblings:
+                    idx = siblings.index(self)
+                    for s in reversed(siblings[:idx]):
+                        s_text = getattr(s, "_text", "") or ""
+                        if hasattr(s, "walk_children"):
+                            for child in s.walk_children():
+                                text_val = getattr(child, "text", "")
+                                if text_val:
+                                    s_text += " " + str(text_val)
+                        m = re.search(r"\(Lines?\s+(\d+)", s_text)
+                        if m:
+                            start_line = int(m.group(1))
+                            break
+                        if isinstance(s, MarkdownFence):
+                            break
 
-        renderable.start_line = start_line
+            renderable.start_line = start_line
+    except Exception:
+        pass
     return renderable
 
 MarkdownFence.render = _enhanced_markdown_fence_render
@@ -646,6 +651,9 @@ class ForkTurnCard(Vertical):
         self.refresh()
 
     def _on_key(self, event: events.Key) -> None:
+        if self.app.intercept_c_c_key(event):
+            return
+
         if event.key == "space":
             event.prevent_default(); event.stop()
             self.toggle()
@@ -1428,12 +1436,8 @@ class EmacsBaseTextArea(TextArea):
         self.move_cursor(self.cursor_location, select=False)
 
     def _on_key(self, event: events.Key) -> None:
-        if self.app.handle_c_c_prefix(event):
-            return
-
-        if event.key == "ctrl+c":
-            event.prevent_default(); event.stop()
-            self.app.set_c_c_prefix()
+        # Global Emacs C-c Chord interception
+        if self.app.intercept_c_c_key(event):
             return
 
         if event.key in ("ctrl+space", "ctrl+at", "ctrl+tilde") or (
@@ -1674,7 +1678,7 @@ class SnippetPreview(EmacsBaseTextArea):
             self.styles.height = target_height
 
     def _on_key(self, event: events.Key) -> None:
-        if self.app.handle_c_c_prefix(event):
+        if self.app.intercept_c_c_key(event):
             return
 
         if event.key in ("shift+enter", "ctrl+j"):
@@ -1798,7 +1802,7 @@ class ExpandingInput(EmacsBaseTextArea):
         self._sync_snippet_preview()
 
     def _on_key(self, event: events.Key) -> None:
-        if self.app.handle_c_c_prefix(event):
+        if self.app.intercept_c_c_key(event):
             return
 
         if event.key in ("shift+enter", "shift+return", "ctrl+j", "alt+enter", "meta+enter"):
@@ -1898,7 +1902,7 @@ class ExpandingInput(EmacsBaseTextArea):
         self.app.query_one("#snippet_preview", SnippetPreview).hide_preview()
 
 # ---------------------------------------------------------------------------
-# Feed View & Response Area (Pure Target Snapping Engine)
+# Feed View & Response Area (Target Snapping Engine)
 # ---------------------------------------------------------------------------
 
 class FeedArea(VerticalScroll):
@@ -2053,7 +2057,7 @@ class FeedArea(VerticalScroll):
         target_index: int | None = None,
         lock_turn_index: int | None = None,
     ) -> None:
-        """Pure Target State Machine: mounts needed runway, updates indices, snaps cleanly."""
+        """State Machine: mounts needed runway, updates indices, snaps cleanly."""
         if self._window_busy:
             return
 
@@ -2082,8 +2086,15 @@ class FeedArea(VerticalScroll):
                         self._win_start = 0
                         self._win_end = total
 
-                for idx in range(self._win_start, self._win_end):
-                    await container.mount(self._create_turn_widget(idx))
+                widgets_to_mount = [
+                    self._create_turn_widget(idx)
+                    for idx in range(self._win_start, self._win_end)
+                ]
+                if widgets_to_mount:
+                    await container.mount_all(widgets_to_mount)
+
+                # Allow Textual's layout pipeline to process mounting without race conditions
+                await asyncio.sleep(0.06)
 
                 settle_event = asyncio.Event()
 
@@ -2101,6 +2112,7 @@ class FeedArea(VerticalScroll):
                         else:
                             self.active_turn_index = 0
                             self.scroll_to(y=0, animate=False)
+                        self.refresh(layout=True)
                     finally:
                         settle_event.set()
 
@@ -2111,7 +2123,6 @@ class FeedArea(VerticalScroll):
                 req_idx = max(0, min(len(self._all_messages) - 1, target_index or 0))
                 total = len(self._all_messages)
 
-                # Ceiling snap
                 if req_idx == 0:
                     self.active_turn_index = 0
                     if self._win_start == 0:
@@ -2120,15 +2131,14 @@ class FeedArea(VerticalScroll):
                             self._focus_turn_card(0)
                         return
 
-                # Forward runway maintenance: keep at least 2 turns ahead mounted below
                 needed_forward = req_idx >= (self._win_end - 2) and self._win_end < total
-                # Backward runway maintenance
                 needed_backward = req_idx < self._win_start and self._win_start > 0
 
                 if needed_forward:
                     new_end = min(total, req_idx + 3)
-                    for idx in range(self._win_end, new_end):
-                        await container.mount(self._create_turn_widget(idx))
+                    forward_widgets = [self._create_turn_widget(idx) for idx in range(self._win_end, new_end)]
+                    if forward_widgets:
+                        await container.mount_all(forward_widgets)
                     self._win_end = new_end
 
                     while (self._win_end - self._win_start) > capacity and len(container.children) > 0:
@@ -2156,14 +2166,14 @@ class FeedArea(VerticalScroll):
                         await last_child.remove()
                         self._win_end -= 1
 
-                # If jump exceeds window entirely
                 if req_idx < self._win_start or req_idx >= self._win_end:
                     self.app.show_loader_banner()
                     new_start = max(0, req_idx - (capacity // 2))
                     new_end = min(total, new_start + capacity)
                     await container.remove_children()
-                    for idx in range(new_start, new_end):
-                        await container.mount(self._create_turn_widget(idx))
+                    jump_widgets = [self._create_turn_widget(idx) for idx in range(new_start, new_end)]
+                    if jump_widgets:
+                        await container.mount_all(jump_widgets)
                     self._win_start = new_start
                     self._win_end = new_end
 
@@ -2201,7 +2211,6 @@ class FeedArea(VerticalScroll):
 
                     def _on_locale_up_settle() -> None:
                         try:
-                            # Maintain user scroll anchor without jumping
                             lock_widget = self._get_target_widget(lock_turn_index or self._win_start + 1)
                             if lock_widget:
                                 self.scroll_to_widget(lock_widget, top=True, animate=False)
@@ -2221,7 +2230,6 @@ class FeedArea(VerticalScroll):
 
                     def _on_locale_down_settle() -> None:
                         try:
-                            # Advance by exactly 1 line instead of snapping across the whole turn
                             self.scroll_down()
                         finally:
                             settle_event.set()
@@ -2240,8 +2248,9 @@ class FeedArea(VerticalScroll):
                 self._win_end = min(capacity, total)
 
                 await container.remove_children()
-                for idx in range(self._win_start, self._win_end):
-                    await container.mount(self._create_turn_widget(idx))
+                home_widgets = [self._create_turn_widget(idx) for idx in range(self._win_start, self._win_end)]
+                if home_widgets:
+                    await container.mount_all(home_widgets)
 
                 self.active_turn_index = 0
                 settle_event = asyncio.Event()
@@ -2268,8 +2277,9 @@ class FeedArea(VerticalScroll):
                 self._win_end = total
 
                 await container.remove_children()
-                for idx in range(self._win_start, self._win_end):
-                    await container.mount(self._create_turn_widget(idx))
+                end_widgets = [self._create_turn_widget(idx) for idx in range(self._win_start, self._win_end)]
+                if end_widgets:
+                    await container.mount_all(end_widgets)
 
                 self.active_turn_index = total - 1
                 settle_event = asyncio.Event()
@@ -2488,10 +2498,10 @@ class FeedArea(VerticalScroll):
             return self._extract_code_from_fence(fences[-1])
         return None
 
-    # --- Fork Selection Operations Integrated with Pagination ---
+    # --- Fork Selection Operations ---
 
     def enter_fork_mode(self, messages: list[dict]) -> None:
-        """Enters fork mode anchored directly around currently visible turn (highlight only, unselected)."""
+        """Enters fork mode anchored directly around currently visible turn."""
         if not messages:
             return
 
@@ -2586,9 +2596,7 @@ class FeedArea(VerticalScroll):
             curr = curr.parent
 
     def _on_key(self, event: events.Key) -> None:
-        if event.key in ("ctrl+full_stop", "ctrl+period", "ctrl+."):
-            event.prevent_default(); event.stop()
-            self.app.action_fork_chat()
+        if self.app.intercept_c_c_key(event):
             return
 
         if self.fork_mode:
@@ -2622,29 +2630,6 @@ class FeedArea(VerticalScroll):
                 self.jump_to_end()
                 return
 
-        if not self.fork_mode and event.key in ("full_stop", ".", "f"):
-            event.prevent_default(); event.stop()
-            self.app.action_fork_chat()
-            return
-
-        if self.app.handle_c_c_prefix(event):
-            return
-
-        if event.key == "ctrl+c":
-            event.prevent_default(); event.stop()
-            self.app.set_c_c_prefix()
-            return
-
-        if event.key == "ctrl+r":
-            event.prevent_default(); event.stop()
-            self.app.action_save_snippet_to_disk()
-            return
-
-        if event.key == "ctrl+f":
-            event.prevent_default(); event.stop()
-            self.app.action_insert_file_from_disk()
-            return
-
         if event.key in ("escape", "i", "ctrl+o"):
             event.prevent_default(); event.stop()
             self.app.query_one("#input", ExpandingInput).focus()
@@ -2653,9 +2638,11 @@ class FeedArea(VerticalScroll):
         elif event.key in ("alt+n", "alt+down"):
             event.prevent_default(); event.stop()
             self.navigate_snippet(1)
+            return
         elif event.key in ("alt+p", "alt+up"):
             event.prevent_default(); event.stop()
             self.navigate_snippet(-1)
+            return
 
         # 1. Standard OS Viewport Paging via Shift+Up / Shift+Down
         if event.key in ("shift+up", "shift+down"):
@@ -2674,17 +2661,21 @@ class FeedArea(VerticalScroll):
         elif event.key in ("home",):
             event.prevent_default(); event.stop()
             self.jump_to_home()
+            return
         elif event.key in ("end",):
             event.prevent_default(); event.stop()
             self.jump_to_end()
+            return
 
         # 3. Fine-grained arrow navigation with Locale Target Lock
         elif event.key in ("down", "j"):
             event.prevent_default(); event.stop()
             self.arrow_navigate(1)
+            return
         elif event.key in ("up", "k"):
             event.prevent_default(); event.stop()
             self.arrow_navigate(-1)
+            return
         else:
             super()._on_key(event)
 
@@ -2692,12 +2683,7 @@ class HistoryList(OptionList):
     """OptionList with Vim/Emacs navigation, instant deletion, and renaming."""
 
     async def _on_key(self, event: events.Key) -> None:
-        if self.app.handle_c_c_prefix(event):
-            return
-
-        if event.key == "ctrl+c":
-            event.prevent_default(); event.stop()
-            self.app.set_c_c_prefix()
+        if self.app.intercept_c_c_key(event):
             return
 
         if event.key in ("escape", "ctrl+g", "q"):
@@ -2861,15 +2847,8 @@ class ChatApp(App):
 
     BINDINGS = [
         Binding("alt+x", "command_palette", "Menu (M-x)", show=True),
-        Binding("ctrl+n", "new_chat", "C-c n (New)", show=True),
-        Binding("ctrl+b", "toggle_history", "C-c b (History)", show=True),
+        Binding("ctrl+c", "c_c_prefix_stub", "C-c [n,b,y,r,f,g,e,t,.]", show=True),
         Binding("ctrl+full_stop", "fork_chat", "C-. (Fork)", show=True),
-        Binding("ctrl+y", "copy_last_response", "C-c y (Yank/Emacs)", show=True),
-        Binding("ctrl+r", "save_snippet_to_disk", "C-c r (Save File)", show=True),
-        Binding("ctrl+f", "insert_file_from_disk", "C-c f (File)", show=True),
-        Binding("ctrl+backslash", "open_git_tree", "C-c g (Git Tree)", show=True),
-        Binding("ctrl+e", "open_in_editor", "C-c e (Editor)", show=True),
-        Binding("ctrl+t", "rename_chat", "C-c t (Rename)", show=True),
         Binding("escape", "toggle_focus", "Focus Swap", show=True),
         Binding("ctrl+q", "quit", "Quit", show=True),
     ]
@@ -2884,7 +2863,10 @@ class ChatApp(App):
         self.current_chat_last_index: int = 0
         self.history: list[dict] = []
         self._server: asyncio.AbstractServer | None = None
+
+        # Robust prefix state machine
         self._prefix_c_c: bool = False
+        self._c_c_timer: Timer | None = None
 
         # Live status tracking state
         self._request_phase: str = "idle"
@@ -2904,105 +2886,105 @@ class ChatApp(App):
         super().copy_to_clipboard(text)
 
     def set_c_c_prefix(self) -> None:
+        """Arms C-c prefix chord globally with a 3.5s expiration window."""
+        if self._c_c_timer:
+            self._c_c_timer.stop()
+            self._c_c_timer = None
         self._prefix_c_c = True
-        self.notify("C-c-", timeout=1.0)
+        self._c_c_timer = self.set_timer(3.5, self._expire_c_c_prefix)
+        self.notify("C-c- (t:rename, b:hist, n:new, r:save, f:file, g:git, y:yank, e:edit, .:fork, C-g:cancel)", timeout=3.5)
 
-    def handle_c_c_prefix(self, event: events.Key) -> bool:
-        """Centralized Emacs C-c chord interceptor."""
-        if not self._prefix_c_c:
-            return False
-
+    def _expire_c_c_prefix(self) -> None:
         self._prefix_c_c = False
+        self._c_c_timer = None
 
-        if event.key in ("ctrl+n", "n"):
-            event.prevent_default(); event.stop()
-            self.action_new_chat()
-            return True
-        elif event.key in ("ctrl+b", "b"):
-            event.prevent_default(); event.stop()
-            self.action_toggle_history()
-            return True
-        elif event.key in ("ctrl+e", "e"):
-            event.prevent_default(); event.stop()
-            self.action_open_in_editor()
-            return True
-        elif event.key in ("ctrl+y", "y"):
-            event.prevent_default(); event.stop()
-            self.action_copy_last_response()
-            return True
-        elif event.key in ("ctrl+r", "r"):
-            event.prevent_default(); event.stop()
-            self.action_save_snippet_to_disk()
-            return True
-        elif event.key in ("ctrl+f", "f"):
-            event.prevent_default(); event.stop()
-            self.action_insert_file_from_disk()
-            return True
-        elif event.key in ("ctrl+g", "g"):
-            event.prevent_default(); event.stop()
-            self.action_open_git_tree()
-            return True
-        elif event.key in ("ctrl+t", "t"):
-            event.prevent_default(); event.stop()
-            self.action_rename_chat()
-            return True
-        elif event.key in ("period", "full_stop", "."):
-            event.prevent_default(); event.stop()
-            self.action_fork_chat()
-            return True
-        elif event.key in ("ctrl+c", "escape"):
-            event.prevent_default(); event.stop()
-            self.notify("Quit", timeout=1.0)
-            return True
-
-        return False
-
-    def on_key(self, event: events.Key) -> None:
-        """Application-level key interceptor guaranteeing chords resolve reliably."""
-        feed = self.query_one("#feed", FeedArea)
-
-        if feed.fork_mode:
-            if event.key in ("alt+n", "alt+down", "down", "j", "pagedown"):
-                event.prevent_default(); event.stop()
-                feed.step_fork_card(1)
-                return
-            elif event.key in ("alt+p", "alt+up", "up", "k", "pageup"):
-                event.prevent_default(); event.stop()
-                feed.step_fork_card(-1)
-                return
-            elif event.key in ("home",):
-                event.prevent_default(); event.stop()
-                feed.jump_to_home()
-                return
-            elif event.key in ("end",):
-                event.prevent_default(); event.stop()
-                feed.jump_to_end()
-                return
-
-        if self._prefix_c_c:
-            if self.handle_c_c_prefix(event):
-                event.prevent_default()
-                event.stop()
-                return
-
-        if event.key in ("ctrl+full_stop", "ctrl+period", "ctrl+."):
-            event.prevent_default()
-            event.stop()
-            self.action_fork_chat()
-            return
-
-        if feed.fork_mode and event.key in ("enter", "return"):
-            focused = self.focused
-            if focused and (focused is feed or focused in feed.query("*")):
-                event.prevent_default()
-                event.stop()
-                self.action_fork_chat()
-                return
-
+    def intercept_c_c_key(self, event: events.Key) -> bool:
+        """Central chord gatekeeper for widgets to call before handling or typing keys."""
         if event.key == "ctrl+c":
             event.prevent_default()
             event.stop()
             self.set_c_c_prefix()
+            return True
+
+        if self._prefix_c_c:
+            event.prevent_default()
+            event.stop()
+            self.handle_c_c_prefix(event)
+            return True
+
+        return False
+
+    def handle_c_c_prefix(self, event: events.Key) -> bool:
+        """Resolves chord target, supporting both plain letters and control modifiers."""
+        if not self._prefix_c_c:
+            return False
+
+        if self._c_c_timer:
+            self._c_c_timer.stop()
+            self._c_c_timer = None
+
+        self._prefix_c_c = False
+
+        key = event.key.lower()
+        char = (event.character or "").lower()
+
+        # Emacs keyboard quit: C-c C-g or C-c Escape
+        if key in ("ctrl+g", "escape"):
+            self.notify("Quit", timeout=1.0)
+            return True
+
+        if key in ("ctrl+t", "t") or char == "t":
+            self.action_rename_chat()
+            return True
+        elif key in ("ctrl+n", "n") or char == "n":
+            self.action_new_chat()
+            return True
+        elif key in ("ctrl+b", "b") or char == "b":
+            self.action_toggle_history()
+            return True
+        elif key in ("ctrl+r", "r") or char == "r":
+            self.action_save_snippet_to_disk()
+            return True
+        elif key in ("ctrl+f", "f") or char == "f":
+            self.action_insert_file_from_disk()
+            return True
+        elif key in ("ctrl+y", "y") or char == "y":
+            self.action_copy_last_response()
+            return True
+        elif key in ("ctrl+e", "e") or char == "e":
+            self.action_open_in_editor()
+            return True
+        elif key in ("g", "ctrl+backslash", "backslash") or char == "g":
+            self.action_open_git_tree()
+            return True
+        elif key in ("period", "full_stop", ".", "ctrl+period", "ctrl+full_stop") or char == ".":
+            self.action_fork_chat()
+            return True
+
+        self.notify(f"C-c {key} is undefined", timeout=2.0)
+        return False
+
+    def action_c_c_prefix_stub(self) -> None:
+        """Binding target for Ctrl+C."""
+        self.set_c_c_prefix()
+
+    def on_key(self, event: events.Key) -> None:
+        """Application-level key interceptor guaranteeing chords resolve globally."""
+        if self.intercept_c_c_key(event):
+            return
+
+        if event.key in ("ctrl+full_stop", "ctrl+period", "ctrl+."):
+            event.prevent_default(); event.stop()
+            self.action_fork_chat()
+            return
+
+        feed = self.query_one("#feed", FeedArea)
+        if feed.fork_mode and event.key in ("enter", "return"):
+            focused = self.focused
+            if focused and (focused is feed or focused in feed.query("*")):
+                event.prevent_default(); event.stop()
+                self.action_fork_chat()
+                return
 
     def compose(self) -> ComposeResult:
         yield Static("▲ Loading chat feed...", id="feed_loader_banner")
@@ -3016,7 +2998,10 @@ class ChatApp(App):
 
     async def on_mount(self) -> None:
         await self.start_socket_server()
+        # Defer chat mount until after initial screen layout pass finishes
+        self.call_after_refresh(self._initial_startup_load)
 
+    async def _initial_startup_load(self) -> None:
         last_active_id = self._read_active_chat_from_state()
         if last_active_id and self._get_chat_file(last_active_id).exists():
             await self.load_chat(last_active_id)
@@ -3250,6 +3235,10 @@ class ChatApp(App):
 
     def on_unmount(self) -> None:
         self._stop_status_ticker()
+        if self._c_c_timer:
+            self._c_c_timer.stop()
+            self._c_c_timer = None
+
         if self._save_position_timer:
             self._save_position_timer.stop()
             self._save_position_timer = None
@@ -3295,7 +3284,6 @@ class ChatApp(App):
             except Exception:
                 continue
 
-        # If parent was deleted, auto turn sub-chat into a non-sub chat
         for cid, data in chats_by_id.items():
             parent_id = data.get("parent_id")
             if parent_id and parent_id not in chats_by_id:
@@ -3304,7 +3292,6 @@ class ChatApp(App):
                 if target_file.exists():
                     target_file.write_text(json.dumps(data, indent=2))
 
-        # Build hierarchy
         children_map: dict[str, list[dict]] = {}
         roots: list[dict] = []
         for cid, data in chats_by_id.items():
@@ -3341,12 +3328,10 @@ class ChatApp(App):
         self._stop_status_ticker()
         self.hide_status()
 
-        # Cancel any pending position timer
         if self._save_position_timer:
             self._save_position_timer.stop()
             self._save_position_timer = None
 
-        # Save previous chat state before switching to a new chat
         if self.current_chat_id and self.current_chat_id != chat_id:
             feed = self.query_one("#feed", FeedArea)
             if feed._all_messages:
@@ -3384,7 +3369,6 @@ class ChatApp(App):
             self.current_chat_last_index = 0
 
         feed = self.query_one("#feed", FeedArea)
-        # Ensure feed is visible so target widget layout & scrolling work
         if feed.styles.display == "none":
             feed.styles.display = "block"
         feed.set_messages(self.history, initial_target_index=self.current_chat_last_index)
@@ -3615,7 +3599,6 @@ class ChatApp(App):
         input_widget = self.query_one("#input", ExpandingInput)
 
         if history_widget.styles.display == "none":
-            # Persist current chat position before hiding feed
             if self._save_position_timer:
                 self._save_position_timer.stop()
                 self._save_position_timer = None
@@ -3631,6 +3614,7 @@ class ChatApp(App):
         else:
             history_widget.styles.display = "none"
             feed.styles.display = "block"
+            feed.refresh(layout=True)
             saved_idx = self.current_chat_last_index
             target_w = feed._get_target_widget(saved_idx)
             if target_w:
@@ -4012,14 +3996,14 @@ class ChatApp(App):
             payload.insert(0, {"role": "user", "parts": [{"text": FORK_HEADER_TEXT}]})
 
         self.app.call_from_thread(self._start_status_ticker)
-        self.post_message(RequestPhaseUpdate("connecting"))
+        self.app.call_from_thread(self.post_message, RequestPhaseUpdate("connecting"))
 
         start_time = time.monotonic()
 
         try:
-            self.post_message(RequestPhaseUpdate("waiting"))
+            self.app.call_from_thread(self.post_message, RequestPhaseUpdate("waiting"))
             response = self.client.models.generate_content(
-                model="gemini-3.8-flash",
+                model=DEFAULT_MODEL,
                 contents=payload,
             )
 
@@ -4030,11 +4014,15 @@ class ChatApp(App):
             elapsed = max(time.monotonic() - start_time, 0.1)
             total_words = len(reply.split())
 
-            self.post_message(RequestFinished(reply, elapsed, total_words))
+            self.app.call_from_thread(
+                self.post_message, RequestFinished(reply, elapsed, total_words)
+            )
 
         except Exception as e:
             if self.current_chat_id == chat_id_snapshot:
-                self.post_message(RequestFailed(str(e)))
+                self.app.call_from_thread(
+                    self.post_message, RequestFailed(str(e))
+                )
 
 if __name__ == "__main__":
     ChatApp().run()

@@ -289,6 +289,9 @@ class MenuPalette(CommandPalette):
 class DirectoryPathInput(Input):
     """Input widget featuring 1x Tab directory auto-completion and 2x quick Tab to navigate UI."""
 
+    def __init__(**kwargs) -> None:
+        pass  # Signature wrapper
+
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
         self._last_tab_time: float = 0.0
@@ -614,9 +617,9 @@ class ForkModal(ModalScreen[str | None]):
         self.dismiss(final_title)
 
 class ForkTurnCard(Vertical):
-    """Focusable container representing a single response turn during Fork mode."""
+    """Container representing a single response turn during Fork mode without physical focus reflows."""
 
-    can_focus = True
+    can_focus = False
 
     def __init__(self, index: int, sender: str, text: str, is_selected: bool = False, **kwargs) -> None:
         super().__init__(classes="fork_turn_card", **kwargs)
@@ -650,58 +653,11 @@ class ForkTurnCard(Vertical):
         self.query_one(".fork_turn_box_label", Label).update(self._get_box_label())
         self.refresh()
 
-    def _on_key(self, event: events.Key) -> None:
-        if self.app.intercept_c_c_key(event):
-            return
-
-        if event.key == "space":
-            event.prevent_default(); event.stop()
-            self.toggle()
-            return
-        elif event.key in ("enter", "return"):
-            event.prevent_default(); event.stop()
-            self.app.action_fork_chat()
-            return
-        elif event.key in ("alt+n", "alt+down", "down", "j", "pagedown"):
-            event.prevent_default(); event.stop()
-            feed = self.app.query_one("#feed", FeedArea)
-            feed.step_fork_card(1)
-            return
-        elif event.key in ("alt+p", "alt+up", "up", "k", "pageup"):
-            event.prevent_default(); event.stop()
-            feed = self.app.query_one("#feed", FeedArea)
-            feed.step_fork_card(-1)
-            return
-        elif event.key in ("home",):
-            event.prevent_default(); event.stop()
-            feed = self.app.query_one("#feed", FeedArea)
-            feed.jump_to_home()
-            return
-        elif event.key in ("end",):
-            event.prevent_default(); event.stop()
-            feed = self.app.query_one("#feed", FeedArea)
-            feed.jump_to_end()
-            return
-        elif event.key == "a":
-            event.prevent_default(); event.stop()
-            feed = self.app.query_one("#feed", FeedArea)
-            feed.toggle_all_fork_checkboxes()
-            return
-        elif event.key in ("escape", "ctrl+g"):
-            event.prevent_default(); event.stop()
-            feed = self.app.query_one("#feed", FeedArea)
-            feed.exit_fork_mode()
-            self.app.notify("Fork cancelled.")
-            return
-
-        super()._on_key(event)
-
     @on(events.Click)
     def on_card_click(self, event: events.Click) -> None:
         event.stop()
         feed = self.app.query_one("#feed", FeedArea)
-        feed._focused_fork_card_index = self.turn_index
-        self.focus()
+        feed.highlight_fork_card(self.turn_index, scroll=False)
         curr = event.widget
         while curr and curr is not self:
             if "fork_turn_header" in curr.classes:
@@ -1618,6 +1574,8 @@ class EmacsBaseTextArea(TextArea):
 class SnippetPreview(EmacsBaseTextArea):
     """Editable preview box displaying the most recent snippet with accurate file line numbers."""
 
+    can_focus = False
+
     def __init__(**kwargs) -> None:
         pass  # Signature wrapper
 
@@ -1680,33 +1638,9 @@ class SnippetPreview(EmacsBaseTextArea):
         if self.styles.height != target_height:
             self.styles.height = target_height
 
-    def _on_key(self, event: events.Key) -> None:
-        if self.app.intercept_c_c_key(event):
-            return
-
-        if event.key in ("shift+enter", "ctrl+j"):
-            event.prevent_default(); event.stop()
-            self.app.query_one("#input", ExpandingInput).action_submit()
-            return
-
-        row, _ = self.cursor_location
-        if row == self.document.line_count - 1 and event.key in ("down", "ctrl+n"):
-            event.prevent_default(); event.stop()
-            self.app.query_one("#input", ExpandingInput).focus()
-            return
-
-        if event.key in ("ctrl+g", "escape"):
-            event.prevent_default(); event.stop()
-            if self._mark_point is not None or self.selected_text:
-                self._clear_mark()
-                self.app.notify("Quit", timeout=1.0)
-            else:
-                self.app.query_one("#feed", FeedArea).focus()
-            return
-
-        super()._on_key(event)
-
 class ExpandingInput(EmacsBaseTextArea):
+    can_focus = True
+
     class Submitted(Message):
         def __init__(self, value: str) -> None:
             super().__init__()
@@ -1805,7 +1739,125 @@ class ExpandingInput(EmacsBaseTextArea):
         self._sync_snippet_preview()
 
     def _on_key(self, event: events.Key) -> None:
+        # 1. Global Feed Navigation Mode Gating
+        if getattr(self.app, "feed_nav_mode", False):
+            feed = self.app.query_one("#feed", FeedArea)
+
+            # Universal Emergency Brake: Escape or Ctrl+o exits ALL the way to prompt
+            if event.key in ("escape", "ctrl+o"):
+                event.prevent_default(); event.stop()
+                if feed.fork_mode:
+                    feed.exit_fork_mode()
+                self.app.action_toggle_feed_nav()
+                return
+
+            # Sub-mode Toggle: '.' exits Fork Mode back to normal Feed Nav
+            if event.key in ("period", "full_stop", "."):
+                event.prevent_default(); event.stop()
+                if feed.fork_mode:
+                    feed.exit_fork_mode()
+                    self.app.update_feed_nav_banner()
+                    self.app.notify("Exited fork mode (Feed Nav active)")
+                else:
+                    self.app.action_fork_chat()
+                return
+
+            # Check for Emacs C-c Prefix Chord interception
+            if self.app.intercept_c_c_key(event):
+                return
+
+            # Routing in Fork Mode
+            if feed.fork_mode:
+                if event.key == "space":
+                    event.prevent_default(); event.stop()
+                    feed.toggle_current_fork_card()
+                    return
+                elif event.key == "a":
+                    event.prevent_default(); event.stop()
+                    feed.toggle_all_fork_checkboxes()
+                    return
+                elif event.key in ("enter", "return"):
+                    event.prevent_default(); event.stop()
+                    self.app.action_fork_chat()
+                    return
+                elif event.key in ("alt+n", "meta+n", "pagedown"):
+                    event.prevent_default(); event.stop()
+                    feed.step_fork_card(1)
+                    return
+                elif event.key in ("alt+p", "meta+p", "pageup"):
+                    event.prevent_default(); event.stop()
+                    feed.step_fork_card(-1)
+                    return
+                elif event.key in ("home",):
+                    event.prevent_default(); event.stop()
+                    feed.jump_to_home()
+                    return
+                elif event.key in ("end",):
+                    event.prevent_default(); event.stop()
+                    feed.jump_to_end()
+                    return
+                elif event.key in ("shift+up", "shift+down"):
+                    event.prevent_default(); event.stop()
+                    direction = -1 if event.key == "shift+up" else 1
+                    feed.viewport_page_navigate(direction)
+                    return
+                elif event.key in ("down", "j"):
+                    event.prevent_default(); event.stop()
+                    feed.arrow_navigate(1)
+                    return
+                elif event.key in ("up", "k"):
+                    event.prevent_default(); event.stop()
+                    feed.arrow_navigate(-1)
+                    return
+
+            # Routing in Standard Snippet Feed Nav Mode
+            else:
+                if event.key in ("alt+n", "meta+n"):
+                    event.prevent_default(); event.stop()
+                    feed.navigate_snippet(1)
+                    return
+                elif event.key in ("alt+p", "meta+p"):
+                    event.prevent_default(); event.stop()
+                    feed.navigate_snippet(-1)
+                    return
+                elif event.key in ("shift+up", "shift+down"):
+                    event.prevent_default(); event.stop()
+                    direction = -1 if event.key == "shift+up" else 1
+                    feed.viewport_page_navigate(direction)
+                    return
+                elif event.key in ("pageup", "pagedown"):
+                    event.prevent_default(); event.stop()
+                    direction = -1 if event.key == "pageup" else 1
+                    feed.page_navigate(direction)
+                    return
+                elif event.key in ("home",):
+                    event.prevent_default(); event.stop()
+                    feed.jump_to_home()
+                    return
+                elif event.key in ("end",):
+                    event.prevent_default(); event.stop()
+                    feed.jump_to_end()
+                    return
+                elif event.key in ("down", "j"):
+                    event.prevent_default(); event.stop()
+                    feed.arrow_navigate(1)
+                    return
+                elif event.key in ("up", "k"):
+                    event.prevent_default(); event.stop()
+                    feed.arrow_navigate(-1)
+                    return
+
+            # Lockout: Discard all typing keystrokes while in Feed Nav
+            event.prevent_default(); event.stop()
+            return
+
+        # 2. Normal Prompt Mode Handlers
         if self.app.intercept_c_c_key(event):
+            return
+
+        if event.key == "ctrl+o":
+            event.prevent_default(); event.stop()
+            self.app.action_toggle_feed_nav()
             return
 
         if event.key in ("shift+enter", "shift+return", "ctrl+j", "alt+enter", "meta+enter"):
@@ -1817,30 +1869,16 @@ class ExpandingInput(EmacsBaseTextArea):
             self.action_submit()
             return
 
-        row, _ = self.cursor_location
-        if row == 0 and event.key in ("up", "ctrl+p"):
-            preview_box = self.app.query_one("#snippet_preview", SnippetPreview)
-            if preview_box.styles.display != "none":
-                event.prevent_default(); event.stop()
-                preview_box.focus()
-                return
-
         if event.key in ("ctrl+g", "escape"):
             event.prevent_default(); event.stop()
             if self._mark_point is not None or self.selected_text:
                 self._clear_mark()
                 self.app.notify("Quit", timeout=1.0)
-            else:
-                self.app.query_one("#feed", FeedArea).focus()
             return
 
-        elif event.key in ("alt+n", "alt+down"):
+        # Alt+n / Alt+p are strictly inert in typing mode
+        if event.key in ("alt+n", "alt+down", "meta+n", "alt+p", "alt+up", "meta+p"):
             event.prevent_default(); event.stop()
-            self.app.action_next_snippet()
-            return
-        elif event.key in ("alt+p", "alt+up"):
-            event.prevent_default(); event.stop()
-            self.app.action_prev_snippet()
             return
 
         super()._on_key(event)
@@ -1910,10 +1948,10 @@ class ExpandingInput(EmacsBaseTextArea):
 
 class FeedArea(VerticalScroll):
     """Feed featuring Pure Target-Snapping, Seamless Line-by-Line Boundary Stepping,
-    and Viewport Paging for Shift+Up/Down.
+    and Viewport Paging for Shift+Up/Down. Focus stays input-driven.
     """
 
-    can_focus = True
+    can_focus = False
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
@@ -1997,6 +2035,8 @@ class FeedArea(VerticalScroll):
                 id=turn_id,
             )
             card.data = {"turn_index": idx, "turn_id": turn_id}
+            if idx == self._focused_fork_card_index:
+                card.add_class("card-active")
             return card
 
         md_text = self._format_turn_markdown(sender, turn["text"])
@@ -2096,7 +2136,6 @@ class FeedArea(VerticalScroll):
                 if widgets_to_mount:
                     await container.mount_all(widgets_to_mount)
 
-                # Allow Textual's layout pipeline to process mounting without race conditions
                 await asyncio.sleep(0.06)
 
                 settle_event = asyncio.Event()
@@ -2111,7 +2150,7 @@ class FeedArea(VerticalScroll):
                             else:
                                 self.scroll_end(animate=False)
                             if self.fork_mode:
-                                self._focus_turn_card(req_idx)
+                                self.highlight_fork_card(req_idx, scroll=False)
                         else:
                             self.active_turn_index = 0
                             self.scroll_to(y=0, animate=False)
@@ -2131,7 +2170,7 @@ class FeedArea(VerticalScroll):
                     if self._win_start == 0:
                         self.scroll_to(y=0, animate=False)
                         if self.fork_mode:
-                            self._focus_turn_card(0)
+                            self.highlight_fork_card(0, scroll=False)
                         return
 
                 needed_forward = req_idx >= (self._win_end - 2) and self._win_end < total
@@ -2192,7 +2231,7 @@ class FeedArea(VerticalScroll):
                             if target_w:
                                 self.scroll_to_widget(target_w, top=True, animate=False)
                         if self.fork_mode:
-                            self._focus_turn_card(req_idx)
+                            self.highlight_fork_card(req_idx, scroll=False)
                     finally:
                         settle_event.set()
 
@@ -2262,7 +2301,7 @@ class FeedArea(VerticalScroll):
                     try:
                         self.scroll_to(y=0, animate=False)
                         if self.fork_mode:
-                            self._focus_turn_card(0)
+                            self.highlight_fork_card(0, scroll=False)
                     finally:
                         settle_event.set()
 
@@ -2295,7 +2334,7 @@ class FeedArea(VerticalScroll):
                         else:
                             self.scroll_end(animate=False)
                         if self.fork_mode:
-                            self._focus_turn_card(self.active_turn_index)
+                            self.highlight_fork_card(self.active_turn_index, scroll=False)
                     finally:
                         settle_event.set()
 
@@ -2332,7 +2371,7 @@ class FeedArea(VerticalScroll):
 
         self._run_target_mutation("scroll_to_target", target_index=target_idx)
         if self.fork_mode:
-            self._focused_fork_card_index = target_idx
+            self.highlight_fork_card(target_idx, scroll=False)
 
     def viewport_page_navigate(self, direction: int) -> None:
         """Standard OS viewport page scrolling with edge-hold trailing release buffer."""
@@ -2401,14 +2440,14 @@ class FeedArea(VerticalScroll):
     def jump_to_home(self) -> None:
         """Instantly jumps and snaps to target of the first turn."""
         if self.fork_mode:
-            self._focused_fork_card_index = 0
+            self.highlight_fork_card(0, scroll=False)
         self._run_target_mutation("jump_home")
 
     def jump_to_end(self) -> None:
         """Instantly jumps and snaps to the final target turn."""
         if self.fork_mode:
             last_idx = max(0, len(self._all_messages) - 1)
-            self._focused_fork_card_index = last_idx
+            self.highlight_fork_card(last_idx, scroll=False)
         self._run_target_mutation("jump_end")
 
     async def append_message(self, sender: str, text: str, jump_to_start: bool = False) -> None:
@@ -2497,8 +2536,6 @@ class FeedArea(VerticalScroll):
         fences = self._get_fences()
         if 0 <= self.selected_snippet_index < len(fences):
             return self._extract_code_from_fence(fences[self.selected_snippet_index])
-        elif fences:
-            return self._extract_code_from_fence(fences[-1])
         return None
 
     # --- Fork Selection Operations ---
@@ -2528,7 +2565,6 @@ class FeedArea(VerticalScroll):
         self._fork_selected_indices.clear()
 
         self._run_target_mutation("reset_chat", new_messages=self._all_messages, target_index=anchor_idx)
-        self.focus()
 
     def get_selected_fork_indices(self) -> list[int]:
         return sorted(list(self._fork_selected_indices))
@@ -2553,8 +2589,28 @@ class FeedArea(VerticalScroll):
         state_msg = "Selected all turns" if not all_selected else "Deselected all turns"
         self.app.notify(state_msg, timeout=2.0)
 
+    def highlight_fork_card(self, turn_idx: int, scroll: bool = True) -> None:
+        """Visually marks a card as active without changing DOM focus."""
+        self._focused_fork_card_index = turn_idx
+        self.active_turn_index = turn_idx
+        container = self.query_one("#turns_container", Vertical)
+
+        for card in container.query(ForkTurnCard):
+            if card.turn_index == turn_idx:
+                card.add_class("card-active")
+                if scroll:
+                    self.scroll_to_widget(card, top=False, animate=False)
+            else:
+                card.remove_class("card-active")
+
+    def toggle_current_fork_card(self) -> None:
+        """Toggles checkbox on currently highlighted fork card."""
+        target_card = self._get_target_widget(self._focused_fork_card_index)
+        if isinstance(target_card, ForkTurnCard):
+            target_card.toggle()
+
     def step_fork_card(self, delta: int) -> None:
-        """Step one fork card forward/backward, focusing mounted cards immediately or sliding window."""
+        """Step one fork card forward/backward, updating highlight without DOM reflows."""
         total = len(self._all_messages)
         if not total or self._window_busy:
             return
@@ -2565,22 +2621,11 @@ class FeedArea(VerticalScroll):
 
         existing_card = self._get_target_widget(target_idx)
         if isinstance(existing_card, ForkTurnCard):
-            self._focused_fork_card_index = target_idx
-            self.active_turn_index = target_idx
-            existing_card.focus()
-            self.scroll_to_widget(existing_card, top=False, animate=False)
+            self.highlight_fork_card(target_idx, scroll=True)
             return
 
         self._focused_fork_card_index = target_idx
         self._run_target_mutation("scroll_to_target", target_index=target_idx)
-
-    def _focus_turn_card(self, turn_idx: int) -> None:
-        card = self._get_target_widget(turn_idx)
-        if isinstance(card, ForkTurnCard):
-            self._focused_fork_card_index = turn_idx
-            self.active_turn_index = turn_idx
-            card.focus()
-            self.scroll_to_widget(card, top=False, animate=False)
 
     @on(events.Click)
     def _on_feed_click(self, event: events.Click) -> None:
@@ -2593,94 +2638,9 @@ class FeedArea(VerticalScroll):
                 fences = self._get_fences()
                 if curr in fences:
                     self.select_snippet(fences.index(curr), scroll=False)
-                    self.focus()
                     event.stop()
                     return
             curr = curr.parent
-
-    def _on_key(self, event: events.Key) -> None:
-        if self.app.intercept_c_c_key(event):
-            return
-
-        if self.fork_mode:
-            if event.key in ("escape", "ctrl+g"):
-                event.prevent_default(); event.stop()
-                self.exit_fork_mode()
-                self.app.notify("Fork cancelled.")
-                return
-            elif event.key == "a":
-                event.prevent_default(); event.stop()
-                self.toggle_all_fork_checkboxes()
-                return
-            elif event.key in ("enter", "return"):
-                event.prevent_default(); event.stop()
-                self.app.action_fork_chat()
-                return
-            elif event.key in ("alt+n", "alt+down", "down", "j", "pagedown"):
-                event.prevent_default(); event.stop()
-                self.step_fork_card(1)
-                return
-            elif event.key in ("alt+p", "alt+up", "up", "k", "pageup"):
-                event.prevent_default(); event.stop()
-                self.step_fork_card(-1)
-                return
-            elif event.key in ("home",):
-                event.prevent_default(); event.stop()
-                self.jump_to_home()
-                return
-            elif event.key in ("end",):
-                event.prevent_default(); event.stop()
-                self.jump_to_end()
-                return
-
-        if event.key in ("escape", "i", "ctrl+o"):
-            event.prevent_default(); event.stop()
-            self.app.query_one("#input", ExpandingInput).focus()
-            return
-
-        elif event.key in ("alt+n", "alt+down"):
-            event.prevent_default(); event.stop()
-            self.navigate_snippet(1)
-            return
-        elif event.key in ("alt+p", "alt+up"):
-            event.prevent_default(); event.stop()
-            self.navigate_snippet(-1)
-            return
-
-        # 1. Standard OS Viewport Paging via Shift+Up / Shift+Down
-        if event.key in ("shift+up", "shift+down"):
-            event.prevent_default(); event.stop()
-            direction = -1 if event.key == "shift+up" else 1
-            self.viewport_page_navigate(direction)
-            return
-
-        # 2. Discrete Turn-Target Snapping via PageUp / PageDown
-        elif event.key in ("pageup", "pagedown"):
-            event.prevent_default(); event.stop()
-            direction = -1 if event.key == "pageup" else 1
-            self.page_navigate(direction)
-            return
-
-        elif event.key in ("home",):
-            event.prevent_default(); event.stop()
-            self.jump_to_home()
-            return
-        elif event.key in ("end",):
-            event.prevent_default(); event.stop()
-            self.jump_to_end()
-            return
-
-        # 3. Fine-grained arrow navigation with Locale Target Lock
-        elif event.key in ("down", "j"):
-            event.prevent_default(); event.stop()
-            self.arrow_navigate(1)
-            return
-        elif event.key in ("up", "k"):
-            event.prevent_default(); event.stop()
-            self.arrow_navigate(-1)
-            return
-        else:
-            super()._on_key(event)
 
 class HistoryList(OptionList):
     """OptionList with Vim/Emacs navigation, instant deletion, and renaming."""
@@ -2767,6 +2727,15 @@ class ChatApp(App):
         background: #14202c;
         display: none;
     }
+    #feed_nav_banner {
+        width: 100%;
+        height: 1;
+        background: #0d2b45;
+        color: #ffcc00;
+        text-style: bold;
+        content-align: center middle;
+        display: none;
+    }
     .fork_turn_card {
         width: 100%;
         height: auto;
@@ -2775,7 +2744,7 @@ class ChatApp(App):
         border: solid #444444;
         background: $surface;
     }
-    .fork_turn_card:focus {
+    .fork_turn_card.card-active {
         border: thick cyan;
         background: #101c28;
     }
@@ -2786,7 +2755,7 @@ class ChatApp(App):
         background: #1f3044;
         border-bottom: solid #334455;
     }
-    .fork_turn_card:focus .fork_turn_header {
+    .fork_turn_card.card-active .fork_turn_header {
         background: dodgerblue;
     }
     .fork_turn_box_label {
@@ -2822,9 +2791,6 @@ class ChatApp(App):
         width: 100%;
         max-width: 100%;
     }
-    #feed:focus {
-        border: double lightgreen;
-    }
     #history {
         height: 1fr;
         border: solid yellow;
@@ -2837,9 +2803,6 @@ class ChatApp(App):
         display: none;
         margin-bottom: 0;
     }
-    #snippet_preview:focus {
-        border: double cyan;
-    }
     #input {
         border: solid dodgerblue;
     }
@@ -2851,8 +2814,8 @@ class ChatApp(App):
     BINDINGS = [
         Binding("alt+x", "command_palette", "Menu (M-x)", show=True),
         Binding("ctrl+c", "c_c_prefix_stub", "C-c [e,w,y,t,b,n,r,f,g,.]", show=True),
+        Binding("ctrl+o", "toggle_feed_nav", "C-o (Feed Nav)", show=True),
         Binding("ctrl+full_stop", "fork_chat", "C-. (Fork)", show=True),
-        Binding("escape", "toggle_focus", "Focus Swap", show=True),
         Binding("ctrl+q", "quit", "Quit", show=True),
     ]
 
@@ -2866,6 +2829,9 @@ class ChatApp(App):
         self.current_chat_last_index: int = 0
         self.history: list[dict] = []
         self._server: asyncio.AbstractServer | None = None
+
+        # Modal Feed Navigation State
+        self.feed_nav_mode: bool = False
 
         # Robust prefix state machine
         self._prefix_c_c: bool = False
@@ -2964,6 +2930,13 @@ class ChatApp(App):
             self.action_open_git_tree()
             return True
         elif key in ("period", "full_stop", ".", "ctrl+period", "ctrl+full_stop") or char == ".":
+            # If in Feed Nav and already in Fork Mode, C-c . exits back to Snippet Nav
+            feed = self.query_one("#feed", FeedArea)
+            if self.feed_nav_mode and feed.fork_mode:
+                feed.exit_fork_mode()
+                self.update_feed_nav_banner()
+                self.notify("Exited fork mode (Feed Nav active)")
+                return True
             self.action_fork_chat()
             return True
 
@@ -2973,6 +2946,39 @@ class ChatApp(App):
     def action_c_c_prefix_stub(self) -> None:
         """Binding target for Ctrl+C."""
         self.set_c_c_prefix()
+
+    def update_feed_nav_banner(self) -> None:
+        banner = self.query_one("#feed_nav_banner", Static)
+        feed = self.query_one("#feed", FeedArea)
+        if not self.feed_nav_mode:
+            banner.styles.display = "none"
+            return
+
+        if feed.fork_mode:
+            banner.styles.background = "#0c283d"
+            banner.styles.color = "#00d7ff"
+            banner.update("▲ [FORK MODE] Space: Toggle [✓] | a: All | M-n/M-p: Step | .: Exit Fork | Enter: Fork | Esc: Cancel")
+        else:
+            banner.styles.background = "#0d2b45"
+            banner.styles.color = "#ffcc00"
+            banner.update("▲ [FEED NAV ACTIVE] j/k/Arrows: Line | PgUp/PgDn: Steps | Alt+n/p: Snippets | .: Fork | Esc: Exit")
+        banner.styles.display = "block"
+
+    def action_toggle_feed_nav(self) -> None:
+        """Toggles Feed Navigation mode on and off."""
+        feed = self.query_one("#feed", FeedArea)
+        if self.feed_nav_mode:
+            if feed.fork_mode:
+                feed.exit_fork_mode()
+            self.feed_nav_mode = False
+            self.update_feed_nav_banner()
+            self.notify("Exited feed navigation")
+        else:
+            self.feed_nav_mode = True
+            self.update_feed_nav_banner()
+            self.notify("Feed navigation active")
+
+        self.query_one("#input", ExpandingInput).focus()
 
     def on_key(self, event: events.Key) -> None:
         """Application-level key interceptor guaranteeing chords resolve globally."""
@@ -2984,27 +2990,19 @@ class ChatApp(App):
             self.action_fork_chat()
             return
 
-        feed = self.query_one("#feed", FeedArea)
-        if feed.fork_mode and event.key in ("enter", "return"):
-            focused = self.focused
-            if focused and (focused is feed or focused in feed.query("*")):
-                event.prevent_default(); event.stop()
-                self.action_fork_chat()
-                return
-
     def compose(self) -> ComposeResult:
         yield Static("▲ Loading chat feed...", id="feed_loader_banner")
         with Vertical(id="main_container"):
             yield FeedArea(id="feed")
             yield HistoryList(id="history")
             yield Label("", id="feed_status")
+            yield Static("", id="feed_nav_banner")
             yield SnippetPreview(id="snippet_preview")
             yield ExpandingInput(id="input")
         yield Footer()
 
     async def on_mount(self) -> None:
         await self.start_socket_server()
-        # Defer chat mount until after initial screen layout pass finishes
         self.call_after_refresh(self._initial_startup_load)
 
     async def _initial_startup_load(self) -> None:
@@ -3097,7 +3095,8 @@ class ChatApp(App):
         self._stop_status_ticker()
 
         feed = self.query_one("#feed", FeedArea)
-        await feed.append_message("Gemini", event.full_text, jump_to_start=True)
+        jump_top = not self.feed_nav_mode
+        await feed.append_message("Gemini", event.full_text, jump_to_start=jump_top)
 
         new_turn_id = f"turn_{uuid4().hex[:8]}"
         self.history.append({"turn_id": new_turn_id, "role": "model", "text": event.full_text})
@@ -3378,6 +3377,7 @@ class ChatApp(App):
         if feed.styles.display == "none":
             feed.styles.display = "block"
         feed.set_messages(self.history, initial_target_index=self.current_chat_last_index)
+        feed.selected_snippet_index = -1
         self.query_one("#input", ExpandingInput).reset_snippets()
         self.query_one("#snippet_preview", SnippetPreview).hide_preview()
 
@@ -3478,14 +3478,6 @@ class ChatApp(App):
 
     # --- Actions & Snippet Controls ---
 
-    def action_next_snippet(self) -> None:
-        feed = self.query_one("#feed", FeedArea)
-        feed.navigate_snippet(1)
-
-    def action_prev_snippet(self) -> None:
-        feed = self.query_one("#feed", FeedArea)
-        feed.navigate_snippet(-1)
-
     def action_rename_chat(self) -> None:
         def on_renamed(new_title: str | None) -> None:
             if new_title is not None and new_title.strip():
@@ -3502,7 +3494,7 @@ class ChatApp(App):
         )
 
     def action_fork_chat(self) -> None:
-        """Handles initiation and finalization of chat forking."""
+        """Handles initiation and finalization of chat forking integrated inside Feed Nav."""
         feed = self.query_one("#feed", FeedArea)
 
         if feed.fork_mode:
@@ -3515,6 +3507,7 @@ class ChatApp(App):
                 if not fork_title:
                     self.notify("Fork cancelled.")
                     feed.exit_fork_mode()
+                    self.update_feed_nav_banner()
                     return
                 self._execute_chat_fork(selected_indices, fork_title)
 
@@ -3528,14 +3521,21 @@ class ChatApp(App):
             self.notify("No conversation history to fork.", severity="warning")
             return
 
+        # Ensure Feed Nav mode is active when entering Fork Mode
+        self.feed_nav_mode = True
         feed.enter_fork_mode(self.history)
-        self.notify("Fork mode: Space toggles check, Alt+n/p/arrows/j/k steps highlight, Enter forks.", timeout=4.0)
+        self.update_feed_nav_banner()
+        self.notify("Fork mode active: Space toggles, Enter forks, '.' exits to Feed Nav, Esc cancels.", timeout=4.0)
 
     def _execute_chat_fork(self, selected_indices: list[int], fork_title: str) -> None:
         """Constructs and switches to the new forked chat without triggering Gemini API call."""
         feed = self.query_one("#feed", FeedArea)
         feed.fork_mode = False
         feed._fork_selected_indices.clear()
+
+        # Seamless exit of Feed Nav mode upon successful fork creation
+        self.feed_nav_mode = False
+        self.update_feed_nav_banner()
 
         selected_turns = [copy.deepcopy(self.history[i]) for i in selected_indices]
         if not selected_turns:
@@ -3575,29 +3575,13 @@ class ChatApp(App):
     def _render_forked_chat(self, turns: list[dict]) -> None:
         feed = self.query_one("#feed", FeedArea)
         feed.set_messages(turns, initial_target_index=0)
+        feed.selected_snippet_index = -1
         input_widget = self.query_one("#input", ExpandingInput)
         input_widget.reset_snippets()
         self.query_one("#snippet_preview", SnippetPreview).hide_preview()
         input_widget.focus()
         self.refresh_history_list()
         self.notify(f"Fork created: '{self.current_chat_title}' (Awaiting response)", timeout=4.0)
-
-    def action_toggle_focus(self) -> None:
-        feed = self.query_one("#feed", FeedArea)
-        preview_box = self.query_one("#snippet_preview", SnippetPreview)
-        input_widget = self.query_one("#input", ExpandingInput)
-
-        feed_focused = feed.has_focus or (self.focused is not None and self.focused in feed.query("*"))
-
-        if feed_focused:
-            if preview_box.styles.display != "none":
-                preview_box.focus()
-            else:
-                input_widget.focus()
-        elif preview_box.has_focus:
-            input_widget.focus()
-        else:
-            feed.focus()
 
     def action_toggle_history(self) -> None:
         feed = self.query_one("#feed", FeedArea)
@@ -3664,6 +3648,7 @@ class ChatApp(App):
 
         feed = self.query_one("#feed", FeedArea)
         feed.clear()
+        feed.selected_snippet_index = -1
         input_widget = self.query_one("#input", ExpandingInput)
         input_widget.reset_snippets()
         self.query_one("#snippet_preview", SnippetPreview).hide_preview()
@@ -3671,7 +3656,7 @@ class ChatApp(App):
         self._save_active_chat_to_state(self.current_chat_id)
 
     def action_save_snippet_to_disk(self) -> None:
-        """Write active feed snippet directly to a file on disk with overwrite protection."""
+        """Write active feed snippet directly to a file on disk with overwrite protection (C-c r)."""
         feed = self.query_one("#feed", FeedArea)
         content = feed.get_active_snippet()
 
@@ -3917,30 +3902,19 @@ class ChatApp(App):
                 except Exception:
                     pass
 
-    def _get_active_or_last_text(self) -> str | None:
-        """Retrieves active feed snippet or falls back to latest Gemini response turn."""
-        feed = self.query_one("#feed", FeedArea)
-        snippet_text = feed.get_active_snippet()
-        if snippet_text is not None:
-            return snippet_text
-
-        for turn in reversed(self.history):
-            if turn["role"] == "model":
-                return turn["text"]
-        return None
-
     def action_send_to_emacs(self) -> None:
-        """Sends active snippet (or last response) directly to Emacs window (C-c e)."""
-        text_to_send = self._get_active_or_last_text()
+        """Sends active snippet to Emacs window (C-c e). Requires selected snippet."""
+        feed = self.query_one("#feed", FeedArea)
+        text_to_send = feed.get_active_snippet()
         if not text_to_send:
-            self.notify("Nothing to send to Emacs.", severity="warning")
+            self.notify("No snippet to send to Emacs.", severity="warning")
             return
 
         frames = self._get_emacs_frames()
         if len(frames) <= 1:
             success = self._send_to_emacs_buffer(text_to_send)
             if success:
-                self.notify("Sent code to active Emacs window")
+                self.notify("Snippet sent to Emacs client")
             else:
                 self.notify("Failed to connect to Emacs server", severity="error")
             return
@@ -3950,17 +3924,18 @@ class ChatApp(App):
                 buf = chosen.get("buf_name")
                 success = self._send_to_emacs_buffer(text_to_send, target_buf=buf)
                 if success:
-                    self.notify(f"Sent code to {chosen.get('file_name')}")
+                    self.notify(f"Snippet sent to Emacs client ({chosen.get('file_name')})")
                 else:
                     self.notify("Failed to send to Emacs window", severity="error")
 
         self.push_screen(FrameSelectModal(frames), callback=on_window_chosen)
 
     def action_copy_active_snippet(self) -> None:
-        """Copies active snippet (or last response) strictly to clipboard (C-c w)."""
-        text_to_send = self._get_active_or_last_text()
+        """Copies active snippet strictly to clipboard (C-c w). Requires selected snippet."""
+        feed = self.query_one("#feed", FeedArea)
+        text_to_send = feed.get_active_snippet()
         if not text_to_send:
-            self.notify("Nothing to copy.", severity="warning")
+            self.notify("No snippet selected to copy.", severity="warning")
             return
 
         self.copy_to_clipboard(text_to_send)
@@ -4047,10 +4022,11 @@ class ChatApp(App):
             )
 
         except Exception as e:
-            if self.current_chat_id == chat_id_snapshot:
-                self.app.call_from_thread(
-                    self.post_message, RequestFailed(str(e))
-                )
+            if self.current_chat_id != chat_id_snapshot:
+                return
+            self.app.call_from_thread(
+                self.post_message, RequestFailed(str(e))
+            )
 
 if __name__ == "__main__":
     ChatApp().run()

@@ -41,6 +41,12 @@ from textual.widgets.option_list import Option
 from textual.widgets.text_area import Selection
 from textual.widgets.tree import TreeNode
 
+try:
+    from markdown_it import MarkdownIt
+    _MD_PARSER = MarkdownIt()
+except Exception:
+    _MD_PARSER = None
+
 # User-specific directory and socket paths
 GEMINI_HOME = Path.home() / ".gemini"
 GEMINI_HOME.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -288,9 +294,6 @@ class MenuPalette(CommandPalette):
 
 class DirectoryPathInput(Input):
     """Input widget featuring 1x Tab directory auto-completion and 2x quick Tab to navigate UI."""
-
-    def __init__(**kwargs) -> None:
-        pass  # Signature wrapper
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
@@ -1070,7 +1073,8 @@ class GitTreeModal(ModalScreen[dict | None]):
         if data.get("is_file"):
             is_sel = data["path"] in self.selected_files
             part = data.get("name", Path(data["path"]).name)
-            root_node.set_label(f"[{'✓' if is_sel else ' '}] {part}")
+            box = "✓" if is_sel else " "
+            root_node.set_label(f"[{box}] {part}")
             return (1 if is_sel else 0, 1)
 
         sel_total = 0
@@ -1576,9 +1580,6 @@ class SnippetPreview(EmacsBaseTextArea):
 
     can_focus = False
 
-    def __init__(**kwargs) -> None:
-        pass  # Signature wrapper
-
     def __init__(self, **kwargs) -> None:
         kwargs["show_line_numbers"] = True
         super().__init__(**kwargs)
@@ -1928,7 +1929,8 @@ class ExpandingInput(EmacsBaseTextArea):
 
                 lang_part = f" - `{lang}`" if lang else ""
                 title = f"#### (Snippet {num}){file_part}{lang_part}"
-                return f"\n\n{title}\n```{lang}\n{code}\n```\n\n"
+                ticks = chr(96) * 3
+                return f"\n\n{title}\n{ticks}{lang}\n{code}\n{ticks}\n\n"
             return match.group(0)
 
         resolved_text = re.sub(r"\{\s*&snippet\d+\s*\}", replacer, raw_text)
@@ -1956,9 +1958,13 @@ class FeedArea(VerticalScroll):
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
         self.selected_snippet_index: int = -1
+        self.active_snippet_turn: int = -1
+        self.active_snippet_fence: int = -1
+
         self.fork_mode: bool = False
         self._fork_selected_indices: set[int] = set()
         self._focused_fork_card_index: int = 0
+        self._pending_snippet_snap: tuple[int, int] | None = None
 
         # Conversation state with discrete turn tracking
         self._all_messages: list[dict] = []
@@ -2000,13 +2006,16 @@ class FeedArea(VerticalScroll):
         self.active_turn_index = 0
         self._window_busy = False
         self._pending_edge_direction = 0
+        self._pending_snippet_snap = None
+        self.active_snippet_turn = -1
+        self.active_snippet_fence = -1
+        self.selected_snippet_index = -1
         if self._ctrl_page_timer:
             self._ctrl_page_timer.stop()
             self._ctrl_page_timer = None
         if self._position_save_timer:
             self._position_save_timer.stop()
             self._position_save_timer = None
-        self.selected_snippet_index = -1
         if hasattr(self.app, "hide_status"):
             self.app.hide_status()
 
@@ -2048,10 +2057,13 @@ class FeedArea(VerticalScroll):
         """Loads chat history through the sliding window target engine at targeted index."""
         self.fork_mode = False
         self._fork_selected_indices.clear()
+        self._pending_snippet_snap = None
+        self.active_snippet_turn = -1
+        self.active_snippet_fence = -1
+        self.selected_snippet_index = -1
         if hasattr(self.app, "hide_status"):
             self.app.hide_status()
 
-        self.selected_snippet_index = -1
         self._run_target_mutation("reset_chat", new_messages=messages, target_index=initial_target_index)
 
     def _get_target_widget(self, idx: int) -> Markdown | ForkTurnCard | None:
@@ -2091,6 +2103,34 @@ class FeedArea(VerticalScroll):
         # Debounced disk position tracking
         if hasattr(self.app, "schedule_save_chat_position"):
             self.app.schedule_save_chat_position(curr_idx)
+
+    def _settle_pending_snippet(self, retry_count: int = 0) -> None:
+        """Applies active-snippet highlight and snaps fence into view once mutation finishes."""
+        if not self._pending_snippet_snap:
+            return
+
+        target_turn, target_fence_idx = self._pending_snippet_snap
+        turn_w = self._get_target_widget(target_turn)
+        if not isinstance(turn_w, Markdown):
+            if retry_count < 6:
+                self.set_timer(0.04, lambda: self._settle_pending_snippet(retry_count + 1))
+            return
+
+        turn_fences = list(turn_w.query(MarkdownFence))
+        if not turn_fences or target_fence_idx >= len(turn_fences):
+            if retry_count < 6:
+                self.set_timer(0.04, lambda: self._settle_pending_snippet(retry_count + 1))
+            return
+
+        self._pending_snippet_snap = None
+
+        for f in self._get_fences():
+            f.remove_class("active-snippet")
+
+        chosen = turn_fences[target_fence_idx]
+        chosen.add_class("active-snippet")
+        self.scroll_to_widget(chosen, top=False, animate=False)
+        chosen.refresh()
 
     @work(exclusive=True)
     async def _run_target_mutation(
@@ -2151,6 +2191,7 @@ class FeedArea(VerticalScroll):
                                 self.scroll_end(animate=False)
                             if self.fork_mode:
                                 self.highlight_fork_card(req_idx, scroll=False)
+                            self._settle_pending_snippet()
                         else:
                             self.active_turn_index = 0
                             self.scroll_to(y=0, animate=False)
@@ -2165,7 +2206,7 @@ class FeedArea(VerticalScroll):
                 req_idx = max(0, min(len(self._all_messages) - 1, target_index or 0))
                 total = len(self._all_messages)
 
-                if req_idx == 0:
+                if req_idx == 0 and not self._pending_snippet_snap:
                     self.active_turn_index = 0
                     if self._win_start == 0:
                         self.scroll_to(y=0, animate=False)
@@ -2219,12 +2260,14 @@ class FeedArea(VerticalScroll):
                     self._win_start = new_start
                     self._win_end = new_end
 
+                await asyncio.sleep(0.06)
+
                 self.active_turn_index = req_idx
                 settle_event = asyncio.Event()
 
                 def _on_target_settle() -> None:
                     try:
-                        if req_idx == 0:
+                        if req_idx == 0 and not self._pending_snippet_snap:
                             self.scroll_to(y=0, animate=False)
                         else:
                             target_w = self._get_target_widget(req_idx)
@@ -2232,6 +2275,7 @@ class FeedArea(VerticalScroll):
                                 self.scroll_to_widget(target_w, top=True, animate=False)
                         if self.fork_mode:
                             self.highlight_fork_card(req_idx, scroll=False)
+                        self._settle_pending_snippet()
                     finally:
                         settle_event.set()
 
@@ -2302,6 +2346,7 @@ class FeedArea(VerticalScroll):
                         self.scroll_to(y=0, animate=False)
                         if self.fork_mode:
                             self.highlight_fork_card(0, scroll=False)
+                        self._settle_pending_snippet()
                     finally:
                         settle_event.set()
 
@@ -2335,6 +2380,7 @@ class FeedArea(VerticalScroll):
                             self.scroll_end(animate=False)
                         if self.fork_mode:
                             self.highlight_fork_card(self.active_turn_index, scroll=False)
+                        self._settle_pending_snippet()
                     finally:
                         settle_event.set()
 
@@ -2481,9 +2527,10 @@ class FeedArea(VerticalScroll):
         else:
             self.jump_to_end()
 
-    # --- Snippets & Fences ---
+    # --- Snippets & Fences Engine (Screen-First Bulletproof Verification) ---
 
     def _get_fences(self) -> list[MarkdownFence]:
+        """Returns only fences mounted inside the current DOM window."""
         return list(self.query(MarkdownFence))
 
     def _extract_code_from_fence(self, fence: MarkdownFence) -> str:
@@ -2498,15 +2545,170 @@ class FeedArea(VerticalScroll):
                 return child.renderable.code
         return str(getattr(fence, "renderable", ""))
 
+    def _count_snippets_in_text(self, text: str) -> list[str]:
+        """Extracts code blocks from response text using MarkdownIt or regex."""
+        code_blocks: list[str] = []
+        if _MD_PARSER:
+            tokens = _MD_PARSER.parse(text)
+            for t in tokens:
+                if t.type == "fence":
+                    code_blocks.append(t.content)
+        else:
+            fence_regex = re.compile(r"```[^\n]*\n(.*?)```", re.DOTALL)
+            for m in fence_regex.finditer(text):
+                code_blocks.append(m.group(1))
+        return code_blocks
+
+    def _get_turns_with_snippets(self) -> dict[int, list[str]]:
+        """Maps each response index to its list of code snippets."""
+        mapping: dict[int, list[str]] = {}
+        for idx, turn in enumerate(self._all_messages):
+            blocks = self._count_snippets_in_text(turn.get("text", ""))
+            if blocks:
+                mapping[idx] = blocks
+        return mapping
+
+    def _get_onscreen_fences(self) -> list[dict]:
+        """Returns all code fences physically intersecting the screen viewport, sorted top-to-bottom."""
+        onscreen: list[dict] = []
+        viewport_top = self.region.y
+        viewport_bottom = viewport_top + self.region.height
+
+        for fence in self.query(MarkdownFence):
+            f_top = fence.region.y
+            f_bottom = f_top + fence.region.height
+
+            # Truly visible within terminal rows
+            if f_bottom > viewport_top and f_top < viewport_bottom:
+                parent_md = fence
+                while parent_md and not isinstance(parent_md, Markdown):
+                    parent_md = parent_md.parent
+
+                if isinstance(parent_md, Markdown) and hasattr(parent_md, "data"):
+                    t_idx = parent_md.data.get("turn_index", -1)
+                    turn_fences = list(parent_md.query(MarkdownFence))
+                    f_idx = turn_fences.index(fence) if fence in turn_fences else -1
+
+                    if t_idx >= 0 and f_idx >= 0:
+                        onscreen.append({
+                            "turn_index": t_idx,
+                            "fence_index": f_idx,
+                            "screen_y": f_top,
+                            "fence_widget": fence,
+                        })
+
+        onscreen.sort(key=lambda item: item["screen_y"])
+        return onscreen
+
+    def navigate_snippet(self, delta: int) -> None:
+        """Screen-first verified snippet traversal: warns when none are on screen,
+        anchors to onscreen snippets if scrolled away, and steps cleanly once active.
+        """
+        if self.fork_mode:
+            self.step_fork_card(delta)
+            return
+
+        turns_with_snippets = self._get_turns_with_snippets()
+        if not turns_with_snippets or self._window_busy:
+            return
+
+        onscreen = self._get_onscreen_fences()
+
+        # Check if the currently active snippet is one of the ones visible on screen right now
+        is_cur_on_screen = any(
+            item["turn_index"] == self.active_snippet_turn and item["fence_index"] == self.active_snippet_fence
+            for item in onscreen
+        )
+
+        # 1. If currently selected snippet is NOT on screen (scrolled away or starting fresh)
+        if not is_cur_on_screen:
+            if not onscreen:
+                # Core requirement: If no snippet is on screen at all, warn and clear off-screen highlight
+                self.active_snippet_turn = -1
+                self.active_snippet_fence = -1
+                for f in self._get_fences():
+                    f.remove_class("active-snippet")
+                self.app.notify("No selectable snippet on screen", timeout=2.0)
+                return
+
+            # Snippets are on screen: anchor immediately to the visible ones
+            if delta > 0:
+                # Alt+n: Bottom-most snippet on screen
+                target = onscreen[-1]
+            else:
+                # Alt+p: Top-most snippet on screen
+                target = onscreen[0]
+
+            self.select_response_snippet(target["turn_index"], target["fence_index"])
+            return
+
+        # 2. Currently selected snippet IS on screen: step sequentially
+        sorted_turn_indices = sorted(turns_with_snippets.keys())
+        curr_t = self.active_snippet_turn
+        curr_f = self.active_snippet_fence
+        snips_in_turn = turns_with_snippets[curr_t]
+
+        if delta > 0:
+            # Step down (Alt+n)
+            if curr_f + 1 < len(snips_in_turn):
+                self.select_response_snippet(curr_t, curr_f + 1)
+            else:
+                curr_idx_in_keys = sorted_turn_indices.index(curr_t)
+                next_t = sorted_turn_indices[(curr_idx_in_keys + 1) % len(sorted_turn_indices)]
+                self.select_response_snippet(next_t, 0)
+        else:
+            # Step up (Alt+p)
+            if curr_f - 1 >= 0:
+                self.select_response_snippet(curr_t, curr_f - 1)
+            else:
+                curr_idx_in_keys = sorted_turn_indices.index(curr_t)
+                prev_t = sorted_turn_indices[(curr_idx_in_keys - 1) % len(sorted_turn_indices)]
+                self.select_response_snippet(prev_t, len(turns_with_snippets[prev_t]) - 1)
+
+    def select_response_snippet(self, turn_idx: int, fence_idx: int) -> None:
+        """Selects snippet in a specific response turn, triggering pagination if turn is unmounted."""
+        self.active_snippet_turn = turn_idx
+        self.active_snippet_fence = fence_idx
+
+        turn_widget = self._get_target_widget(turn_idx)
+        if isinstance(turn_widget, Markdown):
+            turn_fences = list(turn_widget.query(MarkdownFence))
+            if 0 <= fence_idx < len(turn_fences):
+                self._pending_snippet_snap = None
+                for f in self._get_fences():
+                    f.remove_class("active-snippet")
+
+                chosen = turn_fences[fence_idx]
+                chosen.add_class("active-snippet")
+                self.scroll_to_widget(chosen, top=False, animate=False)
+                chosen.refresh()
+                return
+
+        # Turn unmounted or fences still rendering: arm target mutation settlement
+        self._pending_snippet_snap = (turn_idx, fence_idx)
+        self._run_target_mutation("scroll_to_target", target_index=turn_idx)
+
     def select_snippet(self, index: int, scroll: bool = True) -> None:
+        """Selects snippet from currently mounted fences (used for mouse clicks)."""
         fences = self._get_fences()
         if not (0 <= index < len(fences)):
             return
 
-        self.selected_snippet_index = index
+        target_fence = fences[index]
+        parent_md = target_fence
+        while parent_md and not isinstance(parent_md, Markdown):
+            parent_md = parent_md.parent
+
+        if isinstance(parent_md, Markdown) and hasattr(parent_md, "data"):
+            t_idx = parent_md.data.get("turn_index", -1)
+            turn_fences = list(parent_md.query(MarkdownFence))
+            f_idx = turn_fences.index(target_fence) if target_fence in turn_fences else -1
+
+            self.active_snippet_turn = t_idx
+            self.active_snippet_fence = f_idx
 
         for idx, f in enumerate(fences):
-            if idx == self.selected_snippet_index:
+            if idx == index:
                 f.add_class("active-snippet")
                 if scroll:
                     f.scroll_visible(animate=True)
@@ -2515,27 +2717,19 @@ class FeedArea(VerticalScroll):
                 f.remove_class("active-snippet")
                 f.refresh()
 
-    def navigate_snippet(self, delta: int) -> None:
-        if self.fork_mode:
-            self.step_fork_card(delta)
-            return
-
-        fences = self._get_fences()
-        if not fences:
-            return
-
-        total = len(fences)
-        if self.selected_snippet_index == -1:
-            new_idx = 0 if delta > 0 else total - 1
-        else:
-            new_idx = (self.selected_snippet_index + delta) % total
-
-        self.select_snippet(new_idx, scroll=True)
-
     def get_active_snippet(self) -> str | None:
-        fences = self._get_fences()
-        if 0 <= self.selected_snippet_index < len(fences):
-            return self._extract_code_from_fence(fences[self.selected_snippet_index])
+        """Retrieves code text of the currently active snippet from response memory."""
+        turns_with_snippets = self._get_turns_with_snippets()
+        if (
+            self.active_snippet_turn in turns_with_snippets
+            and 0 <= self.active_snippet_fence < len(turns_with_snippets[self.active_snippet_turn])
+        ):
+            return turns_with_snippets[self.active_snippet_turn][self.active_snippet_fence]
+
+        # Fallback to local active fence if present
+        for f in self._get_fences():
+            if "active-snippet" in f.classes:
+                return self._extract_code_from_fence(f)
         return None
 
     # --- Fork Selection Operations ---
@@ -2546,6 +2740,7 @@ class FeedArea(VerticalScroll):
             return
 
         self.fork_mode = True
+        self._pending_snippet_snap = None
         curr_turn = self._get_current_visible_turn_index()
         self._focused_fork_card_index = curr_turn
         self._fork_selected_indices = set()
@@ -2561,6 +2756,7 @@ class FeedArea(VerticalScroll):
             return
 
         self.fork_mode = False
+        self._pending_snippet_snap = None
         anchor_idx = self._focused_fork_card_index
         self._fork_selected_indices.clear()
 
@@ -3377,8 +3573,8 @@ class ChatApp(App):
         if feed.styles.display == "none":
             feed.styles.display = "block"
         feed.set_messages(self.history, initial_target_index=self.current_chat_last_index)
-        feed.selected_snippet_index = -1
-        self.query_one("#input", ExpandingInput).reset_snippets()
+        input_widget = self.query_one("#input", ExpandingInput)
+        input_widget.reset_snippets()
         self.query_one("#snippet_preview", SnippetPreview).hide_preview()
 
     def save_current_chat(self) -> None:
@@ -3575,7 +3771,6 @@ class ChatApp(App):
     def _render_forked_chat(self, turns: list[dict]) -> None:
         feed = self.query_one("#feed", FeedArea)
         feed.set_messages(turns, initial_target_index=0)
-        feed.selected_snippet_index = -1
         input_widget = self.query_one("#input", ExpandingInput)
         input_widget.reset_snippets()
         self.query_one("#snippet_preview", SnippetPreview).hide_preview()
@@ -3648,7 +3843,6 @@ class ChatApp(App):
 
         feed = self.query_one("#feed", FeedArea)
         feed.clear()
-        feed.selected_snippet_index = -1
         input_widget = self.query_one("#input", ExpandingInput)
         input_widget.reset_snippets()
         self.query_one("#snippet_preview", SnippetPreview).hide_preview()

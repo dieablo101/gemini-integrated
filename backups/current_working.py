@@ -613,12 +613,12 @@ class ForkTurnCard(Vertical):
 
     can_focus = True
 
-    def __init__(self, index: int, sender: str, text: str, **kwargs) -> None:
+    def __init__(self, index: int, sender: str, text: str, is_selected: bool = True, **kwargs) -> None:
         super().__init__(classes="fork_turn_card", **kwargs)
         self.turn_index = index
         self.sender = sender
         self.text_content = text
-        self.is_selected = True
+        self.is_selected = is_selected
 
     def compose(self) -> ComposeResult:
         with Horizontal(classes="fork_turn_header"):
@@ -631,6 +631,12 @@ class ForkTurnCard(Vertical):
 
     def toggle(self) -> None:
         self.is_selected = not self.is_selected
+        feed = self.app.query_one("#feed", FeedArea)
+        if self.is_selected:
+            feed._fork_selected_indices.add(self.turn_index)
+        else:
+            feed._fork_selected_indices.discard(self.turn_index)
+
         self.query_one(".fork_turn_box_label", Label).update(self._get_box_label())
         self.refresh()
 
@@ -648,15 +654,15 @@ class ForkTurnCard(Vertical):
             event.prevent_default(); event.stop()
             self.app.action_fork_chat()
             return
-        elif event.key in ("alt+n", "alt+down", "j", "down"):
+        elif event.key in ("alt+n", "alt+down", "down"):
             event.prevent_default(); event.stop()
             feed = self.app.query_one("#feed", FeedArea)
-            feed.navigate_fork_cards(1)
+            feed.step_fork_card(1)
             return
-        elif event.key in ("alt+p", "alt+up", "k", "up"):
+        elif event.key in ("alt+p", "alt+up", "up"):
             event.prevent_default(); event.stop()
             feed = self.app.query_one("#feed", FeedArea)
-            feed.navigate_fork_cards(-1)
+            feed.step_fork_card(-1)
             return
         elif event.key == "a":
             event.prevent_default(); event.stop()
@@ -675,6 +681,8 @@ class ForkTurnCard(Vertical):
     @on(events.Click)
     def on_card_click(self, event: events.Click) -> None:
         event.stop()
+        feed = self.app.query_one("#feed", FeedArea)
+        feed._focused_fork_card_index = self.turn_index
         self.focus()
         curr = event.widget
         while curr and curr is not self:
@@ -1894,6 +1902,8 @@ class FeedArea(VerticalScroll):
         super().__init__(**kwargs)
         self.selected_snippet_index: int = -1
         self.fork_mode: bool = False
+        self._fork_selected_indices: set[int] = set()
+        self._focused_fork_card_index: int = 0
 
         # Conversation state with discrete turn tracking
         self._all_messages: list[dict] = []
@@ -1908,12 +1918,11 @@ class FeedArea(VerticalScroll):
         self._ctrl_page_timer: Timer | None = None
         self._pending_edge_direction: int = 0
 
+        # Debounced position save timer
+        self._position_save_timer: Timer | None = None
+
     def compose(self) -> ComposeResult:
         yield Vertical(id="turns_container")
-        yield Vertical(id="fork_view")
-
-    def on_mount(self) -> None:
-        self.query_one("#fork_view").styles.display = "none"
 
     def get_tier_config(self) -> tuple[int, int]:
         """Stable 20-turn window capacity."""
@@ -1939,6 +1948,9 @@ class FeedArea(VerticalScroll):
         if self._ctrl_page_timer:
             self._ctrl_page_timer.stop()
             self._ctrl_page_timer = None
+        if self._position_save_timer:
+            self._position_save_timer.stop()
+            self._position_save_timer = None
         self.selected_snippet_index = -1
         if hasattr(self.app, "hide_status"):
             self.app.hide_status()
@@ -1948,8 +1960,8 @@ class FeedArea(VerticalScroll):
     def _format_turn_markdown(self, sender: str, text: str) -> str:
         return f"### {sender}\n\n{text}\n\n---"
 
-    def _create_turn_widget(self, idx: int) -> Markdown:
-        """Creates a turn Markdown widget targeting its deterministic DOM target id."""
+    def _create_turn_widget(self, idx: int) -> Markdown | ForkTurnCard:
+        """Creates either a Markdown turn widget or a ForkTurnCard based on active mode."""
         turn = self._all_messages[idx]
         turn_id = turn.get("turn_id")
         if not turn_id:
@@ -1957,26 +1969,39 @@ class FeedArea(VerticalScroll):
             turn["turn_id"] = turn_id
 
         sender = "You" if turn["role"] == "user" else "Gemini"
+
+        if self.fork_mode:
+            is_sel = idx in self._fork_selected_indices
+            card = ForkTurnCard(
+                index=idx,
+                sender=sender,
+                text=turn["text"],
+                is_selected=is_sel,
+                id=turn_id,
+            )
+            card.data = {"turn_index": idx, "turn_id": turn_id}
+            return card
+
         md_text = self._format_turn_markdown(sender, turn["text"])
         widget = Markdown(md_text, classes="turn_block", id=turn_id)
         widget.data = {"turn_index": idx, "turn_id": turn_id}
         return widget
 
-    def set_messages(self, messages: list[dict]) -> None:
-        """Loads chat history through the sliding window target engine."""
+    def set_messages(self, messages: list[dict], initial_target_index: int | None = None) -> None:
+        """Loads chat history through the sliding window target engine at targeted index."""
         self.exit_fork_mode()
         if hasattr(self.app, "hide_status"):
             self.app.hide_status()
 
         self.selected_snippet_index = -1
-        self._run_target_mutation("reset_chat", new_messages=messages)
+        self._run_target_mutation("reset_chat", new_messages=messages, target_index=initial_target_index)
 
-    def _get_target_widget(self, idx: int) -> Markdown | None:
+    def _get_target_widget(self, idx: int) -> Markdown | ForkTurnCard | None:
         if 0 <= idx < len(self._all_messages):
             turn_id = self._all_messages[idx].get("turn_id")
             if turn_id:
                 try:
-                    return self.query_one(f"#{turn_id}", Markdown)
+                    return self.query_one(f"#{turn_id}")
                 except Exception:
                     return None
         return None
@@ -1996,6 +2021,18 @@ class FeedArea(VerticalScroll):
 
         closest_child = min(children, key=lambda c: abs(c.virtual_region.y - curr_y))
         return closest_child.data.get("turn_index", self.active_turn_index)
+
+    def _on_scroll(self) -> None:
+        super()._on_scroll()
+        if not self._all_messages or self._window_busy:
+            return
+
+        curr_idx = self._get_current_visible_turn_index()
+        self.active_turn_index = curr_idx
+
+        # Debounced disk position tracking
+        if hasattr(self.app, "schedule_save_chat_position"):
+            self.app.schedule_save_chat_position(curr_idx)
 
     @work(exclusive=True)
     async def _run_target_mutation(
@@ -2020,12 +2057,19 @@ class FeedArea(VerticalScroll):
 
                 await container.remove_children()
 
-                if total > capacity:
-                    self._win_start = total - capacity
-                    self._win_end = total
+                if target_index is not None and 0 <= target_index < total:
+                    req_idx = target_index
+                    half = capacity // 2
+                    self._win_start = max(0, min(req_idx - half, total - capacity))
+                    self._win_end = min(total, self._win_start + capacity)
                 else:
-                    self._win_start = 0
-                    self._win_end = total
+                    req_idx = max(0, total - 1)
+                    if total > capacity:
+                        self._win_start = total - capacity
+                        self._win_end = total
+                    else:
+                        self._win_start = 0
+                        self._win_end = total
 
                 for idx in range(self._win_start, self._win_end):
                     await container.mount(self._create_turn_widget(idx))
@@ -2035,8 +2079,8 @@ class FeedArea(VerticalScroll):
                 def _on_initial_settle() -> None:
                     try:
                         if total > 0:
-                            self.active_turn_index = total - 1
-                            target_w = self._get_target_widget(self.active_turn_index)
+                            self.active_turn_index = req_idx
+                            target_w = self._get_target_widget(req_idx)
                             if target_w:
                                 self.scroll_to_widget(target_w, top=True, animate=False)
                             else:
@@ -2253,6 +2297,9 @@ class FeedArea(VerticalScroll):
                 target_idx = max(0, self.active_turn_index - 1)
 
         self._run_target_mutation("scroll_to_target", target_index=target_idx)
+        if self.fork_mode:
+            self._focused_fork_card_index = target_idx
+            self.call_after_refresh(lambda: self._focus_turn_card(target_idx))
 
     def viewport_page_navigate(self, direction: int) -> None:
         """Standard OS viewport page scrolling with edge-hold trailing release buffer."""
@@ -2321,10 +2368,21 @@ class FeedArea(VerticalScroll):
     def jump_to_home(self) -> None:
         """Instantly jumps and snaps to target of the first turn."""
         self._run_target_mutation("jump_home")
+        if self.fork_mode:
+            self._focused_fork_card_index = 0
+            self._fork_selected_indices = {0}
+            self._refresh_all_fork_card_checkboxes()
+            self.call_after_refresh(lambda: self._focus_turn_card(0))
 
     def jump_to_end(self) -> None:
         """Instantly jumps and snaps to the final target turn."""
         self._run_target_mutation("jump_end")
+        if self.fork_mode:
+            last_idx = max(0, len(self._all_messages) - 1)
+            self._focused_fork_card_index = last_idx
+            self._fork_selected_indices = {last_idx}
+            self._refresh_all_fork_card_checkboxes()
+            self.call_after_refresh(lambda: self._focus_turn_card(last_idx))
 
     async def append_message(self, sender: str, text: str, jump_to_start: bool = False) -> None:
         """Appends a new turn, strictly maintaining window capacity."""
@@ -2393,7 +2451,7 @@ class FeedArea(VerticalScroll):
 
     def navigate_snippet(self, delta: int) -> None:
         if self.fork_mode:
-            self.navigate_fork_cards(delta)
+            self.step_fork_card(delta)
             return
 
         fences = self._get_fences()
@@ -2416,86 +2474,86 @@ class FeedArea(VerticalScroll):
             return self._extract_code_from_fence(fences[-1])
         return None
 
-    # --- Fork Selection Operations ---
+    # --- Fork Selection Operations Integrated with Pagination ---
 
     def enter_fork_mode(self, messages: list[dict]) -> None:
-        """Enters fork mode without instruction banner and presents focusable turn cards."""
+        """Enters fork mode anchored directly around currently visible turn with that turn pre-selected."""
         if not messages:
             return
 
         self.fork_mode = True
+        curr_turn = self._get_current_visible_turn_index()
+        self._focused_fork_card_index = curr_turn
+        self._fork_selected_indices = {curr_turn}
+
         if hasattr(self.app, "hide_status"):
             self.app.hide_status()
 
-        self.query_one("#turns_container").styles.display = "none"
-
-        fork_view = self.query_one("#fork_view", Vertical)
-        fork_view.remove_children()
-        fork_view.styles.display = "block"
-
-        for idx, turn in enumerate(messages):
-            sender = "You" if turn["role"] == "user" else "Gemini"
-            card = ForkTurnCard(
-                index=idx,
-                sender=sender,
-                text=turn["text"],
-                id=f"fork_card_{idx}",
-            )
-            fork_view.mount(card)
-
-        self.scroll_home(animate=False)
-        self.call_after_refresh(self._focus_first_fork_card)
-
-    def _focus_first_fork_card(self) -> None:
-        cards = list(self.query_one("#fork_view").query(ForkTurnCard))
-        if cards:
-            cards[0].focus()
+        self._run_target_mutation("reset_chat", new_messages=messages, target_index=curr_turn)
+        self.call_after_refresh(lambda: self._focus_turn_card(curr_turn))
 
     def exit_fork_mode(self) -> None:
-        """Restores standard segmented turn feed."""
+        """Restores standard markdown chat view directly anchored where user was looking."""
         if not self.fork_mode:
             return
 
         self.fork_mode = False
-        fork_view = self.query_one("#fork_view", Vertical)
-        fork_view.styles.display = "none"
-        fork_view.remove_children()
+        anchor_idx = self._focused_fork_card_index
+        self._fork_selected_indices.clear()
 
-        self.query_one("#turns_container").styles.display = "block"
+        self._run_target_mutation("reset_chat", new_messages=self._all_messages, target_index=anchor_idx)
         self.focus()
 
     def get_selected_fork_indices(self) -> list[int]:
-        fork_view = self.query_one("#fork_view", Vertical)
-        cards = list(fork_view.query(ForkTurnCard))
-        return [card.turn_index for card in cards if card.is_selected]
+        return sorted(list(self._fork_selected_indices))
+
+    def _refresh_all_fork_card_checkboxes(self) -> None:
+        container = self.query_one("#turns_container", Vertical)
+        for card in container.query(ForkTurnCard):
+            card.set_selected(card.turn_index in self._fork_selected_indices)
 
     def toggle_all_fork_checkboxes(self) -> None:
-        fork_view = self.query_one("#fork_view", Vertical)
-        cards = list(fork_view.query(ForkTurnCard))
-        if not cards:
-            return
-        all_checked = all(c.is_selected for c in cards)
-        for c in cards:
-            c.set_selected(not all_checked)
-
-    def navigate_fork_cards(self, delta: int) -> None:
-        cards = list(self.query_one("#fork_view").query(ForkTurnCard))
-        if not cards:
+        total = len(self._all_messages)
+        if not total:
             return
 
-        curr_focused = self.app.focused
-        idx = -1
-        if curr_focused in cards:
-            idx = cards.index(curr_focused)
-
-        if idx == -1:
-            target_idx = 0 if delta > 0 else len(cards) - 1
+        all_selected = (len(self._fork_selected_indices) == total)
+        if all_selected:
+            self._fork_selected_indices.clear()
         else:
-            target_idx = (idx + delta) % len(cards)
+            self._fork_selected_indices = set(range(total))
 
-        target = cards[target_idx]
-        target.focus()
-        target.scroll_visible(animate=True)
+        self._refresh_all_fork_card_checkboxes()
+        state_msg = "Selected all turns" if not all_selected else "Deselected all turns"
+        self.app.notify(state_msg, timeout=2.0)
+
+    def step_fork_card(self, delta: int) -> None:
+        """Step one fork card forward/backward, focusing mounted cards immediately or sliding window."""
+        total = len(self._all_messages)
+        if not total or self._window_busy:
+            return
+
+        target_idx = self._focused_fork_card_index + delta
+        if not (0 <= target_idx < total):
+            return
+
+        existing_card = self._get_target_widget(target_idx)
+        if isinstance(existing_card, ForkTurnCard):
+            self._focused_fork_card_index = target_idx
+            existing_card.focus()
+            self.scroll_to_widget(existing_card, top=False, animate=False)
+            return
+
+        self._focused_fork_card_index = target_idx
+        self._run_target_mutation("scroll_to_target", target_index=target_idx)
+        self.call_after_refresh(lambda: self._focus_turn_card(target_idx))
+
+    def _focus_turn_card(self, turn_idx: int) -> None:
+        card = self._get_target_widget(turn_idx)
+        if isinstance(card, ForkTurnCard):
+            self._focused_fork_card_index = turn_idx
+            card.focus()
+            self.scroll_to_widget(card, top=False, animate=False)
 
     @on(events.Click)
     def _on_feed_click(self, event: events.Click) -> None:
@@ -2528,19 +2586,18 @@ class FeedArea(VerticalScroll):
             elif event.key == "a":
                 event.prevent_default(); event.stop()
                 self.toggle_all_fork_checkboxes()
-                self.app.notify("Toggled all selections.")
                 return
             elif event.key in ("enter", "return"):
                 event.prevent_default(); event.stop()
                 self.app.action_fork_chat()
                 return
-            elif event.key in ("alt+n", "alt+down", "j", "down"):
+            elif event.key in ("alt+n", "alt+down", "down"):
                 event.prevent_default(); event.stop()
-                self.navigate_fork_cards(1)
+                self.step_fork_card(1)
                 return
-            elif event.key in ("alt+p", "alt+up", "k", "up"):
+            elif event.key in ("alt+p", "alt+up", "up"):
                 event.prevent_default(); event.stop()
-                self.navigate_fork_cards(-1)
+                self.step_fork_card(-1)
                 return
 
         if not self.fork_mode and event.key in ("full_stop", ".", "f"):
@@ -2689,11 +2746,6 @@ class ChatApp(App):
         height: auto;
         margin-bottom: 1;
     }
-    #feed #fork_view {
-        width: 100%;
-        max-width: 100%;
-        height: auto;
-    }
     #feed_status {
         width: 100%;
         height: auto;
@@ -2807,6 +2859,7 @@ class ChatApp(App):
         self.current_chat_title: str = ""
         self.current_chat_parent_id: str | None = None
         self.current_chat_working_dir: str | None = None
+        self.current_chat_last_index: int = 0
         self.history: list[dict] = []
         self._server: asyncio.AbstractServer | None = None
         self._prefix_c_c: bool = False
@@ -2817,6 +2870,9 @@ class ChatApp(App):
         self._spinner_idx: int = 0
         self._status_timer: Timer | None = None
         self._banner_shown_time: float = 0.0
+
+        # Debounced disk save timer for read position
+        self._save_position_timer: Timer | None = None
 
     def copy_to_clipboard(self, text: str) -> None:
         try:
@@ -2885,11 +2941,11 @@ class ChatApp(App):
 
         if feed.fork_mode and event.key in ("alt+n", "alt+down"):
             event.prevent_default(); event.stop()
-            feed.navigate_fork_cards(1)
+            feed.step_fork_card(1)
             return
         elif feed.fork_mode and event.key in ("alt+p", "alt+up"):
             event.prevent_default(); event.stop()
-            feed.navigate_fork_cards(-1)
+            feed.step_fork_card(-1)
             return
 
         if self._prefix_c_c:
@@ -3023,6 +3079,7 @@ class ChatApp(App):
 
         new_turn_id = f"turn_{uuid4().hex[:8]}"
         self.history.append({"turn_id": new_turn_id, "role": "model", "text": event.full_text})
+        self.current_chat_last_index = max(0, len(self.history) - 1)
         self.save_current_chat()
 
         self.set_status_text(f"✓ Response complete ({event.words} words in {event.elapsed:.1f}s)")
@@ -3038,7 +3095,7 @@ class ChatApp(App):
         self.set_timer(5.0, self.hide_status)
         self.query_one("#input", ExpandingInput).focus()
 
-    # --- Persistent Active Chat State Management ---
+    # --- Persistent Active Chat & Position State Management ---
 
     def _read_active_chat_from_state(self) -> str | None:
         if STATE_FILE.exists():
@@ -3062,6 +3119,12 @@ class ChatApp(App):
             STATE_FILE.chmod(0o600)
         except Exception:
             pass
+
+    def schedule_save_chat_position(self, turn_idx: int) -> None:
+        self.current_chat_last_index = turn_idx
+        if self._save_position_timer:
+            self._save_position_timer.stop()
+        self._save_position_timer = self.set_timer(0.4, self.save_current_chat)
 
     # --- Working Directory Scope Management ---
 
@@ -3139,6 +3202,8 @@ class ChatApp(App):
 
     def on_unmount(self) -> None:
         self._stop_status_ticker()
+        if self._save_position_timer:
+            self._save_position_timer.stop()
         if self._server:
             self._server.close()
         if SOCKET_PATH.exists():
@@ -3220,6 +3285,7 @@ class ChatApp(App):
         self._save_active_chat_to_state(chat_id)
 
         path = self._get_chat_file(chat_id)
+        saved_turn_idx: int | None = None
         if path.exists():
             data = json.loads(path.read_text())
             raw_messages = data.get("messages", [])
@@ -3233,14 +3299,20 @@ class ChatApp(App):
             self.current_chat_title = data.get("title", "")
             self.current_chat_working_dir = data.get("working_dir")
             self.current_chat_parent_id = data.get("parent_id")
+            saved_turn_idx = data.get("last_turn_index")
+            if saved_turn_idx is not None and self.history:
+                self.current_chat_last_index = max(0, min(len(self.history) - 1, saved_turn_idx))
+            else:
+                self.current_chat_last_index = max(0, len(self.history) - 1)
         else:
             self.history = []
             self.current_chat_title = ""
             self.current_chat_working_dir = None
             self.current_chat_parent_id = None
+            self.current_chat_last_index = 0
 
         feed = self.query_one("#feed", FeedArea)
-        feed.set_messages(self.history)
+        feed.set_messages(self.history, initial_target_index=saved_turn_idx)
         self.query_one("#input", ExpandingInput).reset_snippets()
         self.query_one("#snippet_preview", SnippetPreview).hide_preview()
 
@@ -3268,6 +3340,7 @@ class ChatApp(App):
             "parent_id": self.current_chat_parent_id,
             "updated_at": time.time(),
             "working_dir": self.current_chat_working_dir,
+            "last_turn_index": self.current_chat_last_index,
             "messages": self.history,
         }
         path.write_text(json.dumps(data, indent=2))
@@ -3391,7 +3464,7 @@ class ChatApp(App):
             return
 
         feed.enter_fork_mode(self.history)
-        self.notify("Fork mode: Select responses with Space/Click, Alt+n/p to navigate, Enter to fork.", timeout=4.0)
+        self.notify("Fork mode: Select with Space/Click, 'a' toggles all, Alt+n/p to step, Enter to fork.", timeout=4.0)
 
     def _execute_chat_fork(self, selected_indices: list[int], fork_title: str) -> None:
         """Constructs and switches to the new forked chat without triggering Gemini API call."""
@@ -3425,6 +3498,7 @@ class ChatApp(App):
         self.current_chat_title = fork_title
         self.current_chat_parent_id = parent_chat_id
         self.current_chat_working_dir = parent_working_dir
+        self.current_chat_last_index = 0
         self.history = selected_turns
 
         self.save_current_chat()
@@ -3432,7 +3506,7 @@ class ChatApp(App):
 
     def _render_forked_chat(self, turns: list[dict]) -> None:
         feed = self.query_one("#feed", FeedArea)
-        feed.set_messages(turns)
+        feed.set_messages(turns, initial_target_index=0)
         input_widget = self.query_one("#input", ExpandingInput)
         input_widget.reset_snippets()
         self.query_one("#snippet_preview", SnippetPreview).hide_preview()
@@ -3494,6 +3568,7 @@ class ChatApp(App):
         self.current_chat_title = title
         self.current_chat_parent_id = None
         self.current_chat_working_dir = None
+        self.current_chat_last_index = 0
         self.history = []
 
         feed = self.query_one("#feed", FeedArea)
@@ -3814,6 +3889,7 @@ class ChatApp(App):
 
         new_turn_id = f"turn_{uuid4().hex[:8]}"
         self.history.append({"turn_id": new_turn_id, "role": "user", "text": user_msg})
+        self.current_chat_last_index = max(0, len(self.history) - 1)
         self.save_current_chat()
 
         self.ask_gemini()

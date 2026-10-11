@@ -2259,25 +2259,17 @@ class FeedArea(VerticalScroll):
         t_idx, t_id, delta = target
 
         prev_target = self.active_turn_index
-        current_active_id = getattr(self.app, "current_chat_center_marker", "").split(":")[0]
+        self.active_turn_index = t_idx
 
-        if CENTER_SCREEN_MODE:
-            if t_id != current_active_id:
-                self.active_turn_index = t_idx
-                if hasattr(self.app, "current_chat_last_index"):
-                    self.app.current_chat_last_index = t_idx
-                    sign = f"+{delta}" if delta > 0 else str(delta)
-                    self.app.current_chat_center_marker = f"{t_id}:{sign}" if delta != 0 else t_id
+        # Always update offset/marker on arrow nudges, even within the same card!
+        if hasattr(self.app, "current_chat_last_index"):
+            self.app.current_chat_last_index = t_idx
+            if CENTER_SCREEN_MODE:
+                sign = f"+{delta}" if delta > 0 else str(delta)
+                # When dead-center, preserve trailing :0 to distinguish from top-docked discrete paging
+                self.app.current_chat_center_marker = f"{t_id}:{sign}" if delta != 0 else f"{t_id}:0"
             else:
-                self.active_turn_index = t_idx
-        else:
-            if t_id != current_active_id:
-                self.active_turn_index = t_idx
-                if hasattr(self.app, "current_chat_last_index"):
-                    self.app.current_chat_last_index = t_idx
-                    self.app.current_chat_center_marker = t_id
-            else:
-                self.active_turn_index = t_idx
+                self.app.current_chat_center_marker = t_id
 
         if self.active_turn_index != prev_target and not self.is_locked():
             self.highlight_card(self.active_turn_index, scroll=False)
@@ -2494,7 +2486,7 @@ class FeedArea(VerticalScroll):
         line_offset: int | None = None,
     ) -> None:
         """Positions target widget in viewport using pure 1D coordinate assignment."""
-        view_h = self.container_size.height
+        view_h = self.container_size.height or 24
         header_y = int(target_w.virtual_region.y)
         max_scroll = getattr(self, "max_scroll_y", max(0, self.virtual_size.height - view_h))
 
@@ -2592,8 +2584,7 @@ class FeedArea(VerticalScroll):
                         tid, offset_str = marker_str.split(":", 1)
                         if CENTER_SCREEN_MODE:
                             try:
-                                parsed = int(offset_str)
-                                line_offset = parsed if parsed != 0 else None
+                                line_offset = int(offset_str)
                             except Exception:
                                 line_offset = None
                         else:
@@ -2754,6 +2745,7 @@ class FeedArea(VerticalScroll):
         self.active_turn_index = target_idx
         if hasattr(self.app, "current_chat_last_index"):
             self.app.current_chat_last_index = target_idx
+            # Discrete docking sets a clean ID without colon/offset
             self.app.current_chat_center_marker = self._all_messages[target_idx].get("turn_id", "")
 
         existing_card = self._get_target_widget(target_idx)
@@ -3843,8 +3835,9 @@ class ChatApp(App):
                 m["turn_id"] = f"turn_{uuid4().hex[:8]}"
 
         final_marker = self.current_chat_center_marker
-        if final_marker.endswith(":+0") or final_marker.endswith(":-0") or final_marker.endswith(":0"):
-            final_marker = final_marker.split(":")[0]
+        # Normalize signed zeros (+0 / -0) down to :0 without stripping the trailing :0 contract
+        if final_marker.endswith(":+0") or final_marker.endswith(":-0"):
+            final_marker = final_marker.split(":")[0] + ":0"
         elif not CENTER_SCREEN_MODE and ":" in final_marker:
             final_marker = final_marker.split(":")[0]
 
@@ -4054,8 +4047,7 @@ class ChatApp(App):
                     tid, offset_str = marker.split(":", 1)
                     if CENTER_SCREEN_MODE:
                         try:
-                            parsed_offset = int(offset_str)
-                            line_offset = parsed_offset if parsed_offset != 0 else None
+                            line_offset = int(offset_str)
                         except Exception:
                             line_offset = None
                     else:

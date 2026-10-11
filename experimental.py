@@ -948,6 +948,7 @@ class InsertFileModal(ModalScreen[dict | None]):
         height: auto;
         border: thick red;
         background: #000000;
+        color: #ffffff;
     }
     #insert_file_dialog Label {
         margin-top: 1;
@@ -2025,14 +2026,14 @@ class ExpandingInput(EmacsBaseTextArea):
                 self.app.action_fork_chat()
                 return
 
-            # Viewport Height Paging (Shift + Arrows) -> Triggers 1D Raycast & Runway Sync
+            # Viewport Height Paging (Shift + Arrows) -> Resumes Continuous Raycasting
             elif event.key in ("shift+up", "shift+down"):
                 event.prevent_default(); event.stop()
                 direction = -1 if event.key == "shift+up" else 1
                 feed.viewport_page_navigate(direction)
                 return
 
-            # Fine-line Arrow Navigation (pure Up/Down) -> Triggers 1D Raycast & Runway Sync
+            # Fine-line Arrow Navigation (pure Up/Down) -> Resumes Continuous Raycasting
             elif event.key == "down":
                 event.prevent_default(); event.stop()
                 feed.arrow_navigate(1)
@@ -2052,7 +2053,7 @@ class ExpandingInput(EmacsBaseTextArea):
                 feed.step_card(-1)
                 return
 
-            # Strict Localized Card-by-Card Snippet Traversal (Protected by Runway Sync)
+            # Strictly Viewport-Bound Snippet Traversal (Zero Scroll, Circular Wrap)
             elif event.key in ("alt+n", "meta+n"):
                 event.prevent_default(); event.stop()
                 feed.navigate_snippet(1)
@@ -2172,8 +2173,6 @@ class FeedArea(VerticalScroll):
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
         self.active_turn_index: int = 0
-        self.active_snippet_turn: int = -1
-        self.active_snippet_fence: int = -1
 
         self.fork_ui_active: bool = False
         self._fork_selected_indices: set[int] = set()
@@ -2203,8 +2202,6 @@ class FeedArea(VerticalScroll):
         self.fork_ui_active = False
         self.remove_class("fork-ui-active")
         self._fork_selected_indices.clear()
-        self.active_snippet_turn = -1
-        self.active_snippet_fence = -1
         self._header_map.clear()
         if hasattr(self.app, "hide_status"):
             self.app.hide_status()
@@ -2226,6 +2223,29 @@ class FeedArea(VerticalScroll):
                 return y
         return None
 
+    def _get_center_raycast_target(self, current_y: int | None = None) -> tuple[int, str, int] | None:
+        """Calculates the current raycast target without mutating feed state."""
+        if not self._header_map or not self._all_messages:
+            return None
+
+        y = int(self.scroll_y) if current_y is None else int(current_y)
+        view_h = self.container_size.height or 24
+        total = len(self._all_messages)
+
+        if CENTER_SCREEN_MODE:
+            center_y = y + (view_h // 2)
+            return cast_ray_from_center(
+                center_y, self._header_map, self._win_start, self._win_end, total
+            )
+        else:
+            for line_y in sorted(self._header_map.keys()):
+                if line_y >= y:
+                    t_idx, t_id = self._header_map[line_y]
+                    return t_idx, t_id, 0
+            closest_line = min(self._header_map.keys(), key=lambda ly: abs(ly - y))
+            t_idx, t_id = self._header_map[closest_line]
+            return t_idx, t_id, 0
+
     def _execute_1d_raycast(self, current_y: int | None = None) -> None:
         """Executes the pure in-memory 1D outward raycast strictly on continuous movement.
         Enforces lockout de-activation and sameness checks to eliminate race conditions.
@@ -2233,18 +2253,15 @@ class FeedArea(VerticalScroll):
         if self.is_locked() or not self._header_map or not self._all_messages:
             return
 
-        y = int(self.scroll_y) if current_y is None else int(current_y)
-        view_h = self.container_size.height or 24
+        target = self._get_center_raycast_target(current_y)
+        if not target:
+            return
+        t_idx, t_id, delta = target
+
         prev_target = self.active_turn_index
-        total = len(self._all_messages)
+        current_active_id = getattr(self.app, "current_chat_center_marker", "").split(":")[0]
 
         if CENTER_SCREEN_MODE:
-            center_y = y + (view_h // 2)
-            t_idx, t_id, delta = cast_ray_from_center(
-                center_y, self._header_map, self._win_start, self._win_end, total
-            )
-
-            current_active_id = getattr(self.app, "current_chat_center_marker", "").split(":")[0]
             if t_id != current_active_id:
                 self.active_turn_index = t_idx
                 if hasattr(self.app, "current_chat_last_index"):
@@ -2254,16 +2271,13 @@ class FeedArea(VerticalScroll):
             else:
                 self.active_turn_index = t_idx
         else:
-            for line_y in sorted(self._header_map.keys()):
-                if line_y >= y:
-                    t_idx, t_id = self._header_map[line_y]
-                    current_active_id = getattr(self.app, "current_chat_center_marker", "")
-                    if t_id != current_active_id:
-                        self.active_turn_index = t_idx
-                        if hasattr(self.app, "current_chat_last_index"):
-                            self.app.current_chat_last_index = t_idx
-                            self.app.current_chat_center_marker = t_id
-                    break
+            if t_id != current_active_id:
+                self.active_turn_index = t_idx
+                if hasattr(self.app, "current_chat_last_index"):
+                    self.app.current_chat_last_index = t_idx
+                    self.app.current_chat_center_marker = t_id
+            else:
+                self.active_turn_index = t_idx
 
         if self.active_turn_index != prev_target and not self.is_locked():
             self.highlight_card(self.active_turn_index, scroll=False)
@@ -2290,7 +2304,6 @@ class FeedArea(VerticalScroll):
         target_idx: int,
         prev_idx: int | None = None,
         discrete_dock: bool = False,
-        target_fence_idx: int | None = None,
     ) -> None:
         """Synchronously locks the entire application before dispatching the background worker."""
         if self.will_require_load(target_idx):
@@ -2301,7 +2314,6 @@ class FeedArea(VerticalScroll):
             target_idx,
             prev_idx=prev_idx,
             discrete_dock=discrete_dock,
-            target_fence_idx=target_fence_idx,
         )
 
     # --- Unified 1-in / 1-out Conveyor Belt (Atomic Single-Tick Zero-Shift) ---
@@ -2312,7 +2324,6 @@ class FeedArea(VerticalScroll):
         target_idx: int,
         prev_idx: int | None = None,
         discrete_dock: bool = False,
-        target_fence_idx: int | None = None,
     ) -> None:
         """Slides the window around target_idx under the outermost app root lock."""
         try:
@@ -2322,8 +2333,6 @@ class FeedArea(VerticalScroll):
                     target_card = self._get_target_widget(target_idx)
                     if target_card:
                         self._scroll_to_turn_widget(target_card, center=False)
-                elif target_fence_idx is not None:
-                    self._apply_fence_highlight(target_idx, target_fence_idx)
                 return
 
             cards_above = min(target_idx, RUNWAY_ABOVE_BUDGET)
@@ -2345,16 +2354,14 @@ class FeedArea(VerticalScroll):
             if mounted_indices == desired_indices:
                 self._win_start = ideal_start
                 self._win_end = ideal_end
+
                 if discrete_dock:
                     target_card = self._get_target_widget(target_idx)
                     if target_card:
                         self._scroll_to_turn_widget(target_card, center=False)
-                elif target_fence_idx is not None:
-                    self._apply_fence_highlight(target_idx, target_fence_idx)
                 return
 
             # Capture Visual Anchor prior to mutation:
-            # We preserve the exact signed distance from the raycast target header to screen center
             anchor_card = self._get_target_widget(self.active_turn_index)
             signed_delta = 0
             if anchor_card and anchor_card.virtual_region:
@@ -2402,7 +2409,6 @@ class FeedArea(VerticalScroll):
                             self.highlight_card(target_idx, scroll=False)
                             self._scroll_to_turn_widget(target_card, center=False)
                     else:
-                        # Re-anchor screen position using captured signed delta (Zero Visual Shift)
                         ref_card = self._get_target_widget(self.active_turn_index)
                         if ref_card and getattr(ref_card, "virtual_region", None):
                             new_header_y = int(ref_card.virtual_region.y)
@@ -2410,9 +2416,6 @@ class FeedArea(VerticalScroll):
                             target_scroll_y = max(0, new_center_y - (view_h // 2))
                             max_scroll = getattr(self, "max_scroll_y", max(0, self.virtual_size.height - view_h))
                             self.scroll_y = min(max_scroll, target_scroll_y)
-
-                    if target_fence_idx is not None:
-                        self._apply_fence_highlight(target_idx, target_fence_idx)
                 finally:
                     settle_event.set()
 
@@ -2427,30 +2430,6 @@ class FeedArea(VerticalScroll):
             def _complete_unlock() -> None:
                 self.app.lock.release("dom_load")
             self.call_after_refresh(_complete_unlock)
-
-    def _apply_fence_highlight(self, turn_idx: int, fence_idx: int) -> None:
-        """Docks chosen snippet directly to Screen Row 2 using settled widget relative offsets."""
-        target_card = self._get_target_widget(turn_idx)
-        if not target_card:
-            return
-
-        self.highlight_card(turn_idx, scroll=False)
-        fences = list(target_card.query(MarkdownFence))
-        if 0 <= fence_idx < len(fences):
-            for f in self._get_fences():
-                f.remove_class("active-snippet")
-            chosen = fences[fence_idx]
-            chosen.add_class("active-snippet")
-
-            card_header_y = self._get_card_header_y(turn_idx)
-            if card_header_y is not None:
-                card_region_y = int(target_card.virtual_region.y)
-                chosen_region_y = int(chosen.virtual_region.y)
-                relative_offset = max(0, chosen_region_y - card_region_y)
-                target_scroll_y = max(0, (card_header_y + relative_offset) - 2)
-                max_scroll = getattr(self, "max_scroll_y", max(0, self.virtual_size.height - self.container_size.height))
-                self.scroll_y = min(max_scroll, target_scroll_y)
-            chosen.refresh()
 
     def _create_turn_widget(self, idx: int) -> TurnCard | None:
         if not (0 <= idx < len(self._all_messages)):
@@ -2487,8 +2466,6 @@ class FeedArea(VerticalScroll):
         self.fork_ui_active = False
         self.remove_class("fork-ui-active")
         self._fork_selected_indices.clear()
-        self.active_snippet_turn = -1
-        self.active_snippet_fence = -1
         if hasattr(self.app, "hide_status"):
             self.app.hide_status()
 
@@ -2804,19 +2781,72 @@ class FeedArea(VerticalScroll):
         self._execute_1d_raycast(target_y)
 
     def arrow_navigate(self, direction: int) -> None:
-        """Continuous fine-line arrow navigation: Raycast fires to detect nearest card."""
-        if self.is_locked():
+        """Continuous fine-line arrow navigation: Raycast fires to detect nearest card,
+        transitioning cleanly to discrete boundary stepping when hitting scroll walls.
+        """
+        if self.is_locked() or not self._all_messages:
             return
 
         line_step = 2
         max_scroll = getattr(self, "max_scroll_y", max(0, self.virtual_size.height - self.container_size.height))
+        total = len(self._all_messages)
 
-        if direction < 0:
-            target_y = max(0, self.scroll_y - line_step)
+        center_target = self._get_center_raycast_target()
+        raycast_idx = center_target[0] if center_target else self.active_turn_index
+
+        if direction > 0:
+            # At bottom wall: advance highlight cleanly to the next turn in line
+            if self.scroll_y >= max_scroll:
+                if self.active_turn_index < total - 1:
+                    new_idx = self.active_turn_index + 1
+                    self.active_turn_index = new_idx
+                    turn_id = self._all_messages[new_idx].get("turn_id", f"turn_{new_idx}")
+                    if hasattr(self.app, "current_chat_last_index"):
+                        self.app.current_chat_last_index = new_idx
+                        self.app.current_chat_center_marker = turn_id
+                    self.highlight_card(new_idx, scroll=False)
+                return
+
+            # If highlight was previously walked above raycast center (from top wall), walk back toward center before scrolling
+            if self.active_turn_index < raycast_idx:
+                new_idx = self.active_turn_index + 1
+                self.active_turn_index = new_idx
+                turn_id = self._all_messages[new_idx].get("turn_id", f"turn_{new_idx}")
+                if hasattr(self.app, "current_chat_last_index"):
+                    self.app.current_chat_last_index = new_idx
+                    self.app.current_chat_center_marker = turn_id
+                self.highlight_card(new_idx, scroll=False)
+                return
+
+            target_y = min(max_scroll, self.scroll_y + line_step)
             self.scroll_y = target_y
             self._execute_1d_raycast(target_y)
+
         else:
-            target_y = min(max_scroll, self.scroll_y + line_step)
+            # At top wall: retreat highlight cleanly to the previous turn in line
+            if self.scroll_y <= 0:
+                if self.active_turn_index > 0:
+                    new_idx = self.active_turn_index - 1
+                    self.active_turn_index = new_idx
+                    turn_id = self._all_messages[new_idx].get("turn_id", f"turn_{new_idx}")
+                    if hasattr(self.app, "current_chat_last_index"):
+                        self.app.current_chat_last_index = new_idx
+                        self.app.current_chat_center_marker = turn_id
+                    self.highlight_card(new_idx, scroll=False)
+                return
+
+            # If highlight was previously walked below raycast center (from bottom wall), walk back toward center before scrolling
+            if self.active_turn_index > raycast_idx:
+                new_idx = self.active_turn_index - 1
+                self.active_turn_index = new_idx
+                turn_id = self._all_messages[new_idx].get("turn_id", f"turn_{new_idx}")
+                if hasattr(self.app, "current_chat_last_index"):
+                    self.app.current_chat_last_index = new_idx
+                    self.app.current_chat_center_marker = turn_id
+                self.highlight_card(new_idx, scroll=False)
+                return
+
+            target_y = max(0, self.scroll_y - line_step)
             self.scroll_y = target_y
             self._execute_1d_raycast(target_y)
 
@@ -2869,10 +2899,7 @@ class FeedArea(VerticalScroll):
         else:
             self.jump_to_end()
 
-    # --- Strict Localized Card-by-Card Snippet Traversal ---
-
-    def _get_fences(self) -> list[MarkdownFence]:
-        return list(self.query(MarkdownFence))
+    # --- Pure Viewport-Bound Snippet Traversal (Zero Scroll, Circular) ---
 
     def _extract_code_from_fence(self, fence: MarkdownFence) -> str:
         if hasattr(fence, "text") and fence.text:
@@ -2886,120 +2913,83 @@ class FeedArea(VerticalScroll):
                 return child.renderable.code
         return str(getattr(fence, "renderable", ""))
 
-    def _count_snippets_in_text(self, text: str) -> int:
-        if _MD_PARSER:
-            try:
-                tokens = _MD_PARSER.parse(text)
-                count = sum(1 for t in tokens if t.type == "fence")
-                if count > 0:
-                    return count
-            except Exception:
-                pass
-        return len(re.findall(r"```[^\n]*\n(.*?)```", text, re.DOTALL))
+    def _get_visible_fences(self) -> list[MarkdownFence]:
+        """Returns MarkdownFence widgets with at least 1 line visible on the terminal screen."""
+        feed_reg = self.region
+        if not feed_reg or feed_reg.height <= 0:
+            return []
+
+        feed_top = feed_reg.y
+        feed_bottom = feed_reg.y + feed_reg.height
+
+        visible: list[MarkdownFence] = []
+        for fence in self.query(MarkdownFence):
+            reg = fence.region
+            if not reg or reg.height <= 0:
+                continue
+
+            f_top = reg.y
+            f_bottom = reg.y + reg.height
+
+            # Intersects visible terminal glass:
+            # Starts before viewport bottom, and ends after viewport top
+            if f_top < feed_bottom and f_bottom > feed_top:
+                visible.append(fence)
+
+        return visible
 
     def navigate_snippet(self, delta: int) -> None:
-        """Card-by-card localized snippet traversal held down strictly by root locking."""
-        if self.is_locked():
+        """Cycles circularly across visible / partially visible snippets on screen.
+        If scrolled to a new screen, discards off-screen selections and starts
+        fresh on the newly visible snippets.
+        """
+        visible = self._get_visible_fences()
+        if not visible:
+            self.app.notify("No selectable snippet on screen", timeout=1.5)
             return
 
-        total = len(self._all_messages)
-        if not total:
-            return
+        total_visible = len(visible)
 
-        curr_t = self.active_snippet_turn
-        curr_f = self.active_snippet_fence
+        # Check if any currently visible snippet is the one with the active class
+        curr_idx = -1
+        for idx, fence in enumerate(visible):
+            if "active-snippet" in fence.classes:
+                curr_idx = idx
+                break
 
-        if curr_t < 0 or curr_t >= total:
-            curr_t = self.active_turn_index
-            curr_f = -1
-
-        curr_card = self._get_target_widget(curr_t)
-        curr_count = len(curr_card.snippets) if curr_card else self._count_snippets_in_text(self._all_messages[curr_t]["text"])
-
-        # 1. Forward (Alt+n)
-        if delta > 0:
-            if curr_f + 1 < curr_count:
-                self.select_response_snippet(curr_t, curr_f + 1)
-                return
-
-            next_t = curr_t + 1
-            while next_t < total:
-                snip_count = self._count_snippets_in_text(self._all_messages[next_t]["text"])
-                if snip_count > 0:
-                    self.select_response_snippet(next_t, 0)
-                    return
-                next_t += 1
-
-            self.app.notify("Already at last snippet", timeout=1.5)
-            return
-
-        # 2. Backward (Alt+p)
+        # If previous selection is off-screen (or none was selected):
+        # Alt+n starts fresh at the top visible snippet (0)
+        # Alt+p starts fresh at the bottom visible snippet (total - 1)
+        if curr_idx == -1:
+            target_idx = 0 if delta > 0 else (total_visible - 1)
         else:
-            if curr_f > 0:
-                self.select_response_snippet(curr_t, curr_f - 1)
-                return
+            # If already on a visible snippet, cycle circularly
+            target_idx = (curr_idx + delta) % total_visible
 
-            prev_t = curr_t - 1
-            while prev_t >= 0:
-                snip_count = self._count_snippets_in_text(self._all_messages[prev_t]["text"])
-                if snip_count > 0:
-                    self.select_response_snippet(prev_t, snip_count - 1)
-                    return
-                prev_t -= 1
+        # Strip active class from EVERY fence (including any left off-screen)
+        for fence in self.query(MarkdownFence):
+            if "active-snippet" in fence.classes:
+                fence.remove_class("active-snippet")
+                fence.refresh()
 
-            self.app.notify("Already at first snippet", timeout=1.5)
-            return
-
-    def select_response_snippet(self, turn_idx: int, fence_idx: int) -> None:
-        """Docks locally if mounted; enters lock cycle if conveyor sliding is required."""
-        prev_turn = self.active_turn_index
-        self.active_snippet_turn = turn_idx
-        self.active_snippet_fence = fence_idx
-        self.active_turn_index = turn_idx
-
-        turn_w = self._get_target_widget(turn_idx)
-        if isinstance(turn_w, TurnCard) and not self.will_require_load(turn_idx):
-            self._apply_fence_highlight(turn_idx, fence_idx)
-            return
-
-        self.request_runway_sync(
-            turn_idx,
-            prev_idx=prev_turn,
-            discrete_dock=False,
-            target_fence_idx=fence_idx,
-        )
+        # Select and highlight the newly targeted snippet on screen
+        chosen = visible[target_idx]
+        chosen.add_class("active-snippet")
+        chosen.refresh()
 
     def select_snippet_by_widget(self, target_fence: MarkdownFence) -> None:
-        fences = self._get_fences()
-        if target_fence not in fences:
-            return
-
-        parent_turn = target_fence
-        while parent_turn and not isinstance(parent_turn, TurnCard):
-            parent_turn = parent_turn.parent
-
-        if isinstance(parent_turn, TurnCard):
-            turn_fences = list(parent_turn.query(MarkdownFence))
-            self.active_snippet_turn = parent_turn.turn_index
-            self.active_snippet_fence = turn_fences.index(target_fence) if target_fence in turn_fences else -1
-            self.highlight_card(parent_turn.turn_index, scroll=False)
-
-        for f in fences:
-            if f is target_fence:
-                f.add_class("active-snippet")
-                f.refresh()
-            else:
-                f.remove_class("active-snippet")
-                f.refresh()
+        for fence in self.query(MarkdownFence):
+            if fence is target_fence:
+                fence.add_class("active-snippet")
+                fence.refresh()
+            elif "active-snippet" in fence.classes:
+                fence.remove_class("active-snippet")
+                fence.refresh()
 
     def get_active_snippet(self) -> str | None:
-        target_card = self._get_target_widget(self.active_snippet_turn)
-        if target_card and 0 <= self.active_snippet_fence < len(target_card.snippets):
-            return target_card.snippets[self.active_snippet_fence]
-
-        for f in self._get_fences():
-            if "active-snippet" in f.classes:
-                return self._extract_code_from_fence(f)
+        for fence in self.query(MarkdownFence):
+            if "active-snippet" in fence.classes:
+                return self._extract_code_from_fence(fence)
         return None
 
     # --- Unified Navigation & Zero-Cost Fork Selection ---

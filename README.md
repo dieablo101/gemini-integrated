@@ -1,4 +1,4 @@
-# Gemini
+# gemini-integrated : A LLM ( large language model ) programmers tool!
 
 ![gemini-integrated screenshot 1](./screenshots/screen1.svg)
 ![gemini-integrated screenshot 2](./screenshots/screen2.svg)

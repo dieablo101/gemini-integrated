@@ -2,6 +2,8 @@
 
 import asyncio
 import copy
+from datetime import datetime
+import getpass
 import json
 import os
 from pathlib import Path
@@ -9,23 +11,25 @@ import re
 import subprocess
 import tempfile
 import time
+from typing import Callable, TypeVar
 from uuid import uuid4
 
 import pyperclip
 from google import genai
+from rich.cells import cell_len
 from rich.console import RenderableType
+from rich.markup import escape
 from rich.syntax import Syntax
 from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.command import CommandPalette
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.message import Message
-from textual.screen import ModalScreen
+from textual.screen import ModalScreen, Screen
 from textual.timer import Timer
+from textual.widget import Widget
 from textual.widgets import (
     Button,
-    Footer,
     Input,
     Label,
     Markdown,
@@ -47,12 +51,18 @@ try:
 except Exception:
     _MD_PARSER = None
 
+# Current system username
+CURRENT_USER: str = getpass.getuser()
+
 # User-specific directory and socket paths
 GEMINI_HOME = Path.home() / ".gemini"
 GEMINI_HOME.mkdir(mode=0o700, parents=True, exist_ok=True)
 
 CHATS_DIR = GEMINI_HOME / "chats"
 CHATS_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+
+SCREENSHOTS_DIR = GEMINI_HOME / "screenshots"
+SCREENSHOTS_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
 
 STATE_FILE = GEMINI_HOME / "state.json"
 SOCKET_PATH = GEMINI_HOME / "gemini_textual.sock"
@@ -61,144 +71,389 @@ FORK_HEADER_TEXT = "## This chat is a fork of another / previous chat"
 
 SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
-DEFAULT_WINDOW_CAPACITY = 20
-DEFAULT_MODEL = "gemini-3.8-flash"
-
 # ---------------------------------------------------------------------------
-# Reusable Core File & Git Services (UI & Gemini Tool Use)
+# Global Engine Toggles, Runway Constants & Theming Palettes
 # ---------------------------------------------------------------------------
+CENTER_SCREEN_MODE: bool = True
 
-EXTENSION_LANG_MAP: dict[str, str] = {
-    ".py": "python",
-    ".pyw": "python",
-    ".js": "javascript",
-    ".mjs": "javascript",
-    ".cjs": "javascript",
-    ".ts": "typescript",
-    ".tsx": "tsx",
-    ".jsx": "jsx",
-    ".html": "html",
-    ".htm": "html",
-    ".css": "css",
-    ".scss": "scss",
-    ".sass": "sass",
-    ".json": "json",
-    ".md": "markdown",
-    ".markdown": "markdown",
-    ".sh": "bash",
-    ".bash": "bash",
-    ".zsh": "bash",
-    ".c": "c",
-    ".h": "c",
-    ".cpp": "cpp",
-    ".hpp": "cpp",
-    ".cc": "cpp",
-    ".rs": "rust",
-    ".go": "go",
-    ".rb": "ruby",
-    ".php": "php",
-    ".java": "java",
-    ".yaml": "yaml",
-    ".yml": "yaml",
-    ".toml": "toml",
-    ".sql": "sql",
-    ".el": "lisp",
-    ".lisp": "lisp",
+RUNWAY_ABOVE_BUDGET: int = 4
+RUNWAY_BELOW_BUDGET: int = 5
+DEFAULT_WINDOW_CAPACITY: int = 10
+DEFAULT_MODEL: str = "gemini-3.8-flash"
+
+THEMES: dict[str, dict[str, str]] = {
+    "red": {
+        "accent": "#ff3333",
+        "accent_dim": "#aa1111",
+        "accent_bright": "#ff6666",
+        "banner_bg": "#8b0000",
+        "card_active_bg": "#2a0808",
+    },
+    "blue": {
+        "accent": "#3399ff",
+        "accent_dim": "#1155aa",
+        "accent_bright": "#66b3ff",
+        "banner_bg": "#003388",
+        "card_active_bg": "#08182a",
+    },
+    "green": {
+        "accent": "#33cc66",
+        "accent_dim": "#118833",
+        "accent_bright": "#66e08a",
+        "banner_bg": "#005522",
+        "card_active_bg": "#082a12",
+    },
+    "orange": {
+        "accent": "#ff8800",
+        "accent_dim": "#aa5500",
+        "accent_bright": "#ffa333",
+        "banner_bg": "#884400",
+        "card_active_bg": "#2a1608",
+    },
+    "purple": {
+        "accent": "#bb55ff",
+        "accent_dim": "#7722aa",
+        "accent_bright": "#cc77ff",
+        "banner_bg": "#551188",
+        "card_active_bg": "#22082a",
+    },
+    "yellow": {
+        "accent": "#ffcc00",
+        "accent_dim": "#aa8800",
+        "accent_bright": "#ffdb33",
+        "banner_bg": "#886600",
+        "card_active_bg": "#2a2208",
+    },
+    "pink": {
+        "accent": "#ff55aa",
+        "accent_dim": "#aa2266",
+        "accent_bright": "#ff77bb",
+        "banner_bg": "#881144",
+        "card_active_bg": "#2a081a",
+    },
 }
 
-def detect_language(filepath: str | Path) -> str:
-    """Infers markdown syntax language from file extension."""
-    ext = Path(filepath).suffix.lower()
-    return EXTENSION_LANG_MAP.get(ext, "")
+DEFAULT_PALETTE: str = "red"
 
-def write_code_to_disk(working_dir: str | Path, filename: str, content: str) -> Path:
-    """Reusable utility to safely write snippet content to disk."""
-    base = Path(os.path.expanduser(str(working_dir).strip())).resolve()
-    target = (base / filename.strip()).resolve()
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(content, encoding="utf-8")
-    return target
+def generate_theme_css_rules() -> str:
+    blocks: list[str] = []
+    for name, cfg in THEMES.items():
+        acc = cfg["accent"]
+        acc_dim = cfg["accent_dim"]
+        acc_bright = cfg["accent_bright"]
+        banner = cfg["banner_bg"]
+        active_card = cfg["card_active_bg"]
 
-def get_git_files_catalog(repo_dir: str | Path) -> dict[str, list[str]]:
-    """Returns sorted relative paths for both Git-tracked and .gitignore-ignored files."""
-    base = Path(os.path.expanduser(str(repo_dir).strip())).resolve()
-    check = subprocess.run(
-        ["git", "-C", str(base), "rev-parse", "--is-inside-work-tree"],
-        capture_output=True,
-        text=True,
-    )
-    if check.returncode != 0 or check.stdout.strip() != "true":
-        raise ValueError(f"Directory '{base}' is not a valid Git repository.")
+        blocks.append(f"""
+        .theme-{name} ScrollBar {{
+            color: {acc};
+            background: #181818;
+        }}
+        .theme-{name} ScrollBar:hover {{
+            color: {acc_bright};
+            background: #252525;
+        }}
+        .theme-{name} ScrollBarCorner {{
+            background: #000000;
+        }}
 
-    # 1. Tracked files
-    res_tracked = subprocess.run(
-        ["git", "-C", str(base), "ls-files"],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    tracked = [f.strip() for f in res_tracked.stdout.splitlines() if f.strip()]
+        .theme-{name} Toast {{
+            border: solid {acc};
+        }}
+        .theme-{name} #feed_loader_banner {{
+            color: {acc};
+            border-bottom: solid {acc};
+        }}
+        .theme-{name} #feed {{
+            border: solid {acc};
+        }}
+        .theme-{name} .turn_card.card-active .turn_header {{
+            background: {active_card};
+        }}
+        .theme-{name} .turn_card.card-active .turn_box_label {{
+            color: {acc};
+        }}
+        .theme-{name} MarkdownHorizontalRule {{
+            border-bottom: solid {acc};
+            color: {acc};
+        }}
+        .theme-{name} #feed_status {{
+            color: {acc};
+            border-bottom: solid {acc};
+        }}
+        .theme-{name} #feed_nav_banner {{
+            color: #ffffff;
+            background: #141414;
+        }}
+        .theme-{name} #feed_nav_banner.fork-active {{
+            background: {banner};
+        }}
+        .theme-{name} #feed MarkdownFence.active-snippet {{
+            border: solid {acc} !important;
+        }}
+        .theme-{name} #history {{
+            border: solid {acc};
+            scrollbar-color: {acc} #181818;
+            scrollbar-color-hover: {acc_bright} #252525;
+        }}
+        .theme-{name} #snippet_preview {{
+            border: round {acc};
+            scrollbar-color: {acc} #181818;
+            scrollbar-color-hover: {acc_bright} #252525;
+        }}
+        .theme-{name} #input {{
+            border: solid {acc};
+        }}
+        .theme-{name} #input:focus {{
+            border: solid {acc};
+        }}
+        .theme-{name} Button {{
+            border: solid {acc};
+            color: #ffffff;
+            text-style: none;
+        }}
+        .theme-{name} Button:hover {{
+            color: {acc};
+            background: #141414;
+            text-style: none;
+        }}
+        .theme-{name} Button:focus {{
+            border: double {acc};
+            text-style: none;
+        }}
 
-    # 2. Ignored files via .gitignore (excluding internal .git metadata)
-    res_ignored = subprocess.run(
-        ["git", "-C", str(base), "ls-files", "--others", "--ignored", "--exclude-standard"],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    ignored = [
-        f.strip()
-        for f in res_ignored.stdout.splitlines()
-        if f.strip() and not f.strip().startswith(".git/") and not f.strip() == ".git"
-    ]
+        /* Modal dialog borders, scrollbars & inputs */
+        .theme-{name} #confirm_dialog {{
+            border: thick {acc};
+            scrollbar-color: {acc} #181818;
+            scrollbar-color-hover: {acc_bright} #252525;
+        }}
+        .theme-{name} #confirm_buttons Button {{
+            border: solid {acc};
+            text-style: none;
+        }}
+        .theme-{name} #confirm_buttons Button:hover {{
+            color: {acc};
+            text-style: none;
+        }}
+        .theme-{name} #confirm_buttons Button:focus {{
+            border: double {acc};
+            text-style: none;
+        }}
 
-    return {
-        "tracked": sorted(tracked),
-        "ignored": sorted(ignored),
-    }
+        .theme-{name} #fork_dialog {{
+            border: thick {acc};
+            scrollbar-color: {acc} #181818;
+            scrollbar-color-hover: {acc_bright} #252525;
+        }}
+        .theme-{name} #fork_prefix_hint {{
+            color: {acc};
+        }}
+        .theme-{name} #fork_title_input {{
+            border: solid {acc};
+        }}
+        .theme-{name} #fork_buttons Button {{
+            border: solid {acc};
+            text-style: none;
+        }}
+        .theme-{name} #fork_buttons Button:hover {{
+            color: {acc};
+            text-style: none;
+        }}
+        .theme-{name} #fork_buttons Button:focus {{
+            border: double {acc};
+            text-style: none;
+        }}
 
-def get_git_tracked_files(repo_dir: str | Path) -> list[str]:
-    """Backward-compatible helper returning tracked files."""
-    return get_git_files_catalog(repo_dir)["tracked"]
+        .theme-{name} #save_dialog {{
+            border: thick {acc};
+            scrollbar-color: {acc} #181818;
+            scrollbar-color-hover: {acc_bright} #252525;
+        }}
+        .theme-{name} #save_dialog Input {{
+            border: solid {acc};
+        }}
+        .theme-{name} #dialog_buttons Button {{
+            border: solid {acc};
+            text-style: none;
+        }}
+        .theme-{name} #dialog_buttons Button:hover {{
+            color: {acc};
+            text-style: none;
+        }}
+        .theme-{name} #dialog_buttons Button:focus {{
+            border: double {acc};
+            text-style: none;
+        }}
 
-def build_ascii_tree(files: list[str], root_name: str = ".", ignored_set: set[str] | None = None) -> str:
-    """Builds clean ASCII folder/file tree visualization from a list of relative paths."""
-    nested: dict = {}
-    ignored_set = ignored_set or set()
+        .theme-{name} #insert_file_dialog {{
+            border: thick {acc};
+            scrollbar-color: {acc} #181818;
+            scrollbar-color-hover: {acc_bright} #252525;
+        }}
+        .theme-{name} #insert_file_dialog Input {{
+            border: solid {acc};
+        }}
 
-    for path in sorted(files):
-        parts = Path(path).parts
-        curr = nested
-        for part in parts:
-            curr = curr.setdefault(part, {})
+        .theme-{name} #git_dialog {{
+            border: thick {acc};
+            scrollbar-color: {acc} #181818;
+            scrollbar-color-hover: {acc_bright} #252525;
+        }}
+        .theme-{name} #git_repo_row DirectoryPathInput {{
+            border: solid {acc};
+        }}
+        .theme-{name} #git_repo_row Button {{
+            border: solid {acc};
+            text-style: none;
+        }}
+        .theme-{name} #git_repo_row Button:hover {{
+            color: {acc};
+            text-style: none;
+        }}
+        .theme-{name} #git_repo_row Button:focus {{
+            border: double {acc};
+            text-style: none;
+        }}
+        .theme-{name} .tree_pane Tree {{
+            border: solid {acc};
+            scrollbar-color: {acc} #181818;
+            scrollbar-color-hover: {acc_bright} #252525;
+        }}
+        .theme-{name} #status_label {{
+            color: {acc};
+        }}
+        .theme-{name} #git_buttons Button {{
+            border: solid {acc};
+            text-style: none;
+        }}
+        .theme-{name} #git_buttons Button:hover {{
+            color: {acc};
+            text-style: none;
+        }}
+        .theme-{name} #git_buttons Button:focus {{
+            border: double {acc};
+            text-style: none;
+        }}
 
-    lines: list[str] = [root_name + "/"]
+        .theme-{name} #dialog {{
+            border: thick {acc};
+            scrollbar-color: {acc} #181818;
+            scrollbar-color-hover: {acc_bright} #252525;
+        }}
+        .theme-{name} #dialog Input {{
+            border: solid {acc};
+        }}
+        .theme-{name} #dialog-buttons Button {{
+            border: solid {acc};
+            text-style: none;
+        }}
+        .theme-{name} #dialog-buttons Button:hover {{
+            color: {acc};
+            text-style: none;
+        }}
+        .theme-{name} #dialog-buttons Button:focus {{
+            border: double {acc};
+            text-style: none;
+        }}
 
-    def _render(node: dict, current_acc: Path, prefix: str = "") -> None:
-        items = sorted(node.keys())
-        for idx, key in enumerate(items):
-            child_acc = current_acc / key
-            is_last = idx == len(items) - 1
-            branch = "└── " if is_last else "├── "
-            child_prefix = "    " if is_last else "│   "
-            is_dir = bool(node[key])
+        .theme-{name} #frame_dialog {{
+            border: thick {acc};
+            scrollbar-color: {acc} #181818;
+            scrollbar-color-hover: {acc_bright} #252525;
+        }}
+        .theme-{name} #frame_options {{
+            border: solid {acc};
+            scrollbar-color: {acc} #181818;
+            scrollbar-color-hover: {acc_bright} #252525;
+        }}
 
-            if is_dir:
-                display = f"{key}/"
-            else:
-                rel_str = str(child_acc)
-                tag = " (ignored)" if rel_str in ignored_set else ""
-                display = f"{key}{tag}"
+        .theme-{name} #commands_dialog {{
+            border: thick {acc};
+            scrollbar-color: {acc} #181818;
+            scrollbar-color-hover: {acc_bright} #252525;
+        }}
+        .theme-{name} .cmd_section_title {{
+            color: {acc};
+        }}
+        .theme-{name} .cmd_key {{
+            color: {acc_bright};
+        }}
+        .theme-{name} #cmd_footer_hint {{
+            color: {acc_dim};
+        }}
+        """)
+    return "\n".join(blocks)
 
-            lines.append(f"{prefix}{branch}{display}")
-            if is_dir:
-                _render(node[key], child_acc, prefix + child_prefix)
-
-    _render(nested, Path())
-    return "\n".join(lines)
+# Keys selectively gated and consumed at the App Root during lockout
+GATED_NAV_KEYS = {
+    "home",
+    "end",
+    "pageup",
+    "pagedown",
+    "up",
+    "down",
+    "shift+up",
+    "shift+down",
+    "alt+n",
+    "meta+n",
+    "alt+p",
+    "meta+p",
+}
 
 # ---------------------------------------------------------------------------
-# Dynamic MarkdownFence Hook for Accurate Line Numbers in the Feed
+# Pure 1D Outward Raycast Math Function
+# ---------------------------------------------------------------------------
+
+def cast_ray_from_center(
+    center_y: int,
+    header_map: dict[int, tuple[int, str]],
+    win_start: int,
+    win_end: int,
+    total_messages: int,
+    max_radius: int = 150,
+) -> tuple[int, str, int]:
+    if not header_map:
+        return 0, "", 0
+
+    sorted_headers = sorted(header_map.keys())
+    lowest_header_y = sorted_headers[0]
+    highest_header_y = sorted_headers[-1]
+
+    if center_y < lowest_header_y:
+        if win_start > 0:
+            target_idx = win_start - 1
+            return target_idx, f"turn_{target_idx}", int(center_y - lowest_header_y)
+        t_idx, t_id = header_map[lowest_header_y]
+        return t_idx, t_id, int(center_y - lowest_header_y)
+
+    if center_y > (highest_header_y + 40):
+        if win_end < total_messages:
+            target_idx = win_end
+            return target_idx, f"turn_{target_idx}", int(center_y - highest_header_y)
+        t_idx, t_id = header_map[highest_header_y]
+        return t_idx, t_id, int(center_y - highest_header_y)
+
+    for radius in range(max_radius + 1):
+        down_line = center_y + radius
+        if down_line in header_map:
+            t_idx, t_id = header_map[down_line]
+            delta = center_y - down_line
+            return t_idx, t_id, delta
+
+        if radius > 0:
+            up_line = center_y - radius
+            if up_line in header_map:
+                t_idx, t_id = header_map[up_line]
+                delta = center_y - up_line
+                return t_idx, t_id, delta
+
+    closest_line = min(header_map.keys(), key=lambda y: abs(y - center_y))
+    t_idx, t_id = header_map[closest_line]
+    return t_idx, t_id, int(center_y - closest_line)
+
+# ---------------------------------------------------------------------------
+# Dynamic MarkdownFence Hook
 # ---------------------------------------------------------------------------
 _orig_markdown_fence_render = MarkdownFence.render
 
@@ -237,11 +492,106 @@ def _enhanced_markdown_fence_render(self: MarkdownFence) -> RenderableType:
 MarkdownFence.render = _enhanced_markdown_fence_render
 
 # ---------------------------------------------------------------------------
+# Reusable Core File & Git Services
+# ---------------------------------------------------------------------------
+
+EXTENSION_LANG_MAP: dict[str, str] = {
+    ".py": "python", ".pyw": "python", ".js": "javascript", ".mjs": "javascript",
+    ".cjs": "javascript", ".ts": "typescript", ".tsx": "tsx", ".jsx": "jsx",
+    ".html": "html", ".htm": "html", ".css": "css", ".scss": "scss",
+    ".sass": "sass", ".json": "json", ".md": "markdown", ".markdown": "markdown",
+    ".sh": "bash", ".bash": "bash", ".zsh": "bash", ".c": "c", ".h": "c",
+    ".cpp": "cpp", ".hpp": "cpp", ".cc": "cpp", ".rs": "rust", ".go": "go",
+    ".rb": "ruby", ".php": "php", ".java": "java", ".yaml": "yaml",
+    ".yml": "yaml", ".toml": "toml", ".sql": "sql", ".el": "lisp", ".lisp": "lisp",
+}
+
+def detect_language(filepath: str | Path) -> str:
+    ext = Path(filepath).suffix.lower()
+    return EXTENSION_LANG_MAP.get(ext, "")
+
+def write_code_to_disk(working_dir: str | Path, filename: str, content: str) -> Path:
+    base = Path(os.path.expanduser(str(working_dir).strip())).resolve()
+    target = (base / filename.strip()).resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content, encoding="utf-8")
+    return target
+
+def get_git_files_catalog(repo_dir: str | Path) -> dict[str, list[str]]:
+    base = Path(os.path.expanduser(str(repo_dir).strip())).resolve()
+    check = subprocess.run(
+        ["git", "-C", str(base), "rev-parse", "--is-inside-work-tree"],
+        capture_output=True,
+        text=True,
+    )
+    if check.returncode != 0 or check.stdout.strip() != "true":
+        raise ValueError(f"Directory '{base}' is not a valid Git repository.")
+
+    res_tracked = subprocess.run(
+        ["git", "-C", str(base), "ls-files"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    tracked = [f.strip() for f in res_tracked.stdout.splitlines() if f.strip()]
+
+    res_ignored = subprocess.run(
+        ["git", "-C", str(base), "ls-files", "--others", "--ignored", "--exclude-standard"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    ignored = [
+        f.strip()
+        for f in res_ignored.stdout.splitlines()
+        if f.strip() and not f.strip().startswith(".git/") and not f.strip() == ".git"
+    ]
+
+    return {
+        "tracked": sorted(tracked),
+        "ignored": sorted(ignored),
+    }
+
+def build_ascii_tree(files: list[str], root_name: str = ".", ignored_set: set[str] | None = None) -> str:
+    nested: dict = {}
+    ignored_set = ignored_set or set()
+
+    for path in sorted(files):
+        parts = Path(path).parts
+        curr = nested
+        for part in parts:
+            curr = curr.setdefault(part, {})
+
+    lines: list[str] = [root_name + "/"]
+
+    def _render(node: dict, current_acc: Path, prefix: str = "") -> None:
+        items = sorted(node.keys())
+        for idx, key in enumerate(items):
+            child_acc = current_acc / key
+            is_last = idx == len(items) - 1
+            branch = "└── " if is_last else "├── "
+            child_prefix = "    " if is_last else "│   "
+            is_dir = bool(node[key])
+
+            if is_dir:
+                display = f"{key}/"
+            else:
+                rel_str = str(child_acc)
+                tag = " (ignored)" if rel_str in ignored_set else ""
+                display = f"{key}{tag}"
+
+            lines.append(f"{prefix}{branch}{display}")
+            if is_dir:
+                _render(node[key], child_acc, prefix + child_prefix)
+
+    _render(nested, Path())
+    return "\n".join(lines)
+
+# ---------------------------------------------------------------------------
 # Event & Message System
 # ---------------------------------------------------------------------------
 
 class RemoteInsert(Message):
-    """Event posted when external process sends text to insert."""
     def __init__(
         self,
         text: str,
@@ -258,13 +608,11 @@ class RemoteInsert(Message):
         self.end_line = end_line
 
 class RequestPhaseUpdate(Message):
-    """Event posted when Gemini API request phase changes (connecting, waiting)."""
     def __init__(self, phase: str) -> None:
         super().__init__()
         self.phase = phase
 
 class RequestFinished(Message):
-    """Event posted when Gemini API returns full response."""
     def __init__(self, full_text: str, elapsed: float, words: int) -> None:
         super().__init__()
         self.full_text = full_text
@@ -272,29 +620,193 @@ class RequestFinished(Message):
         self.words = words
 
 class RequestFailed(Message):
-    """Event posted when Gemini API request encounters an error."""
     def __init__(self, error_message: str) -> None:
         super().__init__()
         self.error_message = error_message
+
+class AppLockEngaged(Message):
+    def __init__(self, reason: str) -> None:
+        super().__init__()
+        self.reason = reason
+
+class AppLockReleased(Message):
+    def __init__(self, reason: str) -> None:
+        super().__init__()
+        self.reason = reason
+
+# ---------------------------------------------------------------------------
+# Expandable App-Wide Root Lock Controller
+# ---------------------------------------------------------------------------
+
+class AppLockController:
+    def __init__(self, app: App) -> None:
+        self.app = app
+        self._active_reasons: set[str] = set()
+
+    @property
+    def is_locked(self) -> bool:
+        return len(self._active_reasons) > 0
+
+    def has_reason(self, reason: str) -> bool:
+        return reason in self._active_reasons
+
+    def acquire(self, reason: str) -> None:
+        was_locked = self.is_locked
+        self._active_reasons.add(reason)
+        if not was_locked:
+            self.app.post_message(AppLockEngaged(reason))
+
+    def release(self, reason: str) -> None:
+        if reason in self._active_reasons:
+            self._active_reasons.remove(reason)
+            if not self.is_locked:
+                self.app.post_message(AppLockReleased(reason))
 
 # ---------------------------------------------------------------------------
 # Modals & Dialog Widgets
 # ---------------------------------------------------------------------------
 
-class MenuPalette(CommandPalette):
-    """Command palette customized as the Emacs-style Menu (M-x)."""
+ModalResultType = TypeVar("ModalResultType")
+
+class ResponsiveModalScreen(ModalScreen[ModalResultType]):
+    MOBILE_BREAKPOINT: int = 80
+
+    def _update_screen_classes(self, width: int | None = None) -> None:
+        current_w = width if width is not None else (self.size.width or (self.app.size.width if self.app else 100))
+        self.set_class(current_w <= self.MOBILE_BREAKPOINT, "-mobile")
 
     def on_mount(self) -> None:
-        super().on_mount()
-        try:
-            palette_input = self.query_one("CommandInput", Input)
-            palette_input.placeholder = "Menu (M-x)..."
-        except Exception:
-            pass
+        if hasattr(self.app, "clear_toasts"):
+            self.app.clear_toasts()
+        if hasattr(self.app, "active_palette_name"):
+            self.add_class(f"theme-{self.app.active_palette_name}")
+        self._update_screen_classes()
+
+    def on_resize(self, event: events.Resize) -> None:
+        self._update_screen_classes(event.size.width)
+
+class CommandsModal(ResponsiveModalScreen[None]):
+    DEFAULT_CSS = """
+    CommandsModal {
+        align: center middle;
+        layer: overlay;
+        background: rgba(0, 0, 0, 0.85);
+    }
+    #commands_dialog {
+        padding: 1 2;
+        width: 78;
+        max-width: 92vw;
+        height: auto;
+        max-height: 90vh;
+        overflow-y: auto;
+        overflow-x: hidden;
+        background: #000000;
+    }
+    #cmd_modal_title {
+        text-style: bold;
+        text-align: center;
+        width: 100%;
+        margin-bottom: 1;
+        color: #ffffff;
+    }
+    .cmd_section_title {
+        text-style: bold;
+        margin-top: 1;
+        margin-bottom: 0;
+        width: 100%;
+    }
+    .cmd_row {
+        width: 100%;
+        height: auto;
+        color: #dddddd;
+        text-wrap: wrap;
+        margin-left: 1;
+    }
+    .cmd_key {
+        text-style: bold;
+    }
+    .cmd_desc {
+        color: #ffffff;
+    }
+    #cmd_footer_hint {
+        width: 100%;
+        text-align: center;
+        margin-top: 2;
+        margin-bottom: 0;
+        text-style: italic;
+    }
+    CommandsModal.-mobile #commands_dialog {
+        width: 100vw;
+        height: 100vh;
+        max-width: 100vw;
+        max-height: 100vh;
+        border: none;
+        padding: 1;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Close"),
+        Binding("ctrl+g", "cancel", "Close"),
+        Binding("q", "cancel", "Close"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll(id="commands_dialog"):
+            yield Label("COMMANDS:", id="cmd_modal_title")
+
+            yield Label("Keyboard:", classes="cmd_section_title")
+            yield Label("[bold]Ctrl+F / Ctrl+B[/] : Move cursor right / left", classes="cmd_row")
+            yield Label("[bold]Ctrl+N / Ctrl+P[/] : Move cursor down / up", classes="cmd_row")
+            yield Label("[bold]Ctrl+A / Ctrl+E[/] : Beginning / end of line", classes="cmd_row")
+            yield Label("[bold]Alt+F / Alt+B[/]   : Move forward / backward one word", classes="cmd_row")
+            yield Label("[bold]Alt+< / Alt+>[/]   : Move to beginning / end of buffer", classes="cmd_row")
+            yield Label("[bold]Ctrl+V / Alt+V[/]  : Page down / page up", classes="cmd_row")
+            yield Label("[bold]Ctrl+Space[/]      : Set mark region for selection", classes="cmd_row")
+            yield Label("[bold]Ctrl+D[/]          : Delete character forward", classes="cmd_row")
+            yield Label("[bold]Ctrl+K[/]          : Kill line forward to clipboard", classes="cmd_row")
+            yield Label("[bold]Ctrl+U[/]          : Kill line backward to clipboard", classes="cmd_row")
+            yield Label("[bold]Alt+D[/]           : Kill word forward to clipboard", classes="cmd_row")
+            yield Label("[bold]Ctrl+W[/]          : Kill selected region / kill word backward", classes="cmd_row")
+            yield Label("[bold]Ctrl+Y[/]          : Yank (paste) clipboard text at cursor", classes="cmd_row")
+            yield Label("[bold]Alt+W[/]           : Copy selected region to clipboard", classes="cmd_row")
+            yield Label("[bold]Ctrl+_ / Ctrl+/[/] : Undo last edit", classes="cmd_row")
+            yield Label("[bold]Ctrl+G / Escape[/] : Clear active mark or selection", classes="cmd_row")
+
+            yield Label("PowerKeys:", classes="cmd_section_title")
+            yield Label("[bold]C-c c / C-c /[/]  : Open this Commands reference window", classes="cmd_row")
+            yield Label("[bold]C-c e[/]          : Send selected snippet to Emacs buffer", classes="cmd_row")
+            yield Label("[bold]C-c w[/]          : Copy selected code snippet to clipboard", classes="cmd_row")
+            yield Label("[bold]C-c y[/]          : Yank system clipboard into prompt input", classes="cmd_row")
+            yield Label("[bold]C-c t[/]          : Rename current chat topic", classes="cmd_row")
+            yield Label("[bold]C-c b[/]          : Toggle chat history list view", classes="cmd_row")
+            yield Label("[bold]C-c n[/]          : Start a new chat", classes="cmd_row")
+            yield Label("[bold]C-c r[/]          : Save selected code snippet directly to disk", classes="cmd_row")
+            yield Label("[bold]C-c f[/]          : Insert file content from disk as snippet", classes="cmd_row")
+            yield Label("[bold]C-c g[/]          : Scan repository & open Git tree selector", classes="cmd_row")
+            yield Label("[bold]C-c .[/]          : Toggle Fork mode to fork turns", classes="cmd_row")
+            yield Label("[bold]C-c `[/]          : Save SVG screenshot of the current UI", classes="cmd_row")
+
+            yield Label("CommandLine:", classes="cmd_section_title")
+            yield Label("Execute commands directly from the prompt input using the format:", classes="cmd_row")
+            yield Label("  [bold]!/<command>:<argument>[/]", classes="cmd_row")
+            yield Label("  • [bold]![/][bold]/[/] : Command instantiator prefix", classes="cmd_row")
+            yield Label("  • [bold]<command>[/] : The command name", classes="cmd_row")
+            yield Label("  • [bold]:[/] : Argument delimiter", classes="cmd_row")
+            yield Label("  • [bold]<argument>[/] : The parameter value passed to the command", classes="cmd_row")
+
+            yield Label("User Interface:", classes="cmd_section_title")
+            yield Label("[bold]!/ui-theme:<color>[/]", classes="cmd_row")
+            yield Label("  Change the interface color theme.", classes="cmd_row")
+            yield Label("  Available options: [bold]red, blue, green, orange, purple, yellow, pink[/]", classes="cmd_row")
+            yield Label("  Example: [italic]!/ui-theme:blue[/]", classes="cmd_row")
+
+            yield Label("ESC / Ctrl + g to exit", id="cmd_footer_hint")
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
 
 class DirectoryPathInput(Input):
-    """Input widget featuring 1x Tab directory auto-completion and 2x quick Tab to navigate UI."""
-
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
         self._last_tab_time: float = 0.0
@@ -348,16 +860,7 @@ class DirectoryPathInput(Input):
 
         matches = [d for d in entries if d.startswith(prefix)]
         if not matches:
-            if prefix.startswith("."):
-                try:
-                    matches = [
-                        d for d in os.listdir(search_dir)
-                        if d.startswith(prefix) and os.path.isdir(os.path.join(search_dir, d))
-                    ]
-                except Exception:
-                    pass
-            if not matches:
-                return
+            return
 
         common = os.path.commonprefix(matches)
         target = matches[0] if len(matches) == 1 else common
@@ -381,8 +884,6 @@ class DirectoryPathInput(Input):
         self.cursor_position = len(self.value)
 
 class FilePathInput(Input):
-    """Input widget for file/folder auto-completion (1x Tab auto-complete, 2x Tab navigate)."""
-
     def __init__(self, base_dir_getter=None, **kwargs) -> None:
         super().__init__(**kwargs)
         self._last_tab_time: float = 0.0
@@ -477,32 +978,50 @@ class FilePathInput(Input):
         self.value = completed
         self.cursor_position = len(self.value)
 
-class ConfirmModal(ModalScreen[bool]):
-    """Modal dialog prompting user for confirmation (Yes / No)."""
-
+class ConfirmModal(ResponsiveModalScreen[bool]):
     DEFAULT_CSS = """
     ConfirmModal {
         align: center middle;
+        layer: overlay;
+        background: rgba(0, 0, 0, 0.85);
     }
     #confirm_dialog {
         padding: 1 2;
-        width: 52;
+        width: 50;
+        max-width: 90vw;
         height: auto;
-        border: thick red;
-        background: $surface;
+        max-height: 90vh;
+        overflow-y: auto;
+        overflow-x: hidden;
+        background: #000000;
     }
     #confirm_dialog Label {
         margin-bottom: 1;
         text-style: bold;
         text-align: center;
         width: 100%;
+        height: auto;
+        color: #ffffff;
+        text-wrap: wrap;
     }
     #confirm_buttons {
         width: 100%;
+        height: auto;
         align-horizontal: center;
     }
     #confirm_buttons Button {
         margin: 0 1;
+        background: #000000;
+        color: #ffffff;
+        text-style: none;
+    }
+    ConfirmModal.-mobile #confirm_dialog {
+        width: 100vw;
+        height: 100vh;
+        max-width: 100vw;
+        max-height: 100vh;
+        border: none;
+        padding: 1;
     }
     """
 
@@ -518,13 +1037,14 @@ class ConfirmModal(ModalScreen[bool]):
         self.message = message
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="confirm_dialog"):
+        with VerticalScroll(id="confirm_dialog"):
             yield Label(self.message)
             with Horizontal(id="confirm_buttons"):
-                yield Button("No", variant="default", id="no_btn")
-                yield Button("Yes", variant="error", id="yes_btn")
+                yield Button("No", id="no_btn")
+                yield Button("Yes", id="yes_btn")
 
     def on_mount(self) -> None:
+        super().on_mount()
         self.query_one("#no_btn", Button).focus()
 
     @on(Button.Pressed, "#yes_btn")
@@ -535,37 +1055,60 @@ class ConfirmModal(ModalScreen[bool]):
     def action_cancel(self) -> None:
         self.dismiss(False)
 
-class ForkModal(ModalScreen[str | None]):
-    """Modal dialog prompting the user to name the forked chat, enforcing permanent 'Fork: ' prefix."""
-
+class ForkModal(ResponsiveModalScreen[str | None]):
     DEFAULT_CSS = """
     ForkModal {
         align: center middle;
+        layer: overlay;
+        background: rgba(0, 0, 0, 0.85);
     }
     #fork_dialog {
         padding: 1 2;
         width: 66;
+        max-width: 90vw;
         height: auto;
-        border: thick dodgerblue;
-        background: $surface;
+        max-height: 90vh;
+        overflow-y: auto;
+        overflow-x: hidden;
+        background: #000000;
     }
     #fork_dialog Label {
         margin-bottom: 1;
         text-style: bold;
+        color: #ffffff;
+        width: 100%;
+        height: auto;
+        text-wrap: wrap;
     }
     #fork_prefix_hint {
-        color: cyan;
         margin-bottom: 1;
+        width: 100%;
+        height: auto;
+        text-wrap: wrap;
     }
     #fork_title_input {
         margin-bottom: 1;
+        background: #000000;
+        color: #ffffff;
     }
     #fork_buttons {
         width: 100%;
+        height: auto;
         align-horizontal: right;
     }
     #fork_buttons Button {
         margin-left: 1;
+        background: #000000;
+        color: #ffffff;
+        text-style: none;
+    }
+    ForkModal.-mobile #fork_dialog {
+        width: 100vw;
+        height: 100vh;
+        max-width: 100vw;
+        max-height: 100vh;
+        border: none;
+        padding: 1;
     }
     """
 
@@ -582,7 +1125,7 @@ class ForkModal(ModalScreen[str | None]):
         self.default_title = clean_default
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="fork_dialog"):
+        with VerticalScroll(id="fork_dialog"):
             yield Label("Name forked chat:")
             yield Label("Prefix 'Fork: ' will be permanently attached to the title.", id="fork_prefix_hint")
             yield Input(
@@ -591,10 +1134,11 @@ class ForkModal(ModalScreen[str | None]):
                 id="fork_title_input",
             )
             with Horizontal(id="fork_buttons"):
-                yield Button("Cancel", variant="error", id="cancel_btn")
-                yield Button("Fork It", variant="primary", id="fork_btn")
+                yield Button("Cancel", id="cancel_btn")
+                yield Button("Fork It", id="fork_btn")
 
     def on_mount(self) -> None:
+        super().on_mount()
         self.query_one("#fork_title_input", Input).focus()
 
     @on(Input.Submitted, "#fork_title_input")
@@ -619,84 +1163,137 @@ class ForkModal(ModalScreen[str | None]):
             final_title = raw
         self.dismiss(final_title)
 
-class ForkTurnCard(Vertical):
-    """Container representing a single response turn during Fork mode without physical focus reflows."""
-
+class TurnCard(Vertical):
     can_focus = False
 
-    def __init__(self, index: int, sender: str, text: str, is_selected: bool = False, **kwargs) -> None:
-        super().__init__(classes="fork_turn_card", **kwargs)
+    def __init__(self, index: int, sender: str, text: str, turn_id: str, is_selected: bool = False, **kwargs) -> None:
+        instance_id = f"card_{uuid4().hex[:8]}"
+        super().__init__(classes="turn_card", id=instance_id, **kwargs)
         self.turn_index = index
+        self.turn_id = turn_id
         self.sender = sender
         self.text_content = text
         self.is_selected = is_selected
+        self.data = {"turn_index": index, "turn_id": turn_id}
+
+        self.snippets: list[str] = []
+        if _MD_PARSER:
+            try:
+                tokens = _MD_PARSER.parse(text)
+                self.snippets = [t.content for t in tokens if t.type == "fence"]
+            except Exception:
+                pass
+        if not self.snippets:
+            self.snippets = [m.group(1) for m in re.finditer(r"```[^\n]*\n(.*?)```", text, re.DOTALL)]
 
     def compose(self) -> ComposeResult:
-        with Horizontal(classes="fork_turn_header"):
-            yield Label(self._get_box_label(), classes="fork_turn_box_label")
-        yield Markdown(self.text_content, classes="fork_turn_preview")
+        with Horizontal(classes="turn_header"):
+            yield Label(self._get_box_label(), classes="turn_box_label", markup=False)
+        yield Markdown(f"{self.text_content}\n\n---", classes="turn_body")
 
     def _get_box_label(self) -> str:
-        box = "[✓]" if self.is_selected else "[ ]"
-        return f"{box}  {self.sender}  (#{self.turn_index + 1})"
+        feed = None
+        if self.is_mounted and hasattr(self.app, "query_one"):
+            try:
+                feed = self.app.query_one("#feed", FeedArea)
+            except Exception:
+                pass
+
+        fork_active = feed.fork_ui_active if feed else False
+
+        if fork_active:
+            box = "[X]" if self.is_selected else "[ ]"
+            return f"{box} {self.sender} (#{self.turn_index + 1})"
+        else:
+            return f"{self.sender} (#{self.turn_index + 1})"
+
+    def update_display(self) -> None:
+        try:
+            lbl = self.query_one(".turn_box_label", Label)
+            lbl.update(self._get_box_label())
+        except Exception:
+            pass
+
+    def update_selected(self, selected: bool) -> None:
+        self.is_selected = selected
+        self.update_display()
 
     def toggle(self) -> None:
-        self.is_selected = not self.is_selected
         feed = self.app.query_one("#feed", FeedArea)
-        if self.is_selected:
+        new_val = not self.is_selected
+        if new_val:
             feed._fork_selected_indices.add(self.turn_index)
         else:
             feed._fork_selected_indices.discard(self.turn_index)
-
-        self.query_one(".fork_turn_box_label", Label).update(self._get_box_label())
-        self.refresh()
-
-    def set_selected(self, value: bool) -> None:
-        self.is_selected = value
-        self.query_one(".fork_turn_box_label", Label).update(self._get_box_label())
+        self.update_selected(new_val)
         self.refresh()
 
     @on(events.Click)
     def on_card_click(self, event: events.Click) -> None:
-        event.stop()
         feed = self.app.query_one("#feed", FeedArea)
-        feed.highlight_fork_card(self.turn_index, scroll=False)
-        curr = event.widget
-        while curr and curr is not self:
-            if "fork_turn_header" in curr.classes:
-                self.toggle()
-                return
-            curr = curr.parent
+        if feed.is_locked():
+            event.stop()
+            return
+        if feed.fork_ui_active:
+            curr = event.widget
+            while curr and curr is not self:
+                if "turn_header" in curr.classes or "turn_box_label" in curr.classes:
+                    event.stop()
+                    feed.highlight_card(self.turn_index, scroll=False)
+                    self.toggle()
+                    return
+                curr = curr.parent
 
-class WriteSnippetModal(ModalScreen[dict | None]):
-    """Modal dialog prompting for working directory and filename to write code to disk."""
-
+class WriteSnippetModal(ResponsiveModalScreen[dict | None]):
     DEFAULT_CSS = """
     WriteSnippetModal {
         align: center middle;
+        layer: overlay;
+        background: rgba(0, 0, 0, 0.85);
     }
     #save_dialog {
         padding: 1 2;
         width: 72;
+        max-width: 90vw;
         height: auto;
-        border: thick dodgerblue;
-        background: $surface;
+        max-height: 90vh;
+        overflow-y: auto;
+        overflow-x: hidden;
+        background: #000000;
     }
     #save_dialog Label {
         margin-top: 1;
         margin-bottom: 0;
         text-style: bold;
+        color: #ffffff;
+        width: 100%;
+        height: auto;
+        text-wrap: wrap;
     }
     #save_dialog Input {
         margin-bottom: 1;
+        background: #000000;
+        color: #ffffff;
     }
     #dialog_buttons {
         width: 100%;
+        height: auto;
         align-horizontal: right;
         margin-top: 1;
     }
     #dialog_buttons Button {
         margin-left: 1;
+        background: #000000;
+        color: #ffffff;
+        text-style: none;
+    }
+    WriteSnippetModal.-mobile #save_dialog {
+        width: 100vw;
+        height: 100vh;
+        max-width: 100vw;
+        max-height: 100vh;
+        border: none;
+        padding: 1;
     }
     """
 
@@ -705,26 +1302,23 @@ class WriteSnippetModal(ModalScreen[dict | None]):
         Binding("ctrl+g", "cancel", "Cancel"),
     ]
 
-    def __init__(
-        self,
-        snippet_content: str,
-        initial_dir: str,
-    ) -> None:
+    def __init__(self, snippet_content: str, initial_dir: str) -> None:
         super().__init__()
         self.snippet_content = snippet_content
         self.initial_dir = initial_dir
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="save_dialog"):
+        with VerticalScroll(id="save_dialog"):
             yield Label("Working Directory (Tab: auto-complete, 2x Tab: navigate):")
             yield DirectoryPathInput(value=self.initial_dir, id="dir_input")
             yield Label("Filename to write:")
             yield Input(placeholder="e.g. main.py, server.go, script.sh", id="filename_input")
             with Horizontal(id="dialog_buttons"):
-                yield Button("Cancel", variant="error", id="cancel_btn")
-                yield Button("Write to Disk", variant="primary", id="confirm_btn")
+                yield Button("Cancel", id="cancel_btn")
+                yield Button("Write to Disk", id="confirm_btn")
 
     def on_mount(self) -> None:
+        super().on_mount()
         self.query_one("#filename_input", Input).focus()
 
     @on(Input.Submitted, "#dir_input")
@@ -761,35 +1355,57 @@ class WriteSnippetModal(ModalScreen[dict | None]):
             "content": self.snippet_content,
         })
 
-class InsertFileModal(ModalScreen[dict | None]):
-    """Modal dialog prompting for working directory and file path to insert into prompt."""
-
+class InsertFileModal(ResponsiveModalScreen[dict | None]):
     DEFAULT_CSS = """
     InsertFileModal {
         align: center middle;
+        layer: overlay;
+        background: rgba(0, 0, 0, 0.85);
     }
     #insert_file_dialog {
         padding: 1 2;
         width: 76;
+        max-width: 90vw;
         height: auto;
-        border: thick dodgerblue;
-        background: $surface;
+        max-height: 90vh;
+        overflow-y: auto;
+        overflow-x: hidden;
+        background: #000000;
+        color: #ffffff;
     }
     #insert_file_dialog Label {
         margin-top: 1;
         margin-bottom: 0;
         text-style: bold;
+        color: #ffffff;
+        width: 100%;
+        height: auto;
+        text-wrap: wrap;
     }
     #insert_file_dialog Input {
         margin-bottom: 1;
+        background: #000000;
+        color: #ffffff;
     }
     #dialog_buttons {
         width: 100%;
+        height: auto;
         align-horizontal: right;
         margin-top: 1;
     }
     #dialog_buttons Button {
         margin-left: 1;
+        background: #000000;
+        color: #ffffff;
+        text-style: none;
+    }
+    InsertFileModal.-mobile #insert_file_dialog {
+        width: 100vw;
+        height: 100vh;
+        max-width: 100vw;
+        max-height: 100vh;
+        border: none;
+        padding: 1;
     }
     """
 
@@ -803,7 +1419,7 @@ class InsertFileModal(ModalScreen[dict | None]):
         self.initial_dir = initial_dir
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="insert_file_dialog"):
+        with VerticalScroll(id="insert_file_dialog"):
             yield Label("Working Directory (Tab: auto-complete, 2x Tab: navigate):")
             yield DirectoryPathInput(value=self.initial_dir, id="dir_input")
             yield Label("File Path (Tab: auto-complete, 2x Tab: navigate):")
@@ -813,8 +1429,8 @@ class InsertFileModal(ModalScreen[dict | None]):
                 base_dir_getter=self._get_working_dir,
             )
             with Horizontal(id="dialog_buttons"):
-                yield Button("Cancel", variant="error", id="cancel_btn")
-                yield Button("Insert File", variant="primary", id="confirm_btn")
+                yield Button("Cancel", id="cancel_btn")
+                yield Button("Insert File", id="confirm_btn")
 
     def _get_working_dir(self) -> str:
         try:
@@ -826,6 +1442,7 @@ class InsertFileModal(ModalScreen[dict | None]):
         return os.getcwd()
 
     def on_mount(self) -> None:
+        super().on_mount()
         self.query_one("#file_input", FilePathInput).focus()
 
     @on(Input.Submitted, "#dir_input")
@@ -879,20 +1496,29 @@ class InsertFileModal(ModalScreen[dict | None]):
             "rel_path": file_path_raw,
         })
 
-class GitTreeModal(ModalScreen[dict | None]):
-    """Modal explorer for browsing Git tracked & .gitignore files with fully expanded trees and folder toggling."""
+class GitTreeModal(ResponsiveModalScreen[dict | None]):
+    STACK_BREAKPOINT: int = 96
 
     DEFAULT_CSS = """
     GitTreeModal {
         align: center middle;
+        layer: overlay;
+        background: rgba(0, 0, 0, 0.85);
     }
     #git_dialog {
         padding: 1 2;
-        width: 110;
-        height: 92vh;
-        max-height: 95vh;
-        border: thick dodgerblue;
-        background: $surface;
+        width: 104;
+        max-width: 95vw;
+        height: auto;
+        max-height: 94vh;
+        overflow-y: auto;
+        overflow-x: hidden;
+        background: #000000;
+    }
+    #git_dialog Label {
+        width: 100%;
+        height: auto;
+        text-wrap: wrap;
     }
     #git_repo_row {
         height: auto;
@@ -900,18 +1526,23 @@ class GitTreeModal(ModalScreen[dict | None]):
     }
     #git_repo_row DirectoryPathInput {
         width: 1fr;
+        background: #000000;
+        color: #ffffff;
     }
     #git_repo_row Button {
         margin-left: 1;
+        background: #000000;
+        color: #ffffff;
+        text-style: none;
     }
     #dual_tree_row {
-        height: 1fr;
-        min-height: 10;
+        height: auto;
+        min-height: 12;
         margin-bottom: 1;
     }
     .tree_pane {
         width: 1fr;
-        height: 1fr;
+        height: auto;
     }
     #pane_tracked {
         margin-right: 1;
@@ -920,14 +1551,18 @@ class GitTreeModal(ModalScreen[dict | None]):
         text-style: bold;
         height: auto;
         margin-bottom: 0;
+        color: #ffffff;
+        width: 100%;
+        text-wrap: wrap;
     }
     .tree_pane Tree {
-        border: solid #555555;
-        height: 1fr;
+        height: 13;
         min-height: 5;
+        background: #000000;
+        color: #ffffff;
     }
     #tree_ignored {
-        border: solid #334444;
+        border: solid #555555;
     }
     #tree_options_row {
         height: auto;
@@ -942,12 +1577,14 @@ class GitTreeModal(ModalScreen[dict | None]):
     }
     #tree_options_row RadioButton {
         margin-right: 2;
+        color: #ffffff;
     }
     #status_label {
         height: auto;
-        color: #888888;
         margin-top: 1;
         margin-bottom: 1;
+        width: 100%;
+        text-wrap: wrap;
     }
     #git_buttons {
         height: auto;
@@ -956,6 +1593,35 @@ class GitTreeModal(ModalScreen[dict | None]):
     }
     #git_buttons Button {
         margin-left: 1;
+        background: #000000;
+        color: #ffffff;
+        text-style: none;
+    }
+    GitTreeModal.-stacked #dual_tree_row {
+        layout: vertical;
+        height: auto;
+    }
+    GitTreeModal.-stacked .tree_pane {
+        width: 100%;
+        height: auto;
+    }
+    GitTreeModal.-stacked #pane_tracked {
+        margin-right: 0;
+        margin-bottom: 1;
+    }
+    GitTreeModal.-stacked .tree_pane Tree {
+        height: 9;
+    }
+    GitTreeModal.-mobile #git_dialog {
+        width: 100vw;
+        height: 100vh;
+        max-width: 100vw;
+        max-height: 100vh;
+        border: none;
+        padding: 1;
+    }
+    GitTreeModal.-mobile .tree_pane Tree {
+        height: 8;
     }
     """
 
@@ -971,12 +1637,17 @@ class GitTreeModal(ModalScreen[dict | None]):
         self.ignored_files: list[str] = []
         self.selected_files: set[str] = set()
 
+    def _update_screen_classes(self, width: int | None = None) -> None:
+        super()._update_screen_classes(width)
+        current_w = width if width is not None else (self.size.width or (self.app.size.width if self.app else 100))
+        self.set_class(current_w <= self.STACK_BREAKPOINT, "-stacked")
+
     def compose(self) -> ComposeResult:
-        with Vertical(id="git_dialog"):
+        with VerticalScroll(id="git_dialog"):
             yield Label("Git Repository Path (Tab: auto-complete, 2x Tab: navigate):")
             with Horizontal(id="git_repo_row"):
                 yield DirectoryPathInput(value=self.repo_dir, id="git_dir_input")
-                yield Button("Scan Tree", variant="default", id="scan_btn")
+                yield Button("Scan Tree", id="scan_btn")
 
             with Horizontal(id="dual_tree_row"):
                 with Vertical(classes="tree_pane", id="pane_tracked"):
@@ -996,10 +1667,11 @@ class GitTreeModal(ModalScreen[dict | None]):
             yield Label("0 files selected. [Space]/Click to toggle file/folder, [a] all in tree", id="status_label")
 
             with Horizontal(id="git_buttons"):
-                yield Button("Cancel", variant="error", id="cancel_btn")
-                yield Button("Insert Selected & Tree", variant="primary", id="insert_btn")
+                yield Button("Cancel", id="cancel_btn")
+                yield Button("Insert Selected & Tree", id="insert_btn")
 
     def on_mount(self) -> None:
+        super().on_mount()
         self.query_one("#tree_tracked", Tree).show_root = False
         self.query_one("#tree_ignored", Tree).show_root = False
         self._scan_and_populate()
@@ -1068,7 +1740,6 @@ class GitTreeModal(ModalScreen[dict | None]):
         return None
 
     def _refresh_tree_labels(self, root_node: TreeNode) -> tuple[int, int]:
-        """Recursively synchronizes checkbox labels for files and folders."""
         data = root_node.data or {}
         if data.get("is_file"):
             is_sel = data["path"] in self.selected_files
@@ -1165,7 +1836,6 @@ class GitTreeModal(ModalScreen[dict | None]):
 
     @on(Tree.NodeCollapsed)
     def on_node_collapsed(self, event: Tree.NodeCollapsed) -> None:
-        """Prevent folders from ever collapsing—keep them permanently expanded."""
         event.prevent_default()
         event.stop()
         event.node.expand()
@@ -1221,33 +1891,54 @@ class GitTreeModal(ModalScreen[dict | None]):
             "tree_mode": tree_mode,
         })
 
-class TitlePromptModal(ModalScreen[str | None]):
-    """Modal dialog prompting the user for a chat topic/title."""
-
+class TitlePromptModal(ResponsiveModalScreen[str | None]):
     DEFAULT_CSS = """
     TitlePromptModal {
         align: center middle;
+        layer: overlay;
+        background: rgba(0, 0, 0, 0.85);
     }
     #dialog {
         padding: 1 2;
         width: 60;
+        max-width: 90vw;
         height: auto;
-        border: thick dodgerblue;
-        background: $surface;
+        max-height: 90vh;
+        overflow-y: auto;
+        overflow-x: hidden;
+        background: #000000;
     }
     #dialog Label {
         margin-bottom: 1;
         text-style: bold;
+        color: #ffffff;
+        width: 100%;
+        height: auto;
+        text-wrap: wrap;
     }
     #dialog Input {
         margin-bottom: 1;
+        background: #000000;
+        color: #ffffff;
     }
     #dialog-buttons {
         width: 100%;
+        height: auto;
         align-horizontal: right;
     }
     #dialog-buttons Button {
         margin-left: 1;
+        background: #000000;
+        color: #ffffff;
+        text-style: none;
+    }
+    TitlePromptModal.-mobile #dialog {
+        width: 100vw;
+        height: 100vh;
+        max-width: 100vw;
+        max-height: 100vh;
+        border: none;
+        padding: 1;
     }
     """
 
@@ -1262,7 +1953,7 @@ class TitlePromptModal(ModalScreen[str | None]):
         self.default_title = default_title
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="dialog"):
+        with VerticalScroll(id="dialog"):
             yield Label(self.prompt_text)
             yield Input(
                 placeholder="Leave blank for auto-generated title...",
@@ -1270,10 +1961,11 @@ class TitlePromptModal(ModalScreen[str | None]):
                 id="title_input",
             )
             with Horizontal(id="dialog-buttons"):
-                yield Button("Cancel", variant="error", id="cancel_btn")
-                yield Button("Confirm", variant="primary", id="confirm_btn")
+                yield Button("Cancel", id="cancel_btn")
+                yield Button("Confirm", id="confirm_btn")
 
     def on_mount(self) -> None:
+        super().on_mount()
         self.query_one(Input).focus()
 
     @on(Input.Submitted, "#title_input")
@@ -1289,29 +1981,56 @@ class TitlePromptModal(ModalScreen[str | None]):
     def action_cancel(self) -> None:
         self.dismiss(None)
 
-class FrameSelectModal(ModalScreen[dict | None]):
-    """Modal dialog prompting user to pick an Emacs frame & sub-window to paste into."""
-
+class FrameSelectModal(ResponsiveModalScreen[dict | None]):
     DEFAULT_CSS = """
     FrameSelectModal {
         align: center middle;
+        layer: overlay;
+        background: rgba(0, 0, 0, 0.85);
     }
     #frame_dialog {
         padding: 1 2;
         width: 70;
+        max-width: 90vw;
         height: auto;
-        border: thick dodgerblue;
-        background: $surface;
+        max-height: 90vh;
+        overflow-y: auto;
+        overflow-x: hidden;
+        background: #000000;
     }
     #frame_dialog Label {
         margin-bottom: 1;
         text-style: bold;
+        color: #ffffff;
+        width: 100%;
+        height: auto;
+        text-wrap: wrap;
     }
     #frame_options {
         height: auto;
         max-height: 14;
         margin-bottom: 1;
-        border: solid #444444;
+        background: #000000;
+        color: #ffffff;
+    }
+    #dialog-buttons {
+        width: 100%;
+        height: auto;
+        align-horizontal: right;
+    }
+    #dialog-buttons Button {
+        margin-left: 1;
+        background: #000000;
+        color: #ffffff;
+        text-style: none;
+    }
+    FrameSelectModal.-mobile #frame_dialog {
+        width: 100vw;
+        height: 100vh;
+        max-width: 100vw;
+        max-height: 100vh;
+        border: none;
+        padding: 1;
     }
     """
 
@@ -1327,13 +2046,14 @@ class FrameSelectModal(ModalScreen[dict | None]):
         self.flat_targets: list[dict] = []
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="frame_dialog"):
+        with VerticalScroll(id="frame_dialog"):
             yield Label("Multiple Emacs frames detected.\nSelect destination window:")
             yield OptionList(id="frame_options")
             with Horizontal(id="dialog-buttons"):
-                yield Button("Cancel", variant="error", id="cancel_btn")
+                yield Button("Cancel", id="cancel_btn")
 
     def on_mount(self) -> None:
+        super().on_mount()
         opt_list = self.query_one("#frame_options", OptionList)
         self.flat_targets = []
         default_index = 0
@@ -1381,8 +2101,6 @@ class FrameSelectModal(ModalScreen[dict | None]):
         self.dismiss(None)
 
 class EmacsBaseTextArea(TextArea):
-    """Base TextArea with standard Emacs keys, cursor selection synchronization, and clipboard."""
-
     def on_mount(self) -> None:
         self.soft_wrap = True
         self._mark_point: tuple[int, int] | None = None
@@ -1396,7 +2114,6 @@ class EmacsBaseTextArea(TextArea):
         self.move_cursor(self.cursor_location, select=False)
 
     def _on_key(self, event: events.Key) -> None:
-        # Global Emacs C-c Chord interception
         if self.app.intercept_c_c_key(event):
             return
 
@@ -1409,29 +2126,24 @@ class EmacsBaseTextArea(TextArea):
             self.app.notify("Mark set", timeout=1.5)
             return
 
-        if event.key in ("alt+x", "meta+x"):
-            event.prevent_default(); event.stop()
-            self.app.action_command_palette()
-            return
-
         is_selecting = self._mark_point is not None
 
-        if event.key in ("ctrl+f", "right"):
+        if event.key == "ctrl+f":
             event.prevent_default(); event.stop()
             self.action_cursor_right(select=is_selecting)
             self._sync_selection()
             return
-        elif event.key in ("ctrl+b", "left"):
+        elif event.key == "ctrl+b":
             event.prevent_default(); event.stop()
             self.action_cursor_left(select=is_selecting)
             self._sync_selection()
             return
-        elif event.key in ("ctrl+n", "down"):
+        elif event.key == "ctrl+n":
             event.prevent_default(); event.stop()
             self.action_cursor_down(select=is_selecting)
             self._sync_selection()
             return
-        elif event.key in ("ctrl+p", "up"):
+        elif event.key == "ctrl+p":
             event.prevent_default(); event.stop()
             self.action_cursor_up(select=is_selecting)
             self._sync_selection()
@@ -1466,12 +2178,12 @@ class EmacsBaseTextArea(TextArea):
             self.move_cursor(self.document.end, select=is_selecting)
             self._sync_selection()
             return
-        elif event.key in ("ctrl+v", "pagedown"):
+        elif event.key == "ctrl+v":
             event.prevent_default(); event.stop()
             self.action_cursor_page_down()
             self._sync_selection()
             return
-        elif event.key in ("alt+v", "meta+v", "pageup"):
+        elif event.key in ("alt+v", "meta+v"):
             event.prevent_default(); event.stop()
             self.action_cursor_page_up()
             self._sync_selection()
@@ -1521,12 +2233,11 @@ class EmacsBaseTextArea(TextArea):
             event.prevent_default(); event.stop()
             if self.selected_text:
                 self.app.copy_to_clipboard(self.selected_text)
-                self._clear_mark()
-                self.app.notify("Copied region", timeout=1.5)
+                self.notify("Copied region", timeout=1.5)
             return
         elif event.key in ("ctrl+slash", "ctrl+underscore"):
             event.prevent_default(); event.stop()
-            self.action_undo()
+            self.undo()
             self._clear_mark()
             return
 
@@ -1576,14 +2287,14 @@ class EmacsBaseTextArea(TextArea):
             self.app.copy_to_clipboard(killed)
 
 class SnippetPreview(EmacsBaseTextArea):
-    """Editable preview box displaying the most recent snippet with accurate file line numbers."""
-
-    can_focus = False
+    can_focus = True
 
     def __init__(self, **kwargs) -> None:
         kwargs["show_line_numbers"] = True
         super().__init__(**kwargs)
         self.active_tag: str = ""
+        self._last_nav_time: float = 0.0
+        self._nav_cooldown: float = 0.022
 
     def on_mount(self) -> None:
         super().on_mount()
@@ -1618,7 +2329,8 @@ class SnippetPreview(EmacsBaseTextArea):
 
         lines = self.document.line_count if self.document else 1
         target_height = min(max(lines + 2, 4), 10)
-        self.styles.height = target_height
+        if self.styles.height != target_height:
+            self.styles.height = target_height
         self.styles.display = "block"
         self.scroll_home(animate=False)
         self.refresh()
@@ -1639,6 +2351,83 @@ class SnippetPreview(EmacsBaseTextArea):
         if self.styles.height != target_height:
             self.styles.height = target_height
 
+    def _on_key(self, event: events.Key) -> None:
+        if self.app.intercept_c_c_key(event):
+            return
+
+        feed = self.app.query_one("#feed", FeedArea)
+
+        if event.key == "tab":
+            event.prevent_default(); event.stop()
+            self.app.query_one("#input", ExpandingInput).focus()
+            return
+
+        if event.key == "ctrl+q":
+            event.prevent_default(); event.stop()
+            self.app.action_quit()
+            return
+
+        now = time.monotonic()
+        if event.key in ("down", "up", "shift+up", "shift+down"):
+            if now - self._last_nav_time < self._nav_cooldown:
+                event.prevent_default(); event.stop()
+                return
+            self._last_nav_time = now
+
+        if event.key in ("shift+up", "shift+down"):
+            event.prevent_default(); event.stop()
+            direction = -1 if event.key == "shift+up" else 1
+            feed.viewport_page_navigate(direction)
+            return
+        elif event.key == "down":
+            event.prevent_default(); event.stop()
+            feed.arrow_navigate(1)
+            return
+        elif event.key == "up":
+            event.prevent_default(); event.stop()
+            feed.arrow_navigate(-1)
+            return
+        elif event.key == "pagedown":
+            event.prevent_default(); event.stop()
+            feed.step_card(1)
+            return
+        elif event.key == "pageup":
+            event.prevent_default(); event.stop()
+            feed.step_card(-1)
+            return
+        elif event.key in ("alt+n", "meta+n"):
+            event.prevent_default(); event.stop()
+            feed.navigate_snippet(1)
+            return
+        elif event.key in ("alt+p", "meta+p"):
+            event.prevent_default(); event.stop()
+            feed.navigate_snippet(-1)
+            return
+        elif event.key == "home":
+            event.prevent_default(); event.stop()
+            feed.jump_to_home()
+            return
+        elif event.key == "end":
+            event.prevent_default(); event.stop()
+            feed.jump_to_end()
+            return
+
+        if event.key in ("shift+enter", "shift+return", "ctrl+j"):
+            event.prevent_default(); event.stop()
+            self.insert("\n")
+            return
+
+        if event.key in ("escape", "ctrl+g"):
+            event.prevent_default(); event.stop()
+            if self._mark_point is not None or self.selected_text:
+                self._clear_mark()
+                self.app.notify("Quit", timeout=1.0)
+            else:
+                self.app.query_one("#input", ExpandingInput).focus()
+            return
+
+        super()._on_key(event)
+
 class ExpandingInput(EmacsBaseTextArea):
     can_focus = True
 
@@ -1652,6 +2441,8 @@ class ExpandingInput(EmacsBaseTextArea):
         self.show_line_numbers = False
         self._snippets: dict[str, dict] = {}
         self._snippet_counter: int = 1
+        self._last_nav_time: float = 0.0
+        self._nav_cooldown: float = 0.022
         self.call_after_refresh(self._update_layout)
 
     def register_and_insert_snippet(
@@ -1740,132 +2531,100 @@ class ExpandingInput(EmacsBaseTextArea):
         self._sync_snippet_preview()
 
     def _on_key(self, event: events.Key) -> None:
-        # 1. Global Feed Navigation Mode Gating
-        if getattr(self.app, "feed_nav_mode", False):
-            feed = self.app.query_one("#feed", FeedArea)
-
-            # Universal Emergency Brake: Escape or Ctrl+o exits ALL the way to prompt
-            if event.key in ("escape", "ctrl+o"):
-                event.prevent_default(); event.stop()
-                if feed.fork_mode:
-                    feed.exit_fork_mode()
-                self.app.action_toggle_feed_nav()
-                return
-
-            # Sub-mode Toggle: '.' exits Fork Mode back to normal Feed Nav
-            if event.key in ("period", "full_stop", "."):
-                event.prevent_default(); event.stop()
-                if feed.fork_mode:
-                    feed.exit_fork_mode()
-                    self.app.update_feed_nav_banner()
-                    self.app.notify("Exited fork mode (Feed Nav active)")
-                else:
-                    self.app.action_fork_chat()
-                return
-
-            # Check for Emacs C-c Prefix Chord interception
-            if self.app.intercept_c_c_key(event):
-                return
-
-            # Routing in Fork Mode
-            if feed.fork_mode:
-                if event.key == "space":
-                    event.prevent_default(); event.stop()
-                    feed.toggle_current_fork_card()
-                    return
-                elif event.key == "a":
-                    event.prevent_default(); event.stop()
-                    feed.toggle_all_fork_checkboxes()
-                    return
-                elif event.key in ("enter", "return"):
-                    event.prevent_default(); event.stop()
-                    self.app.action_fork_chat()
-                    return
-                elif event.key in ("alt+n", "meta+n", "pagedown"):
-                    event.prevent_default(); event.stop()
-                    feed.step_fork_card(1)
-                    return
-                elif event.key in ("alt+p", "meta+p", "pageup"):
-                    event.prevent_default(); event.stop()
-                    feed.step_fork_card(-1)
-                    return
-                elif event.key in ("home",):
-                    event.prevent_default(); event.stop()
-                    feed.jump_to_home()
-                    return
-                elif event.key in ("end",):
-                    event.prevent_default(); event.stop()
-                    feed.jump_to_end()
-                    return
-                elif event.key in ("shift+up", "shift+down"):
-                    event.prevent_default(); event.stop()
-                    direction = -1 if event.key == "shift+up" else 1
-                    feed.viewport_page_navigate(direction)
-                    return
-                elif event.key in ("down", "j"):
-                    event.prevent_default(); event.stop()
-                    feed.arrow_navigate(1)
-                    return
-                elif event.key in ("up", "k"):
-                    event.prevent_default(); event.stop()
-                    feed.arrow_navigate(-1)
-                    return
-
-            # Routing in Standard Snippet Feed Nav Mode
-            else:
-                if event.key in ("alt+n", "meta+n"):
-                    event.prevent_default(); event.stop()
-                    feed.navigate_snippet(1)
-                    return
-                elif event.key in ("alt+p", "meta+p"):
-                    event.prevent_default(); event.stop()
-                    feed.navigate_snippet(-1)
-                    return
-                elif event.key in ("shift+up", "shift+down"):
-                    event.prevent_default(); event.stop()
-                    direction = -1 if event.key == "shift+up" else 1
-                    feed.viewport_page_navigate(direction)
-                    return
-                elif event.key in ("pageup", "pagedown"):
-                    event.prevent_default(); event.stop()
-                    direction = -1 if event.key == "pageup" else 1
-                    feed.page_navigate(direction)
-                    return
-                elif event.key in ("home",):
-                    event.prevent_default(); event.stop()
-                    feed.jump_to_home()
-                    return
-                elif event.key in ("end",):
-                    event.prevent_default(); event.stop()
-                    feed.jump_to_end()
-                    return
-                elif event.key in ("down", "j"):
-                    event.prevent_default(); event.stop()
-                    feed.arrow_navigate(1)
-                    return
-                elif event.key in ("up", "k"):
-                    event.prevent_default(); event.stop()
-                    feed.arrow_navigate(-1)
-                    return
-
-            # Lockout: Discard all typing keystrokes while in Feed Nav
-            event.prevent_default(); event.stop()
-            return
-
-        # 2. Normal Prompt Mode Handlers
         if self.app.intercept_c_c_key(event):
             return
 
-        if event.key == "ctrl+o":
+        feed = self.app.query_one("#feed", FeedArea)
+        fork_active = feed.fork_ui_active
+
+        if event.key == "tab":
+            preview_box = self.app.query_one("#snippet_preview", SnippetPreview)
+            if preview_box.styles.display != "none" and preview_box.active_tag:
+                event.prevent_default(); event.stop()
+                preview_box.focus()
+                return
+
+        if event.key == "ctrl+q":
             event.prevent_default(); event.stop()
-            self.app.action_toggle_feed_nav()
+            self.app.action_quit()
+            return
+
+        now = time.monotonic()
+        if event.key in ("down", "up", "shift+up", "shift+down"):
+            if now - self._last_nav_time < self._nav_cooldown:
+                event.prevent_default(); event.stop()
+                return
+            self._last_nav_time = now
+
+        if event.key in ("shift+up", "shift+down"):
+            event.prevent_default(); event.stop()
+            direction = -1 if event.key == "shift+up" else 1
+            feed.viewport_page_navigate(direction)
+            return
+        elif event.key == "down":
+            event.prevent_default(); event.stop()
+            feed.arrow_navigate(1)
+            return
+        elif event.key == "up":
+            event.prevent_default(); event.stop()
+            feed.arrow_navigate(-1)
+            return
+        elif event.key == "pagedown":
+            event.prevent_default(); event.stop()
+            feed.step_card(1)
+            return
+        elif event.key == "pageup":
+            event.prevent_default(); event.stop()
+            feed.step_card(-1)
+            return
+        elif event.key in ("alt+n", "meta+n"):
+            event.prevent_default(); event.stop()
+            feed.navigate_snippet(1)
+            return
+        elif event.key in ("alt+p", "meta+p"):
+            event.prevent_default(); event.stop()
+            feed.navigate_snippet(-1)
+            return
+        elif event.key == "home":
+            event.prevent_default(); event.stop()
+            feed.jump_to_home()
+            return
+        elif event.key == "end":
+            event.prevent_default(); event.stop()
+            feed.jump_to_end()
+            return
+
+        if fork_active:
+            if event.key in ("escape", "ctrl+g"):
+                event.prevent_default(); event.stop()
+                feed.toggle_fork_ui()
+                self.app.update_feed_nav_banner()
+                self.app.notify("Exited fork mode")
+                return
+
+            if event.key == "space":
+                event.prevent_default(); event.stop()
+                feed.toggle_current_card_selection()
+                return
+
+            if event.key == "a":
+                event.prevent_default(); event.stop()
+                feed.toggle_all_fork_checkboxes()
+                return
+
+            if event.key in ("enter", "return"):
+                event.prevent_default(); event.stop()
+                self.app.action_confirm_fork()
+                return
+
+            event.prevent_default(); event.stop()
             return
 
         if event.key in ("shift+enter", "shift+return", "ctrl+j", "alt+enter", "meta+enter"):
             event.prevent_default(); event.stop()
             self.action_newline()
             return
-        elif event.key == "enter":
+        elif event.key in ("enter", "return"):
             event.prevent_default(); event.stop()
             self.action_submit()
             return
@@ -1875,11 +2634,6 @@ class ExpandingInput(EmacsBaseTextArea):
             if self._mark_point is not None or self.selected_text:
                 self._clear_mark()
                 self.app.notify("Quit", timeout=1.0)
-            return
-
-        # Alt+n / Alt+p are strictly inert in typing mode
-        if event.key in ("alt+n", "alt+down", "meta+n", "alt+p", "alt+up", "meta+p"):
-            event.prevent_default(); event.stop()
             return
 
         super()._on_key(event)
@@ -1904,6 +2658,15 @@ class ExpandingInput(EmacsBaseTextArea):
     def action_submit(self) -> None:
         raw_text = self.text.strip()
         if not raw_text:
+            return
+
+        if raw_text[0] == "!" and raw_text.startswith("!/"):
+            self.app.execute_command(raw_text)
+            self.clear()
+            self.reset_snippets()
+            self._clear_mark()
+            self.call_after_refresh(self._update_layout)
+            self.app.query_one("#snippet_preview", SnippetPreview).hide_preview()
             return
 
         def replacer(match):
@@ -1945,192 +2708,326 @@ class ExpandingInput(EmacsBaseTextArea):
         self.app.query_one("#snippet_preview", SnippetPreview).hide_preview()
 
 # ---------------------------------------------------------------------------
-# Feed View & Response Area (Target Snapping Engine)
+# Feed View & Target Snapping Engine
 # ---------------------------------------------------------------------------
 
 class FeedArea(VerticalScroll):
-    """Feed featuring Pure Target-Snapping, Seamless Line-by-Line Boundary Stepping,
-    and Viewport Paging for Shift+Up/Down. Focus stays input-driven.
-    """
-
     can_focus = False
+    auto_scroll = False
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
-        self.selected_snippet_index: int = -1
-        self.active_snippet_turn: int = -1
-        self.active_snippet_fence: int = -1
+        self.active_turn_index: int = 0
 
-        self.fork_mode: bool = False
+        self.fork_ui_active: bool = False
         self._fork_selected_indices: set[int] = set()
-        self._focused_fork_card_index: int = 0
-        self._pending_snippet_snap: tuple[int, int] | None = None
 
-        # Conversation state with discrete turn tracking
         self._all_messages: list[dict] = []
         self._win_start: int = 0
         self._win_end: int = 0
-        self.active_turn_index: int = 0
 
-        # State lock preventing overlapping mutations
-        self._window_busy: bool = False
-
-        # Debounced viewport page timer
-        self._ctrl_page_timer: Timer | None = None
-        self._pending_edge_direction: int = 0
-
-        # Debounced position save timer
-        self._position_save_timer: Timer | None = None
+        self._header_map: dict[int, tuple[int, str]] = {}
 
     def compose(self) -> ComposeResult:
         yield Vertical(id="turns_container")
 
     def get_tier_config(self) -> tuple[int, int]:
-        """Stable 20-turn window capacity."""
         return (DEFAULT_WINDOW_CAPACITY, 1)
 
-    @property
-    def _raw_markdown(self) -> str:
-        """Dynamically builds full markdown representation of all messages in history."""
-        blocks = []
-        for turn in self._all_messages:
-            label = "You" if turn["role"] == "user" else "Gemini"
-            blocks.append(f"### {label}\n\n{turn['text']}")
-        return "\n\n---\n\n".join(blocks)
+    def is_locked(self) -> bool:
+        return self.app.lock.is_locked
+
+    def scroll_to_widget(self, widget: Widget, *args, **kwargs) -> None:
+        pass
 
     def clear(self) -> None:
-        self.exit_fork_mode()
-        self._all_messages.clear()
-        self._win_start = 0
-        self._win_end = 0
-        self.active_turn_index = 0
-        self._window_busy = False
-        self._pending_edge_direction = 0
-        self._pending_snippet_snap = None
-        self.active_snippet_turn = -1
-        self.active_snippet_fence = -1
-        self.selected_snippet_index = -1
-        if self._ctrl_page_timer:
-            self._ctrl_page_timer.stop()
-            self._ctrl_page_timer = None
-        if self._position_save_timer:
-            self._position_save_timer.stop()
-            self._position_save_timer = None
+        self.fork_ui_active = False
+        self.remove_class("fork-ui-active")
+        self._fork_selected_indices.clear()
+        self._header_map.clear()
         if hasattr(self.app, "hide_status"):
             self.app.hide_status()
 
-        self.query_one("#turns_container", Vertical).remove_children()
+        self.set_messages([])
 
-    def _format_turn_markdown(self, sender: str, text: str) -> str:
-        return f"### {sender}\n\n{text}\n\n---"
+    def _sync_header_map(self) -> None:
+        self._header_map.clear()
+        container = self.query_one("#turns_container", Vertical)
+        for child in container.children:
+            if isinstance(child, TurnCard) and getattr(child, "virtual_region", None):
+                self._header_map[int(child.virtual_region.y)] = (child.turn_index, child.turn_id)
 
-    def _create_turn_widget(self, idx: int) -> Markdown | ForkTurnCard:
-        """Creates either a Markdown turn widget or a ForkTurnCard based on active mode."""
+    def _get_center_raycast_target(self, current_y: int | None = None) -> tuple[int, str, int] | None:
+        if not self._header_map or not self._all_messages:
+            return None
+
+        y = int(self.scroll_y) if current_y is None else int(current_y)
+        view_h = self.container_size.height or 24
+        total = len(self._all_messages)
+
+        if CENTER_SCREEN_MODE:
+            center_y = y + (view_h // 2)
+            return cast_ray_from_center(
+                center_y, self._header_map, self._win_start, self._win_end, total
+            )
+        else:
+            for line_y in sorted(self._header_map.keys()):
+                if line_y >= y:
+                    t_idx, t_id = self._header_map[line_y]
+                    return t_idx, t_id, 0
+            closest_line = min(self._header_map.keys(), key=lambda ly: abs(ly - y))
+            t_idx, t_id = self._header_map[closest_line]
+            return t_idx, t_id, 0
+
+    def _execute_1d_raycast(self, current_y: int | None = None) -> None:
+        if self.is_locked() or not self._header_map or not self._all_messages:
+            return
+
+        target = self._get_center_raycast_target(current_y)
+        if not target:
+            return
+        t_idx, t_id, delta = target
+
+        prev_target = self.active_turn_index
+        self.active_turn_index = t_idx
+
+        if hasattr(self.app, "current_chat_last_index"):
+            self.app.current_chat_last_index = t_idx
+            if CENTER_SCREEN_MODE:
+                sign = f"+{delta}" if delta > 0 else str(delta)
+                self.app.current_chat_center_marker = f"{t_id}:{sign}" if delta != 0 else f"{t_id}:0"
+            else:
+                self.app.current_chat_center_marker = t_id
+
+        if self.active_turn_index != prev_target and not self.is_locked():
+            self.highlight_card(self.active_turn_index, scroll=False)
+            self.request_runway_sync(self.active_turn_index, prev_idx=prev_target, discrete_dock=False)
+
+    def will_require_load(self, target_idx: int) -> bool:
+        cards_above = min(target_idx, RUNWAY_ABOVE_BUDGET)
+        cards_below = min(len(self._all_messages) - 1 - target_idx, RUNWAY_BELOW_BUDGET)
+        rem = DEFAULT_WINDOW_CAPACITY - (1 + cards_above + cards_below)
+        if target_idx - cards_above == 0:
+            cards_below = min(len(self._all_messages) - 1 - target_idx, cards_below + rem)
+        elif target_idx + cards_below == len(self._all_messages) - 1:
+            cards_above = min(target_idx, cards_above + rem)
+
+        ideal_start = max(0, target_idx - cards_above)
+        ideal_end = min(len(self._all_messages), target_idx + cards_below + 1)
+        return not (self._win_start == ideal_start and self._win_end == ideal_end)
+
+    def request_runway_sync(
+        self,
+        target_idx: int,
+        prev_idx: int | None = None,
+        discrete_dock: bool = False,
+    ) -> None:
+        if self.will_require_load(target_idx):
+            self.app.lock.acquire("dom_load")
+            self.app.show_loader_banner()
+
+        self._sync_runway_to_target(
+            target_idx,
+            prev_idx=prev_idx,
+            discrete_dock=discrete_dock,
+        )
+
+    @work(exclusive=True)
+    async def _sync_runway_to_target(
+        self,
+        target_idx: int,
+        prev_idx: int | None = None,
+        discrete_dock: bool = False,
+    ) -> None:
+        try:
+            total = len(self._all_messages)
+            if total <= DEFAULT_WINDOW_CAPACITY:
+                if discrete_dock:
+                    target_card = self._get_target_widget(target_idx)
+                    if target_card:
+                        self._scroll_to_turn_widget(target_card, center=False)
+                return
+
+            cards_above = min(target_idx, RUNWAY_ABOVE_BUDGET)
+            cards_below = min(total - 1 - target_idx, RUNWAY_BELOW_BUDGET)
+            rem = DEFAULT_WINDOW_CAPACITY - (1 + cards_above + cards_below)
+            if target_idx - cards_above == 0:
+                cards_below = min(total - 1 - target_idx, cards_below + rem)
+            elif target_idx + cards_below == total - 1:
+                cards_above = min(target_idx, cards_above + rem)
+
+            ideal_start = max(0, target_idx - cards_above)
+            ideal_end = min(total, target_idx + cards_below + 1)
+
+            container = self.query_one("#turns_container", Vertical)
+            mounted_cards = [c for c in container.children if isinstance(c, TurnCard)]
+            mounted_indices = {c.turn_index for c in mounted_cards}
+            desired_indices = set(range(ideal_start, ideal_end))
+
+            if mounted_indices == desired_indices:
+                self._win_start = ideal_start
+                self._win_end = ideal_end
+
+                if discrete_dock:
+                    target_card = self._get_target_widget(target_idx)
+                    if target_card:
+                        self._scroll_to_turn_widget(target_card, center=False)
+                return
+
+            anchor_card = self._get_target_widget(self.active_turn_index)
+            signed_delta = 0
+            if anchor_card and anchor_card.virtual_region:
+                view_h = self.container_size.height or 24
+                center_y = int(self.scroll_y) + (view_h // 2)
+                signed_delta = center_y - int(anchor_card.virtual_region.y)
+
+            cards_to_remove = [c for c in mounted_cards if c.turn_index not in desired_indices]
+            for c in cards_to_remove:
+                await c.remove()
+
+            for idx in range(ideal_start, ideal_end):
+                if idx not in mounted_indices and (not mounted_cards or idx > mounted_cards[-1].turn_index):
+                    new_card = self._create_turn_widget(idx)
+                    if new_card:
+                        await container.mount(new_card)
+
+            for idx in range(ideal_start, ideal_end):
+                if idx not in mounted_indices and (mounted_cards and idx < mounted_cards[0].turn_index):
+                    new_card = self._create_turn_widget(idx)
+                    if new_card:
+                        first_child = container.children[0] if container.children else None
+                        if first_child:
+                            await container.mount(new_card, before=first_child)
+                        else:
+                            await container.mount(new_card)
+
+            self._win_start = ideal_start
+            self._win_end = ideal_end
+
+            settle_event = asyncio.Event()
+
+            def _on_runway_settle() -> None:
+                try:
+                    self._sync_header_map()
+                    view_h = self.container_size.height or 24
+
+                    if discrete_dock:
+                        target_card = self._get_target_widget(target_idx)
+                        if target_card:
+                            self.highlight_card(target_idx, scroll=False)
+                            self._scroll_to_turn_widget(target_card, center=False)
+                    else:
+                        ref_card = self._get_target_widget(self.active_turn_index)
+                        if ref_card and getattr(ref_card, "virtual_region", None):
+                            new_header_y = int(ref_card.virtual_region.y)
+                            new_center_y = new_header_y + signed_delta
+                            target_scroll_y = max(0, new_center_y - (view_h // 2))
+                            max_scroll = getattr(self, "max_scroll_y", max(0, self.virtual_size.height - view_h))
+                            self.scroll_y = min(max_scroll, target_scroll_y)
+                finally:
+                    settle_event.set()
+
+            self.call_after_refresh(_on_runway_settle)
+            try:
+                await asyncio.wait_for(settle_event.wait(), timeout=0.6)
+            except asyncio.TimeoutError:
+                self._sync_header_map()
+
+        finally:
+            self.app.hide_loader_banner()
+            def _complete_unlock() -> None:
+                self.app.lock.release("dom_load")
+            self.call_after_refresh(_complete_unlock)
+
+    def _create_turn_widget(self, idx: int) -> TurnCard | None:
+        if not (0 <= idx < len(self._all_messages)):
+            return None
+
         turn = self._all_messages[idx]
         turn_id = turn.get("turn_id")
         if not turn_id:
             turn_id = f"turn_{uuid4().hex[:8]}"
             turn["turn_id"] = turn_id
 
-        sender = "You" if turn["role"] == "user" else "Gemini"
+        container = self.query_one("#turns_container", Vertical)
+        for child in container.children:
+            if isinstance(child, TurnCard) and child.turn_index == idx:
+                return None
 
-        if self.fork_mode:
-            is_sel = idx in self._fork_selected_indices
-            card = ForkTurnCard(
-                index=idx,
-                sender=sender,
-                text=turn["text"],
-                is_selected=is_sel,
-                id=turn_id,
-            )
-            card.data = {"turn_index": idx, "turn_id": turn_id}
-            if idx == self._focused_fork_card_index:
-                card.add_class("card-active")
-            return card
+        sender = CURRENT_USER if turn["role"] == "user" else "gemini"
+        is_sel = idx in self._fork_selected_indices
 
-        md_text = self._format_turn_markdown(sender, turn["text"])
-        widget = Markdown(md_text, classes="turn_block", id=turn_id)
-        widget.data = {"turn_index": idx, "turn_id": turn_id}
-        return widget
+        card = TurnCard(
+            index=idx,
+            sender=sender,
+            text=turn["text"],
+            turn_id=turn_id,
+            is_selected=is_sel,
+        )
 
-    def set_messages(self, messages: list[dict], initial_target_index: int | None = None) -> None:
-        """Loads chat history through the sliding window target engine at targeted index."""
-        self.fork_mode = False
+        if idx == self.active_turn_index:
+            card.add_class("card-active")
+
+        return card
+
+    def set_messages(self, messages: list[dict], initial_target_marker: str | int | None = None) -> None:
+        self.fork_ui_active = False
+        self.remove_class("fork-ui-active")
         self._fork_selected_indices.clear()
-        self._pending_snippet_snap = None
-        self.active_snippet_turn = -1
-        self.active_snippet_fence = -1
-        self.selected_snippet_index = -1
         if hasattr(self.app, "hide_status"):
             self.app.hide_status()
 
-        self._run_target_mutation("reset_chat", new_messages=messages, target_index=initial_target_index)
+        self._run_target_mutation("reset_chat", new_messages=messages, target_marker=initial_target_marker)
 
-    def _get_target_widget(self, idx: int) -> Markdown | ForkTurnCard | None:
-        if 0 <= idx < len(self._all_messages):
-            turn_id = self._all_messages[idx].get("turn_id")
-            if turn_id:
-                try:
-                    return self.query_one(f"#{turn_id}")
-                except Exception:
-                    return None
+    def _get_target_widget(self, idx: int) -> TurnCard | None:
+        container = self.query_one("#turns_container", Vertical)
+        for child in container.children:
+            if isinstance(child, TurnCard) and child.turn_index == idx:
+                return child
         return None
 
-    def _get_current_visible_turn_index(self) -> int:
-        """Returns the index of the turn currently intersecting the viewport top."""
+    def _get_target_widget_by_id(self, turn_id: str) -> TurnCard | None:
+        if not turn_id:
+            return None
         container = self.query_one("#turns_container", Vertical)
-        children = list(container.children)
-        if not children:
-            return 0
+        for child in container.children:
+            if isinstance(child, TurnCard) and child.turn_id == turn_id:
+                return child
+        return None
 
-        curr_y = self.scroll_y
-        for child in children:
-            r = child.virtual_region
-            if r.y <= curr_y < (r.y + r.height):
-                return child.data.get("turn_index", self.active_turn_index)
+    def _scroll_to_turn_widget(
+        self,
+        target_w: TurnCard,
+        center: bool = False,
+        line_offset: int | None = None,
+    ) -> None:
+        view_h = self.container_size.height or 24
+        header_y = int(target_w.virtual_region.y)
+        max_scroll = getattr(self, "max_scroll_y", max(0, self.virtual_size.height - view_h))
 
-        closest_child = min(children, key=lambda c: abs(c.virtual_region.y - curr_y))
-        return closest_child.data.get("turn_index", self.active_turn_index)
-
-    def _on_scroll(self) -> None:
-        super()._on_scroll()
-        if not self._all_messages or self._window_busy:
+        if not center:
+            self.scroll_y = max(0, min(max_scroll, header_y))
             return
 
-        curr_idx = self._get_current_visible_turn_index()
-        self.active_turn_index = curr_idx
+        offset = line_offset if line_offset is not None else 0
+        target_y = (header_y + offset) - (view_h // 2)
+        self.scroll_y = max(0, min(max_scroll, target_y))
 
-        # Debounced disk position tracking
-        if hasattr(self.app, "schedule_save_chat_position"):
-            self.app.schedule_save_chat_position(curr_idx)
-
-    def _settle_pending_snippet(self, retry_count: int = 0) -> None:
-        """Applies active-snippet highlight and snaps fence into view once mutation finishes."""
-        if not self._pending_snippet_snap:
+    def on_mouse_scroll_down(self, event: events.MouseScrollDown) -> None:
+        if self.is_locked():
+            event.stop()
             return
+        self.app.trigger_nav_indicator("scroll_down")
+        self.scroll_down(animate=False)
+        self._execute_1d_raycast()
 
-        target_turn, target_fence_idx = self._pending_snippet_snap
-        turn_w = self._get_target_widget(target_turn)
-        if not isinstance(turn_w, Markdown):
-            if retry_count < 6:
-                self.set_timer(0.04, lambda: self._settle_pending_snippet(retry_count + 1))
+    def on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
+        if self.is_locked():
+            event.stop()
             return
-
-        turn_fences = list(turn_w.query(MarkdownFence))
-        if not turn_fences or target_fence_idx >= len(turn_fences):
-            if retry_count < 6:
-                self.set_timer(0.04, lambda: self._settle_pending_snippet(retry_count + 1))
-            return
-
-        self._pending_snippet_snap = None
-
-        for f in self._get_fences():
-            f.remove_class("active-snippet")
-
-        chosen = turn_fences[target_fence_idx]
-        chosen.add_class("active-snippet")
-        self.scroll_to_widget(chosen, top=False, animate=False)
-        chosen.refresh()
+        self.app.trigger_nav_indicator("scroll_up")
+        self.scroll_up(animate=False)
+        self._execute_1d_raycast()
 
     @work(exclusive=True)
     async def _run_target_mutation(
@@ -2138,13 +3035,9 @@ class FeedArea(VerticalScroll):
         action: str,
         new_messages: list[dict] | None = None,
         target_index: int | None = None,
-        lock_turn_index: int | None = None,
+        target_marker: str | int | None = None,
     ) -> None:
-        """State Machine: mounts needed runway, updates indices, snaps cleanly."""
-        if self._window_busy:
-            return
-
-        self._window_busy = True
+        self.app.lock.acquire("dom_load")
         container = self.query_one("#turns_container", Vertical)
         capacity, _ = self.get_tier_config()
 
@@ -2155,173 +3048,119 @@ class FeedArea(VerticalScroll):
 
                 await container.remove_children()
 
-                if target_index is not None and 0 <= target_index < total:
+                if total == 0:
+                    self._win_start = 0
+                    self._win_end = 0
+                    self.active_turn_index = 0
+                    self._header_map.clear()
+                    self.scroll_y = 0
+                    return
+
+                if target_marker == "end":
+                    self._win_start = max(0, total - capacity)
+                    self._win_end = total
+                    widgets_to_mount = [
+                        w for idx in range(self._win_start, self._win_end)
+                        if (w := self._create_turn_widget(idx)) is not None
+                    ]
+                    if widgets_to_mount:
+                        await container.mount_all(widgets_to_mount)
+
+                    settle_event = asyncio.Event()
+
+                    def _on_end_reset_settle() -> None:
+                        try:
+                            self._sync_header_map()
+                            self.active_turn_index = total - 1
+                            self.highlight_card(total - 1, scroll=False)
+                            target_w = self._get_target_widget(total - 1)
+                            if target_w:
+                                self._scroll_to_turn_widget(target_w, center=False)
+                            else:
+                                self.scroll_end(animate=False)
+                        finally:
+                            settle_event.set()
+
+                    self.call_after_refresh(_on_end_reset_settle)
+                    try:
+                        await asyncio.wait_for(settle_event.wait(), timeout=0.6)
+                    except asyncio.TimeoutError:
+                        pass
+                    return
+
+                req_idx = 0
+                line_offset: int | None = None
+
+                if target_marker is not None:
+                    marker_str = str(target_marker).strip()
+                    if ":" in marker_str:
+                        tid, offset_str = marker_str.split(":", 1)
+                        if CENTER_SCREEN_MODE:
+                            try:
+                                line_offset = int(offset_str)
+                            except Exception:
+                                line_offset = None
+                        else:
+                            line_offset = None
+                    else:
+                        tid = marker_str
+
+                    matched_idx = next((i for i, m in enumerate(self._all_messages) if m.get("turn_id") == tid), None)
+                    if matched_idx is not None:
+                        req_idx = matched_idx
+                    else:
+                        try:
+                            req_idx = max(0, min(total - 1, int(target_marker)))
+                        except Exception:
+                            req_idx = max(0, total - 1)
+                elif target_index is not None and 0 <= target_index < total:
                     req_idx = target_index
-                    half = capacity // 2
-                    self._win_start = max(0, min(req_idx - half, total - capacity))
-                    self._win_end = min(total, self._win_start + capacity)
                 else:
                     req_idx = max(0, total - 1)
-                    if total > capacity:
-                        self._win_start = total - capacity
-                        self._win_end = total
-                    else:
-                        self._win_start = 0
-                        self._win_end = total
+
+                cards_above = min(req_idx, RUNWAY_ABOVE_BUDGET)
+                cards_below = min(total - 1 - req_idx, RUNWAY_BELOW_BUDGET)
+                rem = capacity - (1 + cards_above + cards_below)
+                if req_idx - cards_above == 0:
+                    cards_below = min(total - 1 - req_idx, cards_below + rem)
+                elif req_idx + cards_below == total - 1:
+                    cards_above = min(req_idx, cards_above + rem)
+
+                self._win_start = max(0, req_idx - cards_above)
+                self._win_end = min(total, req_idx + cards_below + 1)
 
                 widgets_to_mount = [
-                    self._create_turn_widget(idx)
-                    for idx in range(self._win_start, self._win_end)
+                    w for idx in range(self._win_start, self._win_end)
+                    if (w := self._create_turn_widget(idx)) is not None
                 ]
                 if widgets_to_mount:
                     await container.mount_all(widgets_to_mount)
-
-                await asyncio.sleep(0.06)
 
                 settle_event = asyncio.Event()
 
                 def _on_initial_settle() -> None:
                     try:
-                        if total > 0:
-                            self.active_turn_index = req_idx
-                            target_w = self._get_target_widget(req_idx)
-                            if target_w:
-                                self.scroll_to_widget(target_w, top=True, animate=False)
-                            else:
-                                self.scroll_end(animate=False)
-                            if self.fork_mode:
-                                self.highlight_fork_card(req_idx, scroll=False)
-                            self._settle_pending_snippet()
+                        self._sync_header_map()
+                        self.active_turn_index = req_idx
+                        target_w = self._get_target_widget(req_idx)
+                        if target_w:
+                            should_center = CENTER_SCREEN_MODE and (line_offset is not None)
+                            self._scroll_to_turn_widget(
+                                target_w,
+                                center=should_center,
+                                line_offset=line_offset,
+                            )
                         else:
-                            self.active_turn_index = 0
-                            self.scroll_to(y=0, animate=False)
-                        self.refresh(layout=True)
+                            self.scroll_end(animate=False)
+                        self.highlight_card(req_idx, scroll=False)
                     finally:
                         settle_event.set()
 
                 self.call_after_refresh(_on_initial_settle)
-                await settle_event.wait()
-
-            elif action == "scroll_to_target":
-                req_idx = max(0, min(len(self._all_messages) - 1, target_index or 0))
-                total = len(self._all_messages)
-
-                if req_idx == 0 and not self._pending_snippet_snap:
-                    self.active_turn_index = 0
-                    if self._win_start == 0:
-                        self.scroll_to(y=0, animate=False)
-                        if self.fork_mode:
-                            self.highlight_fork_card(0, scroll=False)
-                        return
-
-                needed_forward = req_idx >= (self._win_end - 2) and self._win_end < total
-                needed_backward = req_idx < self._win_start and self._win_start > 0
-
-                if needed_forward:
-                    new_end = min(total, req_idx + 3)
-                    forward_widgets = [self._create_turn_widget(idx) for idx in range(self._win_end, new_end)]
-                    if forward_widgets:
-                        await container.mount_all(forward_widgets)
-                    self._win_end = new_end
-
-                    while (self._win_end - self._win_start) > capacity and len(container.children) > 0:
-                        top_child = container.children[0]
-                        if self.scroll_y > (top_child.virtual_region.y + top_child.virtual_region.height + 60):
-                            await top_child.remove()
-                            self._win_start += 1
-                        else:
-                            break
-
-                elif needed_backward:
-                    new_start = max(0, req_idx - 2)
-                    first_child = container.children[0] if container.children else None
-                    for idx in range(self._win_start - 1, new_start - 1, -1):
-                        w = self._create_turn_widget(idx)
-                        if first_child:
-                            await container.mount(w, before=first_child)
-                        else:
-                            await container.mount(w)
-                        first_child = w
-                    self._win_start = new_start
-
-                    while (self._win_end - self._win_start) > capacity and len(container.children) > 0:
-                        last_child = container.children[-1]
-                        await last_child.remove()
-                        self._win_end -= 1
-
-                if req_idx < self._win_start or req_idx >= self._win_end:
-                    self.app.show_loader_banner()
-                    new_start = max(0, req_idx - (capacity // 2))
-                    new_end = min(total, new_start + capacity)
-                    await container.remove_children()
-                    jump_widgets = [self._create_turn_widget(idx) for idx in range(new_start, new_end)]
-                    if jump_widgets:
-                        await container.mount_all(jump_widgets)
-                    self._win_start = new_start
-                    self._win_end = new_end
-
-                await asyncio.sleep(0.06)
-
-                self.active_turn_index = req_idx
-                settle_event = asyncio.Event()
-
-                def _on_target_settle() -> None:
-                    try:
-                        if req_idx == 0 and not self._pending_snippet_snap:
-                            self.scroll_to(y=0, animate=False)
-                        else:
-                            target_w = self._get_target_widget(req_idx)
-                            if target_w:
-                                self.scroll_to_widget(target_w, top=True, animate=False)
-                        if self.fork_mode:
-                            self.highlight_fork_card(req_idx, scroll=False)
-                        self._settle_pending_snippet()
-                    finally:
-                        settle_event.set()
-
-                self.call_after_refresh(_on_target_settle)
-                await settle_event.wait()
-
-            elif action == "locale_lock_load":
-                total = len(self._all_messages)
-                direction = target_index or -1
-
-                if direction < 0 and self._win_start > 0:
-                    self.app.show_loader_banner()
-                    new_widget = self._create_turn_widget(self._win_start - 1)
-                    first_child = container.children[0]
-                    await container.mount(new_widget, before=first_child)
-                    self._win_start -= 1
-
-                    settle_event = asyncio.Event()
-
-                    def _on_locale_up_settle() -> None:
-                        try:
-                            lock_widget = self._get_target_widget(lock_turn_index or self._win_start + 1)
-                            if lock_widget:
-                                self.scroll_to_widget(lock_widget, top=True, animate=False)
-                        finally:
-                            settle_event.set()
-
-                    self.call_after_refresh(_on_locale_up_settle)
-                    await settle_event.wait()
-
-                elif direction > 0 and self._win_end < total:
-                    self.app.show_loader_banner()
-                    new_widget = self._create_turn_widget(self._win_end)
-                    await container.mount(new_widget)
-                    self._win_end += 1
-
-                    settle_event = asyncio.Event()
-
-                    def _on_locale_down_settle() -> None:
-                        try:
-                            self.scroll_down()
-                        finally:
-                            settle_event.set()
-
-                    self.call_after_refresh(_on_locale_down_settle)
-                    await settle_event.wait()
+                try:
+                    await asyncio.wait_for(settle_event.wait(), timeout=0.6)
+                except asyncio.TimeoutError:
+                    pass
 
             elif action == "jump_home":
                 total = len(self._all_messages)
@@ -2334,7 +3173,10 @@ class FeedArea(VerticalScroll):
                 self._win_end = min(capacity, total)
 
                 await container.remove_children()
-                home_widgets = [self._create_turn_widget(idx) for idx in range(self._win_start, self._win_end)]
+                home_widgets = [
+                    w for idx in range(self._win_start, self._win_end)
+                    if (w := self._create_turn_widget(idx)) is not None
+                ]
                 if home_widgets:
                     await container.mount_all(home_widgets)
 
@@ -2343,15 +3185,17 @@ class FeedArea(VerticalScroll):
 
                 def _on_home_settle() -> None:
                     try:
-                        self.scroll_to(y=0, animate=False)
-                        if self.fork_mode:
-                            self.highlight_fork_card(0, scroll=False)
-                        self._settle_pending_snippet()
+                        self._sync_header_map()
+                        self.scroll_y = 0
+                        self.highlight_card(0, scroll=False)
                     finally:
                         settle_event.set()
 
                 self.call_after_refresh(_on_home_settle)
-                await settle_event.wait()
+                try:
+                    await asyncio.wait_for(settle_event.wait(), timeout=0.6)
+                except asyncio.TimeoutError:
+                    pass
 
             elif action == "jump_end":
                 total = len(self._all_messages)
@@ -2364,7 +3208,10 @@ class FeedArea(VerticalScroll):
                 self._win_end = total
 
                 await container.remove_children()
-                end_widgets = [self._create_turn_widget(idx) for idx in range(self._win_start, self._win_end)]
+                end_widgets = [
+                    w for idx in range(self._win_start, self._win_end)
+                    if (w := self._create_turn_widget(idx)) is not None
+                ]
                 if end_widgets:
                     await container.mount_all(end_widgets)
 
@@ -2373,135 +3220,157 @@ class FeedArea(VerticalScroll):
 
                 def _on_end_settle() -> None:
                     try:
+                        self._sync_header_map()
+                        self.highlight_card(self.active_turn_index, scroll=False)
                         target_w = self._get_target_widget(self.active_turn_index)
                         if target_w:
-                            self.scroll_to_widget(target_w, top=True, animate=False)
+                            self._scroll_to_turn_widget(target_w, center=False)
                         else:
                             self.scroll_end(animate=False)
-                        if self.fork_mode:
-                            self.highlight_fork_card(self.active_turn_index, scroll=False)
-                        self._settle_pending_snippet()
                     finally:
                         settle_event.set()
 
                 self.call_after_refresh(_on_end_settle)
-                await settle_event.wait()
+                try:
+                    await asyncio.wait_for(settle_event.wait(), timeout=0.6)
+                except asyncio.TimeoutError:
+                    pass
 
         finally:
             self.app.hide_loader_banner()
-            self._window_busy = False
+            def _settle_release():
+                self.app.lock.release("dom_load")
+            self.call_after_refresh(_settle_release)
 
-    def page_navigate(self, direction: int) -> None:
-        """Deterministic target-by-target stepping without geometry drift or dropped frames."""
-        if not self._all_messages or self._window_busy:
+    def step_card(self, delta: int) -> None:
+        total = len(self._all_messages)
+        if not total or self.is_locked():
             return
 
-        total = len(self._all_messages)
-        max_scroll = max(0, self.virtual_size.height - self.container_size.height)
-        is_at_bottom = (self.scroll_y >= max_scroll - 1) and (self._win_end == total)
+        target_idx = max(0, min(total - 1, self.active_turn_index + delta))
+        if target_idx == self.active_turn_index:
+            return
 
-        if direction > 0:
-            if is_at_bottom:
-                return
-            target_idx = min(total - 1, self.active_turn_index + 1)
+        prev_idx = self.active_turn_index
+        self.active_turn_index = target_idx
+        if hasattr(self.app, "current_chat_last_index"):
+            self.app.current_chat_last_index = target_idx
+            self.app.current_chat_center_marker = self._all_messages[target_idx].get("turn_id", "")
+
+        existing_card = self._get_target_widget(target_idx)
+        if isinstance(existing_card, TurnCard) and not self.will_require_load(target_idx):
+            self.highlight_card(target_idx, scroll=False)
+            self._scroll_to_turn_widget(existing_card, center=False)
         else:
-            if is_at_bottom:
-                top_visible = self._get_current_visible_turn_index()
-                top_widget = self._get_target_widget(top_visible)
-                if top_widget and self.scroll_y > (top_widget.virtual_region.y + 1):
-                    target_idx = top_visible
-                else:
-                    target_idx = max(0, top_visible - 1)
-            else:
-                target_idx = max(0, self.active_turn_index - 1)
-
-        self._run_target_mutation("scroll_to_target", target_index=target_idx)
-        if self.fork_mode:
-            self.highlight_fork_card(target_idx, scroll=False)
+            self.request_runway_sync(target_idx, prev_idx=prev_idx, discrete_dock=True)
 
     def viewport_page_navigate(self, direction: int) -> None:
-        """Standard OS viewport page scrolling with edge-hold trailing release buffer."""
+        if self.is_locked():
+            return
+
+        if direction < 0:
+            self.app.trigger_nav_indicator("page_up")
+        else:
+            self.app.trigger_nav_indicator("page_down")
+
         page_step = max(self.container_size.height - 3, 5)
-        max_scroll = max(0, self.virtual_size.height - self.container_size.height)
+        max_scroll = getattr(self, "max_scroll_y", max(0, self.virtual_size.height - self.container_size.height))
 
         if direction < 0:
             target_y = max(0, self.scroll_y - page_step)
-            if self.scroll_y == 0 and self._win_start > 0:
-                self._trigger_edge_hold(-1)
-                return
             self.scroll_to(y=target_y, animate=False)
         else:
             target_y = min(max_scroll, self.scroll_y + page_step)
-            if self.scroll_y >= max_scroll and self._win_end < len(self._all_messages):
-                self._trigger_edge_hold(1)
-                return
             self.scroll_to(y=target_y, animate=False)
 
-    def _trigger_edge_hold(self, direction: int) -> None:
-        """Debounces load execution until user releases held keys at boundary."""
-        self._pending_edge_direction = direction
-        if self._ctrl_page_timer:
-            self._ctrl_page_timer.stop()
-
-        self._ctrl_page_timer = self.set_timer(0.22, self._execute_edge_hold_release)
-
-    def _execute_edge_hold_release(self) -> None:
-        if self._pending_edge_direction != 0 and not self._window_busy:
-            curr_idx = self._get_current_visible_turn_index()
-            dir_val = self._pending_edge_direction
-            self._pending_edge_direction = 0
-            self._run_target_mutation(
-                "locale_lock_load",
-                target_index=dir_val,
-                lock_turn_index=curr_idx,
-            )
+        self._execute_1d_raycast(target_y)
 
     def arrow_navigate(self, direction: int) -> None:
-        """Fine-grained 1-line smooth scroll with locale target locking upon hitting load wall."""
-        if self._window_busy:
+        if self.is_locked() or not self._all_messages:
             return
 
         if direction < 0:
-            if self.scroll_y <= 1 and self._win_start > 0:
-                curr_idx = self._get_current_visible_turn_index()
-                self._run_target_mutation(
-                    "locale_lock_load",
-                    target_index=-1,
-                    lock_turn_index=curr_idx,
-                )
-            else:
-                self.scroll_up()
+            self.app.trigger_nav_indicator("scroll_up")
         else:
-            max_scroll = max(0, self.virtual_size.height - self.container_size.height)
-            if (max_scroll - self.scroll_y) <= 1 and self._win_end < len(self._all_messages):
-                curr_idx = self._get_current_visible_turn_index()
-                self._run_target_mutation(
-                    "locale_lock_load",
-                    target_index=1,
-                    lock_turn_index=curr_idx,
-                )
-            else:
-                self.scroll_down()
+            self.app.trigger_nav_indicator("scroll_down")
+
+        line_step = 2
+        max_scroll = getattr(self, "max_scroll_y", max(0, self.virtual_size.height - self.container_size.height))
+        total = len(self._all_messages)
+
+        center_target = self._get_center_raycast_target()
+        raycast_idx = center_target[0] if center_target else self.active_turn_index
+
+        if direction > 0:
+            if self.scroll_y >= max_scroll:
+                if self.active_turn_index < total - 1:
+                    new_idx = self.active_turn_index + 1
+                    self.active_turn_index = new_idx
+                    turn_id = self._all_messages[new_idx].get("turn_id", f"turn_{new_idx}")
+                    if hasattr(self.app, "current_chat_last_index"):
+                        self.app.current_chat_last_index = new_idx
+                        self.app.current_chat_center_marker = turn_id
+                    self.highlight_card(new_idx, scroll=False)
+                return
+
+            if self.active_turn_index < raycast_idx:
+                new_idx = self.active_turn_index + 1
+                self.active_turn_index = new_idx
+                turn_id = self._all_messages[new_idx].get("turn_id", f"turn_{new_idx}")
+                if hasattr(self.app, "current_chat_last_index"):
+                    self.app.current_chat_last_index = new_idx
+                    self.app.current_chat_center_marker = turn_id
+                self.highlight_card(new_idx, scroll=False)
+                return
+
+            target_y = min(max_scroll, self.scroll_y + line_step)
+            self.scroll_y = target_y
+            self._execute_1d_raycast(target_y)
+
+        else:
+            if self.scroll_y <= 0:
+                if self.active_turn_index > 0:
+                    new_idx = self.active_turn_index - 1
+                    self.active_turn_index = new_idx
+                    turn_id = self._all_messages[new_idx].get("turn_id", f"turn_{new_idx}")
+                    if hasattr(self.app, "current_chat_last_index"):
+                        self.app.current_chat_last_index = new_idx
+                        self.app.current_chat_center_marker = turn_id
+                    self.highlight_card(new_idx, scroll=False)
+                return
+
+            if self.active_turn_index > raycast_idx:
+                new_idx = self.active_turn_index - 1
+                self.active_turn_index = new_idx
+                turn_id = self._all_messages[new_idx].get("turn_id", f"turn_{new_idx}")
+                if hasattr(self.app, "current_chat_last_index"):
+                    self.app.current_chat_last_index = new_idx
+                    self.app.current_chat_center_marker = turn_id
+                self.highlight_card(new_idx, scroll=False)
+                return
+
+            target_y = max(0, self.scroll_y - line_step)
+            self.scroll_y = target_y
+            self._execute_1d_raycast(target_y)
 
     def jump_to_home(self) -> None:
-        """Instantly jumps and snaps to target of the first turn."""
-        if self.fork_mode:
-            self.highlight_fork_card(0, scroll=False)
+        if self.is_locked():
+            return
+        self.highlight_card(0, scroll=False)
         self._run_target_mutation("jump_home")
 
     def jump_to_end(self) -> None:
-        """Instantly jumps and snaps to the final target turn."""
-        if self.fork_mode:
-            last_idx = max(0, len(self._all_messages) - 1)
-            self.highlight_fork_card(last_idx, scroll=False)
+        if self.is_locked():
+            return
+        last_idx = max(0, len(self._all_messages) - 1)
+        self.highlight_card(last_idx, scroll=False)
         self._run_target_mutation("jump_end")
 
     async def append_message(self, sender: str, text: str, jump_to_start: bool = False) -> None:
-        """Appends a new turn, strictly maintaining window capacity."""
         new_idx = len(self._all_messages)
         turn_data = {
             "turn_id": f"turn_{uuid4().hex[:8]}",
-            "role": "user" if sender == "You" else "model",
+            "role": "user" if sender == CURRENT_USER else "model",
             "text": text,
         }
         self._all_messages.append(turn_data)
@@ -2511,27 +3380,27 @@ class FeedArea(VerticalScroll):
 
         if self._win_end == new_idx:
             new_widget = self._create_turn_widget(new_idx)
-            await container.mount(new_widget)
-            self._win_end += 1
+            if new_widget is not None:
+                await container.mount(new_widget)
+                self._win_end += 1
 
-            while (self._win_end - self._win_start) > capacity and len(container.children) > 0:
-                top_child = container.children[0]
-                await top_child.remove()
-                self._win_start += 1
+                while (self._win_end - self._win_start) > capacity and len(container.children) > 0:
+                    top_child = container.children[0]
+                    await top_child.remove()
+                    self._win_start += 1
 
-            self.active_turn_index = new_idx
-            if jump_to_start:
-                self.call_after_refresh(lambda: self.scroll_to_widget(new_widget, top=True, animate=False))
-            else:
-                self.call_after_refresh(lambda: self.scroll_end(animate=False))
+                self.active_turn_index = new_idx
+
+                def _on_append_settle() -> None:
+                    self._sync_header_map()
+                    if jump_to_start:
+                        self._scroll_to_turn_widget(new_widget, center=False)
+                    else:
+                        self.scroll_end(animate=False)
+
+                self.call_after_refresh(_on_append_settle)
         else:
             self.jump_to_end()
-
-    # --- Snippets & Fences Engine (Screen-First Bulletproof Verification) ---
-
-    def _get_fences(self) -> list[MarkdownFence]:
-        """Returns only fences mounted inside the current DOM window."""
-        return list(self.query(MarkdownFence))
 
     def _extract_code_from_fence(self, fence: MarkdownFence) -> str:
         if hasattr(fence, "text") and fence.text:
@@ -2545,230 +3414,99 @@ class FeedArea(VerticalScroll):
                 return child.renderable.code
         return str(getattr(fence, "renderable", ""))
 
-    def _count_snippets_in_text(self, text: str) -> list[str]:
-        """Extracts code blocks from response text using MarkdownIt or regex."""
-        code_blocks: list[str] = []
-        if _MD_PARSER:
-            tokens = _MD_PARSER.parse(text)
-            for t in tokens:
-                if t.type == "fence":
-                    code_blocks.append(t.content)
-        else:
-            fence_regex = re.compile(r"```[^\n]*\n(.*?)```", re.DOTALL)
-            for m in fence_regex.finditer(text):
-                code_blocks.append(m.group(1))
-        return code_blocks
+    def _get_visible_fences(self) -> list[MarkdownFence]:
+        feed_reg = self.region
+        if not feed_reg or feed_reg.height <= 0:
+            return []
 
-    def _get_turns_with_snippets(self) -> dict[int, list[str]]:
-        """Maps each response index to its list of code snippets."""
-        mapping: dict[int, list[str]] = {}
-        for idx, turn in enumerate(self._all_messages):
-            blocks = self._count_snippets_in_text(turn.get("text", ""))
-            if blocks:
-                mapping[idx] = blocks
-        return mapping
+        feed_top = feed_reg.y
+        feed_bottom = feed_reg.y + feed_reg.height
 
-    def _get_onscreen_fences(self) -> list[dict]:
-        """Returns all code fences physically intersecting the screen viewport, sorted top-to-bottom."""
-        onscreen: list[dict] = []
-        viewport_top = self.region.y
-        viewport_bottom = viewport_top + self.region.height
-
+        visible: list[MarkdownFence] = []
         for fence in self.query(MarkdownFence):
-            f_top = fence.region.y
-            f_bottom = f_top + fence.region.height
+            reg = fence.region
+            if not reg or reg.height <= 0:
+                continue
 
-            # Truly visible within terminal rows
-            if f_bottom > viewport_top and f_top < viewport_bottom:
-                parent_md = fence
-                while parent_md and not isinstance(parent_md, Markdown):
-                    parent_md = parent_md.parent
+            f_top = reg.y
+            f_bottom = reg.y + reg.height
 
-                if isinstance(parent_md, Markdown) and hasattr(parent_md, "data"):
-                    t_idx = parent_md.data.get("turn_index", -1)
-                    turn_fences = list(parent_md.query(MarkdownFence))
-                    f_idx = turn_fences.index(fence) if fence in turn_fences else -1
+            if f_top < feed_bottom and f_bottom > feed_top:
+                visible.append(fence)
 
-                    if t_idx >= 0 and f_idx >= 0:
-                        onscreen.append({
-                            "turn_index": t_idx,
-                            "fence_index": f_idx,
-                            "screen_y": f_top,
-                            "fence_widget": fence,
-                        })
-
-        onscreen.sort(key=lambda item: item["screen_y"])
-        return onscreen
+        return visible
 
     def navigate_snippet(self, delta: int) -> None:
-        """Screen-first verified snippet traversal: warns when none are on screen,
-        anchors to onscreen snippets if scrolled away, and steps cleanly once active.
-        """
-        if self.fork_mode:
-            self.step_fork_card(delta)
+        visible = self._get_visible_fences()
+        if not visible:
+            self.app.notify("No selectable snippet on screen", timeout=1.5)
             return
 
-        turns_with_snippets = self._get_turns_with_snippets()
-        if not turns_with_snippets or self._window_busy:
-            return
+        total_visible = len(visible)
 
-        onscreen = self._get_onscreen_fences()
+        curr_idx = -1
+        for idx, fence in enumerate(visible):
+            if "active-snippet" in fence.classes:
+                curr_idx = idx
+                break
 
-        # Check if the currently active snippet is one of the ones visible on screen right now
-        is_cur_on_screen = any(
-            item["turn_index"] == self.active_snippet_turn and item["fence_index"] == self.active_snippet_fence
-            for item in onscreen
-        )
-
-        # 1. If currently selected snippet is NOT on screen (scrolled away or starting fresh)
-        if not is_cur_on_screen:
-            if not onscreen:
-                # Core requirement: If no snippet is on screen at all, warn and clear off-screen highlight
-                self.active_snippet_turn = -1
-                self.active_snippet_fence = -1
-                for f in self._get_fences():
-                    f.remove_class("active-snippet")
-                self.app.notify("No selectable snippet on screen", timeout=2.0)
-                return
-
-            # Snippets are on screen: anchor immediately to the visible ones
-            if delta > 0:
-                # Alt+n: Bottom-most snippet on screen
-                target = onscreen[-1]
-            else:
-                # Alt+p: Top-most snippet on screen
-                target = onscreen[0]
-
-            self.select_response_snippet(target["turn_index"], target["fence_index"])
-            return
-
-        # 2. Currently selected snippet IS on screen: step sequentially
-        sorted_turn_indices = sorted(turns_with_snippets.keys())
-        curr_t = self.active_snippet_turn
-        curr_f = self.active_snippet_fence
-        snips_in_turn = turns_with_snippets[curr_t]
-
-        if delta > 0:
-            # Step down (Alt+n)
-            if curr_f + 1 < len(snips_in_turn):
-                self.select_response_snippet(curr_t, curr_f + 1)
-            else:
-                curr_idx_in_keys = sorted_turn_indices.index(curr_t)
-                next_t = sorted_turn_indices[(curr_idx_in_keys + 1) % len(sorted_turn_indices)]
-                self.select_response_snippet(next_t, 0)
+        if curr_idx == -1:
+            target_idx = 0 if delta > 0 else (total_visible - 1)
         else:
-            # Step up (Alt+p)
-            if curr_f - 1 >= 0:
-                self.select_response_snippet(curr_t, curr_f - 1)
-            else:
-                curr_idx_in_keys = sorted_turn_indices.index(curr_t)
-                prev_t = sorted_turn_indices[(curr_idx_in_keys - 1) % len(sorted_turn_indices)]
-                self.select_response_snippet(prev_t, len(turns_with_snippets[prev_t]) - 1)
+            target_idx = (curr_idx + delta) % total_visible
 
-    def select_response_snippet(self, turn_idx: int, fence_idx: int) -> None:
-        """Selects snippet in a specific response turn, triggering pagination if turn is unmounted."""
-        self.active_snippet_turn = turn_idx
-        self.active_snippet_fence = fence_idx
+        for fence in self.query(MarkdownFence):
+            if "active-snippet" in fence.classes:
+                fence.remove_class("active-snippet")
+                fence.refresh()
 
-        turn_widget = self._get_target_widget(turn_idx)
-        if isinstance(turn_widget, Markdown):
-            turn_fences = list(turn_widget.query(MarkdownFence))
-            if 0 <= fence_idx < len(turn_fences):
-                self._pending_snippet_snap = None
-                for f in self._get_fences():
-                    f.remove_class("active-snippet")
+        chosen = visible[target_idx]
+        chosen.add_class("active-snippet")
+        chosen.refresh()
 
-                chosen = turn_fences[fence_idx]
-                chosen.add_class("active-snippet")
-                self.scroll_to_widget(chosen, top=False, animate=False)
-                chosen.refresh()
-                return
-
-        # Turn unmounted or fences still rendering: arm target mutation settlement
-        self._pending_snippet_snap = (turn_idx, fence_idx)
-        self._run_target_mutation("scroll_to_target", target_index=turn_idx)
-
-    def select_snippet(self, index: int, scroll: bool = True) -> None:
-        """Selects snippet from currently mounted fences (used for mouse clicks)."""
-        fences = self._get_fences()
-        if not (0 <= index < len(fences)):
-            return
-
-        target_fence = fences[index]
-        parent_md = target_fence
-        while parent_md and not isinstance(parent_md, Markdown):
-            parent_md = parent_md.parent
-
-        if isinstance(parent_md, Markdown) and hasattr(parent_md, "data"):
-            t_idx = parent_md.data.get("turn_index", -1)
-            turn_fences = list(parent_md.query(MarkdownFence))
-            f_idx = turn_fences.index(target_fence) if target_fence in turn_fences else -1
-
-            self.active_snippet_turn = t_idx
-            self.active_snippet_fence = f_idx
-
-        for idx, f in enumerate(fences):
-            if idx == index:
-                f.add_class("active-snippet")
-                if scroll:
-                    f.scroll_visible(animate=True)
-                f.refresh()
-            else:
-                f.remove_class("active-snippet")
-                f.refresh()
+    def select_snippet_by_widget(self, target_fence: MarkdownFence) -> None:
+        for fence in self.query(MarkdownFence):
+            if fence is target_fence:
+                fence.add_class("active-snippet")
+                fence.refresh()
+            elif "active-snippet" in fence.classes:
+                fence.remove_class("active-snippet")
+                fence.refresh()
 
     def get_active_snippet(self) -> str | None:
-        """Retrieves code text of the currently active snippet from response memory."""
-        turns_with_snippets = self._get_turns_with_snippets()
-        if (
-            self.active_snippet_turn in turns_with_snippets
-            and 0 <= self.active_snippet_fence < len(turns_with_snippets[self.active_snippet_turn])
-        ):
-            return turns_with_snippets[self.active_snippet_turn][self.active_snippet_fence]
-
-        # Fallback to local active fence if present
-        for f in self._get_fences():
-            if "active-snippet" in f.classes:
-                return self._extract_code_from_fence(f)
+        for fence in self.query(MarkdownFence):
+            if "active-snippet" in fence.classes:
+                return self._extract_code_from_fence(fence)
         return None
 
-    # --- Fork Selection Operations ---
+    def toggle_fork_ui(self) -> None:
+        self.fork_ui_active = not self.fork_ui_active
+        if self.fork_ui_active:
+            self.add_class("fork-ui-active")
+        else:
+            self.remove_class("fork-ui-active")
+        self._refresh_all_fork_card_checkboxes()
 
-    def enter_fork_mode(self, messages: list[dict]) -> None:
-        """Enters fork mode anchored directly around currently visible turn."""
-        if not messages:
-            return
-
-        self.fork_mode = True
-        self._pending_snippet_snap = None
-        curr_turn = self._get_current_visible_turn_index()
-        self._focused_fork_card_index = curr_turn
-        self._fork_selected_indices = set()
-
-        if hasattr(self.app, "hide_status"):
-            self.app.hide_status()
-
-        self._run_target_mutation("reset_chat", new_messages=messages, target_index=curr_turn)
-
-    def exit_fork_mode(self) -> None:
-        """Restores standard markdown chat view directly anchored where user was looking."""
-        if not self.fork_mode:
-            return
-
-        self.fork_mode = False
-        self._pending_snippet_snap = None
-        anchor_idx = self._focused_fork_card_index
-        self._fork_selected_indices.clear()
-
-        self._run_target_mutation("reset_chat", new_messages=self._all_messages, target_index=anchor_idx)
-
-    def get_selected_fork_indices(self) -> list[int]:
-        return sorted(list(self._fork_selected_indices))
-
-    def _refresh_all_fork_card_checkboxes(self) -> None:
+    def highlight_card(self, turn_idx: int, scroll: bool = True) -> None:
+        prev_idx = self.active_turn_index
+        self.active_turn_index = turn_idx
         container = self.query_one("#turns_container", Vertical)
-        for card in container.query(ForkTurnCard):
-            card.set_selected(card.turn_index in self._fork_selected_indices)
+
+        for card in container.query(TurnCard):
+            if card.turn_index == turn_idx:
+                card.add_class("card-active")
+                card.update_display()
+                if scroll:
+                    self._scroll_to_turn_widget(card, center=False)
+            else:
+                card.remove_class("card-active")
+                if card.turn_index == prev_idx:
+                    card.update_display()
+
+    def toggle_current_card_selection(self) -> None:
+        target_card = self._get_target_widget(self.active_turn_index)
+        if isinstance(target_card, TurnCard):
+            target_card.toggle()
 
     def toggle_all_fork_checkboxes(self) -> None:
         total = len(self._all_messages)
@@ -2785,62 +3523,28 @@ class FeedArea(VerticalScroll):
         state_msg = "Selected all turns" if not all_selected else "Deselected all turns"
         self.app.notify(state_msg, timeout=2.0)
 
-    def highlight_fork_card(self, turn_idx: int, scroll: bool = True) -> None:
-        """Visually marks a card as active without changing DOM focus."""
-        self._focused_fork_card_index = turn_idx
-        self.active_turn_index = turn_idx
+    def _refresh_all_fork_card_checkboxes(self) -> None:
         container = self.query_one("#turns_container", Vertical)
+        for card in container.query(TurnCard):
+            card.update_selected(card.turn_index in self._fork_selected_indices)
 
-        for card in container.query(ForkTurnCard):
-            if card.turn_index == turn_idx:
-                card.add_class("card-active")
-                if scroll:
-                    self.scroll_to_widget(card, top=False, animate=False)
-            else:
-                card.remove_class("card-active")
-
-    def toggle_current_fork_card(self) -> None:
-        """Toggles checkbox on currently highlighted fork card."""
-        target_card = self._get_target_widget(self._focused_fork_card_index)
-        if isinstance(target_card, ForkTurnCard):
-            target_card.toggle()
-
-    def step_fork_card(self, delta: int) -> None:
-        """Step one fork card forward/backward, updating highlight without DOM reflows."""
-        total = len(self._all_messages)
-        if not total or self._window_busy:
-            return
-
-        target_idx = self._focused_fork_card_index + delta
-        if not (0 <= target_idx < total):
-            return
-
-        existing_card = self._get_target_widget(target_idx)
-        if isinstance(existing_card, ForkTurnCard):
-            self.highlight_fork_card(target_idx, scroll=True)
-            return
-
-        self._focused_fork_card_index = target_idx
-        self._run_target_mutation("scroll_to_target", target_index=target_idx)
+    def get_selected_fork_indices(self) -> list[int]:
+        return sorted(list(self._fork_selected_indices))
 
     @on(events.Click)
     def _on_feed_click(self, event: events.Click) -> None:
-        if self.fork_mode:
+        if self.is_locked() or self.fork_ui_active:
             return
 
         curr = event.widget
         while curr and curr is not self:
             if isinstance(curr, MarkdownFence):
-                fences = self._get_fences()
-                if curr in fences:
-                    self.select_snippet(fences.index(curr), scroll=False)
-                    event.stop()
-                    return
+                self.select_snippet_by_widget(curr)
+                event.stop()
+                return
             curr = curr.parent
 
 class HistoryList(OptionList):
-    """OptionList with Vim/Emacs navigation, instant deletion, and renaming."""
-
     async def _on_key(self, event: events.Key) -> None:
         if self.app.intercept_c_c_key(event):
             return
@@ -2868,180 +3572,397 @@ class HistoryList(OptionList):
 # ---------------------------------------------------------------------------
 
 class ChatApp(App):
-    COMMAND_PALETTE_BINDING = "alt+x"
-    COMMAND_PALETTE = MenuPalette
+    ENABLE_COMMAND_PALETTE = False
+    COMMAND_PALETTE_BINDING = None
+    COMMANDS = set()
 
-    CSS = """
-    Screen {
+    def action_command_palette(self) -> None:
+        pass
+
+    CSS = f"""
+    Screen {{
         layout: vertical;
-        layers: base overlay;
-    }
-    #feed_loader_banner {
-        layer: overlay;
+        layers: base toasts overlay;
+        background: #000000;
+    }}
+    ToastRack {{
         dock: top;
+        align: right top;
+        layer: toasts;
+        background: transparent;
+    }}
+    ModalScreen ToastRack {{
+        display: none;
+    }}
+    Toast {{
+        background: #141414;
+        color: #ffffff;
+        border: solid red;
+    }}
+    #feed_loader_banner {{
         width: 100%;
         height: 1;
-        background: #152436;
-        color: dodgerblue;
+        background: #141414;
+        color: red;
+        border-bottom: solid red;
         content-align: center middle;
         text-style: bold;
         display: none;
-    }
-    #main_container {
+    }}
+    #main_container {{
         height: 1fr;
         width: 100%;
         layout: vertical;
-    }
-    #feed {
+        background: #000000;
+    }}
+    #feed {{
         height: 1fr;
-        border: solid green;
+        border: solid red;
         overflow-y: auto;
         overflow-x: hidden;
-        scrollbar-gutter: stable;
-        padding: 0 2 0 1;
-        width: 100%;
-        max-width: 100%;
-    }
-    #feed #turns_container {
-        width: 100%;
-        max-width: 100%;
-        height: auto;
-    }
-    #feed .turn_block {
-        width: 100%;
-        max-width: 100%;
-        height: auto;
-        margin-bottom: 1;
-    }
-    #feed_status {
-        width: 100%;
-        height: auto;
-        min-height: 1;
+        scrollbar-size-vertical: 0;
+        scrollbar-size-horizontal: 0;
+        scrollbar-gutter: auto;
         padding: 0 1;
-        color: dodgerblue;
-        text-style: bold;
-        background: #14202c;
-        display: none;
-    }
-    #feed_nav_banner {
         width: 100%;
-        height: 1;
-        background: #0d2b45;
-        color: #ffcc00;
-        text-style: bold;
-        content-align: center middle;
-        display: none;
-    }
-    .fork_turn_card {
+        max-width: 100%;
+        background: #000000;
+    }}
+    #feed #turns_container {{
         width: 100%;
+        max-width: 100%;
+        height: auto;
+        background: #000000;
+    }}
+    .turn_card {{
+        width: 100%;
+        max-width: 100%;
         height: auto;
         margin-bottom: 1;
         padding: 0;
-        border: solid #444444;
-        background: $surface;
-    }
-    .fork_turn_card.card-active {
-        border: thick cyan;
-        background: #101c28;
-    }
-    .fork_turn_header {
+        background: #000000;
+        border: none;
+    }}
+    .turn_card .turn_header {{
         width: 100%;
-        height: auto;
+        height: 1;
         padding: 0 1;
-        background: #1f3044;
-        border-bottom: solid #334455;
-    }
-    .fork_turn_card.card-active .fork_turn_header {
-        background: dodgerblue;
-    }
-    .fork_turn_box_label {
+        margin-bottom: 1;
+        background: #141414;
+    }}
+    .turn_card.card-active .turn_header {{
+        background: #2a0808;
+    }}
+    .turn_box_label {{
         width: 100%;
         text-style: bold;
         color: #ffffff;
-    }
-    .fork_turn_preview {
+    }}
+    .turn_card.card-active .turn_box_label {{
+        color: red;
+    }}
+    .turn_card .turn_body {{
+        width: 100%;
+        max-width: 100%;
+        height: auto;
+        background: #000000;
+        color: #ffffff;
+    }}
+    MarkdownHorizontalRule {{
+        border-bottom: solid red;
+        color: red;
+        margin: 1 0;
+    }}
+    #feed_status {{
+        width: 100%;
+        height: 2;
+        padding: 0 1;
+        color: red;
+        text-style: bold;
+        background: #141414;
+        border-bottom: solid red;
+        display: none;
+    }}
+    #feed_nav_banner {{
         width: 100%;
         height: auto;
-        padding: 1 1;
-    }
+        min-height: 1;
+        background: #141414;
+        color: #ffffff;
+        text-style: bold;
+        text-align: center;
+        text-wrap: nowrap;
+        padding: 0;
+    }}
+    #feed_nav_banner.fork-active {{
+        background: #8b0000;
+        color: #ffffff;
+        text-style: bold;
+        text-align: center;
+        text-wrap: nowrap;
+    }}
     #feed MarkdownBlock,
     #feed MarkdownParagraph,
-    #feed MarkdownTable {
+    #feed MarkdownTable {{
         width: 100%;
         max-width: 100%;
         overflow-x: hidden;
-    }
-    #feed MarkdownFence {
+        color: #ffffff;
+    }}
+    #feed MarkdownFence {{
         width: 100%;
         max-width: 100%;
         height: auto;
         overflow-x: hidden;
         margin: 1 0;
-        border: solid #444444;
-    }
-    #feed MarkdownFence.active-snippet {
-        border: thick yellow !important;
-        background: #2b2600 !important;
-    }
-    #feed MarkdownFence > * {
+        border: solid transparent;
+        background: #0a0a0a;
+    }}
+    #feed MarkdownFence.active-snippet {{
+        border: solid red !important;
+        background: #141414 !important;
+    }}
+    #feed MarkdownFence > * {{
         width: 100%;
         max-width: 100%;
-    }
-    #history {
+    }}
+    #history {{
         height: 1fr;
-        border: solid yellow;
+        border: solid red;
+        background: #000000;
+        color: #ffffff;
         display: none;
-    }
-    #snippet_preview {
+    }}
+    #snippet_preview {{
         width: 100%;
         max-height: 10;
-        border: round dodgerblue;
+        border: round red;
+        background: #000000;
+        color: #ffffff;
         display: none;
         margin-bottom: 0;
-    }
-    #input {
-        border: solid dodgerblue;
-    }
-    #input:focus {
-        border: double cyan;
-    }
+    }}
+    #input {{
+        border: solid red;
+        background: #000000;
+        color: #ffffff;
+        scrollbar-size-vertical: 0;
+        scrollbar-size-horizontal: 0;
+        scrollbar-gutter: auto;
+    }}
+    #input:focus {{
+        border: solid red;
+        background: #000000;
+    }}
+    TextArea > .text-area--cursor-line {{
+        background: #141414;
+    }}
+    Button {{
+        background: #000000;
+        color: #ffffff;
+        border: solid red;
+        text-style: none;
+    }}
+    Button:hover {{
+        background: #141414;
+        color: red;
+        text-style: none;
+    }}
+    Button:focus {{
+        border: double red;
+        text-style: none;
+    }}
+
+    #custom_footer {{
+        height: 1;
+        width: 100%;
+        background: #000000;
+        padding: 0 1;
+        align-vertical: middle;
+    }}
+    #custom_footer Static {{
+        height: 1;
+        width: auto;
+        background: transparent;
+    }}
+    #footer_quit:hover, #footer_commands:hover {{
+        background: #141414;
+    }}
+    #footer_sep {{
+        margin: 0 1;
+    }}
+
+    {generate_theme_css_rules()}
     """
 
     BINDINGS = [
-        Binding("alt+x", "command_palette", "Menu (M-x)", show=True),
-        Binding("ctrl+c", "c_c_prefix_stub", "C-c [e,w,y,t,b,n,r,f,g,.]", show=True),
-        Binding("ctrl+o", "toggle_feed_nav", "C-o (Feed Nav)", show=True),
-        Binding("ctrl+full_stop", "fork_chat", "C-. (Fork)", show=True),
-        Binding("ctrl+q", "quit", "Quit", show=True),
+        Binding("ctrl+c", "c_c_prefix_stub", "^c Commands", show=False),
+        Binding("ctrl+q", "quit", "^q Quit", show=False),
     ]
 
     def __init__(self) -> None:
         super().__init__()
         self.client = genai.Client()
+        self.lock = AppLockController(self)
+
+        self.active_palette_name: str = DEFAULT_PALETTE
         self.current_chat_id: str = ""
         self.current_chat_title: str = ""
         self.current_chat_parent_id: str | None = None
         self.current_chat_working_dir: str | None = None
         self.current_chat_last_index: int = 0
+        self.current_chat_center_marker: str = ""
         self.history: list[dict] = []
         self._server: asyncio.AbstractServer | None = None
 
-        # Modal Feed Navigation State
-        self.feed_nav_mode: bool = False
-
-        # Robust prefix state machine
         self._prefix_c_c: bool = False
         self._c_c_timer: Timer | None = None
 
-        # Live status tracking state
         self._request_phase: str = "idle"
         self._request_start_time: float = 0.0
         self._spinner_idx: int = 0
         self._status_timer: Timer | None = None
         self._banner_shown_time: float = 0.0
 
-        # Debounced disk save timer for read position
-        self._save_position_timer: Timer | None = None
+        self._nav_indicator_action: str | None = None
+        self._nav_indicator_timer: Timer | None = None
+
+        self._commands_registry: dict[str, Callable[[str], None]] = {
+            "ui-theme": self._cmd_ui_theme,
+        }
+
+    def clear_toasts(self) -> None:
+        try:
+            for toast in list(self.query("Toast")):
+                try:
+                    toast.dismiss()
+                except Exception:
+                    pass
+
+            stack = getattr(self, "screen_stack", None) or getattr(self, "_screen_stack", [])
+            for screen in list(stack):
+                if hasattr(screen, "query"):
+                    for toast in list(screen.query("Toast")):
+                        try:
+                            toast.dismiss()
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+
+    def push_screen(self, screen: Screen[ModalResultType] | str, callback: Callable[[ModalResultType], None] | None = None, wait_for_dismiss: bool = False):
+        self.clear_toasts()
+        return super().push_screen(screen, callback=callback, wait_for_dismiss=wait_for_dismiss)
+
+    @property
+    def accent_color(self) -> str:
+        return THEMES.get(self.active_palette_name, THEMES[DEFAULT_PALETTE])["accent"]
+
+    def set_theme(self, palette_name: str, notify_user: bool = True) -> bool:
+        theme_clean = palette_name.strip().lower()
+        if theme_clean not in THEMES:
+            return False
+
+        self.active_palette_name = theme_clean
+        self._save_theme_to_state(theme_clean)
+
+        if self.screen:
+            for t in THEMES:
+                self.screen.remove_class(f"theme-{t}")
+            self.screen.add_class(f"theme-{theme_clean}")
+
+        self.update_feed_nav_banner()
+        self._update_footer_markup()
+
+        if notify_user:
+            self.notify(f"Theme set to '{theme_clean}'", timeout=2.5)
+        return True
+
+    def _read_theme_from_state(self) -> str:
+        if STATE_FILE.exists():
+            try:
+                data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+                stored = data.get("ui_theme")
+                if stored in THEMES:
+                    return stored
+            except Exception:
+                pass
+        return DEFAULT_PALETTE
+
+    def _save_theme_to_state(self, palette_name: str) -> None:
+        try:
+            state: dict = {}
+            if STATE_FILE.exists():
+                try:
+                    state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+                except Exception:
+                    state = {}
+            state["ui_theme"] = palette_name
+            STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
+            STATE_FILE.chmod(0o600)
+        except Exception:
+            pass
+
+    def _update_footer_markup(self) -> None:
+        try:
+            c = self.accent_color
+            self.query_one("#footer_quit", Static).update(f"[bold {c}]^q:[/] [white]quit[/]")
+            self.query_one("#footer_sep", Static).update(f"[{c}]|[/]")
+            self.query_one("#footer_commands", Static).update(f"[bold {c}]^c + c:[/] [white]commands[/]")
+        except Exception:
+            pass
+
+    def execute_command(self, raw_input: str) -> bool:
+        cmd_text = raw_input.strip()
+        if not cmd_text.startswith("!/"):
+            return False
+
+        body = cmd_text[2:].strip()
+        if not body:
+            self.notify("Empty command specified.", severity="error")
+            return True
+
+        if ":" in body:
+            program, arg = body.split(":", 1)
+            program = program.strip().lower()
+            arg = arg.strip()
+        else:
+            program = body.lower()
+            arg = ""
+
+        handler = self._commands_registry.get(program)
+        if handler:
+            handler(arg)
+        else:
+            valid_cmds = ", ".join(self._commands_registry.keys())
+            self.notify(f"Unknown command '{program}'. Available: {valid_cmds}", severity="error")
+
+        return True
+
+    def _cmd_ui_theme(self, arg: str) -> None:
+        if not arg:
+            valid_themes = ", ".join(THEMES.keys())
+            self.notify(f"Usage: !/ui-theme:<color>. Options: {valid_themes}", severity="warning")
+            return
+
+        success = self.set_theme(arg)
+        if not success:
+            valid_themes = ", ".join(THEMES.keys())
+            self.notify(f"Invalid theme '{arg}'. Choose from: {valid_themes}", severity="error")
+
+    def trigger_nav_indicator(self, action: str) -> None:
+        self._nav_indicator_action = action
+        self.update_feed_nav_banner()
+
+        if self._nav_indicator_timer:
+            self._nav_indicator_timer.stop()
+
+        self._nav_indicator_timer = self.set_timer(0.20, self._clear_nav_indicator)
+
+    def _clear_nav_indicator(self) -> None:
+        self._nav_indicator_action = None
+        self._nav_indicator_timer = None
+        self.update_feed_nav_banner()
 
     def copy_to_clipboard(self, text: str) -> None:
         try:
@@ -3051,21 +3972,23 @@ class ChatApp(App):
         super().copy_to_clipboard(text)
 
     def set_c_c_prefix(self) -> None:
-        """Arms C-c prefix chord globally with a 3.5s expiration window."""
         if self._c_c_timer:
             self._c_c_timer.stop()
             self._c_c_timer = None
         self._prefix_c_c = True
         self._c_c_timer = self.set_timer(3.5, self._expire_c_c_prefix)
-        self.notify("C-c- (e:emacs, w:copy, y:yank, t:rename, b:hist, n:new, r:save, f:file, g:git, .:fork)", timeout=3.5)
 
     def _expire_c_c_prefix(self) -> None:
         self._prefix_c_c = False
         self._c_c_timer = None
 
     def intercept_c_c_key(self, event: events.Key) -> bool:
-        """Central chord gatekeeper for widgets to call before handling or typing keys."""
         if event.key == "ctrl+c":
+            if self._prefix_c_c:
+                event.prevent_default()
+                event.stop()
+                self.handle_c_c_prefix(event)
+                return True
             event.prevent_default()
             event.stop()
             self.set_c_c_prefix()
@@ -3080,7 +4003,6 @@ class ChatApp(App):
         return False
 
     def handle_c_c_prefix(self, event: events.Key) -> bool:
-        """Resolves chord target, supporting both plain letters and control modifiers."""
         if not self._prefix_c_c:
             return False
 
@@ -3089,16 +4011,18 @@ class ChatApp(App):
             self._c_c_timer = None
 
         self._prefix_c_c = False
+        self.clear_toasts()
 
         key = event.key.lower()
         char = (event.character or "").lower()
 
-        # Emacs keyboard quit: C-c C-g or C-c Escape
         if key in ("ctrl+g", "escape"):
-            self.notify("Quit", timeout=1.0)
             return True
 
-        if key in ("ctrl+e", "e") or char == "e":
+        if key in ("ctrl+c", "c", "slash", "ctrl+slash") or char in ("c", "/"):
+            self.action_open_commands_modal()
+            return True
+        elif key in ("ctrl+e", "e") or char == "e":
             self.action_send_to_emacs()
             return True
         elif key in ("ctrl+w", "w") or char == "w":
@@ -3122,82 +4046,162 @@ class ChatApp(App):
         elif key in ("ctrl+f", "f") or char == "f":
             self.action_insert_file_from_disk()
             return True
-        elif key in ("g", "ctrl+backslash", "backslash") or char == "g":
+        elif key in ("ctrl+g", "g", "ctrl+backslash", "backslash") or char == "g":
             self.action_open_git_tree()
             return True
-        elif key in ("period", "full_stop", ".", "ctrl+period", "ctrl+full_stop") or char == ".":
-            # If in Feed Nav and already in Fork Mode, C-c . exits back to Snippet Nav
-            feed = self.query_one("#feed", FeedArea)
-            if self.feed_nav_mode and feed.fork_mode:
-                feed.exit_fork_mode()
-                self.update_feed_nav_banner()
-                self.notify("Exited fork mode (Feed Nav active)")
-                return True
+        elif key in ("period", "full_stop", ".") or char == ".":
             self.action_fork_chat()
+            return True
+        elif key in ("grave", "backtick", "`") or char == "`":
+            self.action_take_svg_screenshot()
             return True
 
         self.notify(f"C-c {key} is undefined", timeout=2.0)
         return False
 
     def action_c_c_prefix_stub(self) -> None:
-        """Binding target for Ctrl+C."""
         self.set_c_c_prefix()
 
+    def action_open_commands_modal(self) -> None:
+        self.push_screen(CommandsModal())
+
+    def action_take_svg_screenshot(self) -> None:
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        target_file = SCREENSHOTS_DIR / f"screenshot_{timestamp}.svg"
+        try:
+            self.save_screenshot(str(target_file))
+            self.notify(f"Screenshot saved: {target_file.name}", timeout=3.5)
+        except Exception as e:
+            self.notify(f"Screenshot error: {e}", severity="error")
+
+    def _render_flow_nav_banner(self, items: list[str], sep_markup: str, sep_plain: str, available_w: int) -> str:
+        lines: list[str] = []
+
+        def clean_markup(s: str) -> str:
+            return re.sub(r"\[[^\]]*\]", "", s)
+
+        sep_cells = cell_len(sep_plain)
+        curr_line_markup: list[str] = []
+        curr_len = 0
+
+        for item in items:
+            item_plain = clean_markup(item)
+            item_cells = cell_len(item_plain)
+
+            is_start_of_line = (curr_len == 0)
+
+            if is_start_of_line:
+                needed = item_cells
+            else:
+                needed = sep_cells + 2 + item_cells
+
+            if curr_len + needed <= available_w:
+                if is_start_of_line:
+                    curr_line_markup.append(item)
+                    curr_len = item_cells
+                else:
+                    curr_line_markup.append(f"{sep_markup} {item}")
+                    curr_len += sep_cells + 2 + item_cells
+            else:
+                if not is_start_of_line:
+                    lines.append(" ".join(curr_line_markup))
+                    curr_line_markup = [item]
+                    curr_len = item_cells
+                else:
+                    curr_line_markup.append(item)
+                    lines.append(" ".join(curr_line_markup))
+                    curr_line_markup = []
+                    curr_len = 0
+
+        if curr_line_markup:
+            lines.append(" ".join(curr_line_markup))
+
+        return "\n".join(lines)
+
     def update_feed_nav_banner(self) -> None:
-        banner = self.query_one("#feed_nav_banner", Static)
-        feed = self.query_one("#feed", FeedArea)
-        if not self.feed_nav_mode:
-            banner.styles.display = "none"
-            return
+        try:
+            banner = self.query_one("#feed_nav_banner", Static)
+            feed = self.query_one("#feed", FeedArea)
 
-        if feed.fork_mode:
-            banner.styles.background = "#0c283d"
-            banner.styles.color = "#00d7ff"
-            banner.update("▲ [FORK MODE] Space: Toggle [✓] | a: All | M-n/M-p: Step | .: Exit Fork | Enter: Fork | Esc: Cancel")
-        else:
-            banner.styles.background = "#0d2b45"
-            banner.styles.color = "#ffcc00"
-            banner.update("▲ [FEED NAV ACTIVE] j/k/Arrows: Line | PgUp/PgDn: Steps | Alt+n/p: Snippets | .: Fork | Esc: Exit")
-        banner.styles.display = "block"
+            avail_w = self.size.width - 2 if self.size and self.size.width > 2 else 78
+            accent = self.accent_color
 
-    def action_toggle_feed_nav(self) -> None:
-        """Toggles Feed Navigation mode on and off."""
-        feed = self.query_one("#feed", FeedArea)
-        if self.feed_nav_mode:
-            if feed.fork_mode:
-                feed.exit_fork_mode()
-            self.feed_nav_mode = False
-            self.update_feed_nav_banner()
-            self.notify("Exited feed navigation")
-        else:
-            self.feed_nav_mode = True
-            self.update_feed_nav_banner()
-            self.notify("Feed navigation active")
+            if feed.fork_ui_active:
+                banner.add_class("fork-active")
+                sep_markup = "[bold black]|[/]"
+                sep_plain = "|"
+                items = [
+                    "Space: Toggle [X]",
+                    "a: Select All",
+                    "Enter: Confirm Fork",
+                    "Esc / C-c .: Cancel",
+                ]
+                content = self._render_flow_nav_banner(items, sep_markup, sep_plain, avail_w)
+            else:
+                banner.remove_class("fork-active")
+                sep_markup = f"[not bold {accent}]|[/]"
+                sep_plain = "|"
 
-        self.query_one("#input", ExpandingInput).focus()
+                up_scroll = f"[bold {accent}]↑[/]" if self._nav_indicator_action == "scroll_up" else "↑"
+                dn_scroll = f"[bold {accent}]↓[/]" if self._nav_indicator_action == "scroll_down" else "↓"
+                up_page = f"[bold {accent}]↑[/]" if self._nav_indicator_action == "page_up" else "↑"
+                dn_page = f"[bold {accent}]↓[/]" if self._nav_indicator_action == "page_down" else "↓"
+
+                items = [
+                    f"{up_scroll}/{dn_scroll}: Scroll",
+                    f"Shift+{up_page}/{dn_page}: Viewport",
+                    "PgUp/PgDn: Cards",
+                    "Home/End: Edge",
+                    "M-n/M-p: Snippets",
+                    "C-c .: Fork",
+                ]
+                content = self._render_flow_nav_banner(items, sep_markup, sep_plain, avail_w)
+
+            banner.update(content)
+        except Exception:
+            pass
+
+    def on_resize(self, event: events.Resize) -> None:
+        self.call_after_refresh(self.update_feed_nav_banner)
 
     def on_key(self, event: events.Key) -> None:
-        """Application-level key interceptor guaranteeing chords resolve globally."""
+        key_name = event.key.lower()
+
+        if self.lock.is_locked:
+            if key_name in GATED_NAV_KEYS:
+                event.prevent_default()
+                event.stop()
+                return
+
         if self.intercept_c_c_key(event):
             return
 
-        if event.key in ("ctrl+full_stop", "ctrl+period", "ctrl+."):
-            event.prevent_default(); event.stop()
-            self.action_fork_chat()
-            return
-
     def compose(self) -> ComposeResult:
-        yield Static("▲ Loading chat feed...", id="feed_loader_banner")
         with Vertical(id="main_container"):
+            yield Static("▲ Loading messages...", id="feed_loader_banner")
             yield FeedArea(id="feed")
             yield HistoryList(id="history")
-            yield Label("", id="feed_status")
+            yield Static("", id="feed_status")
             yield Static("", id="feed_nav_banner")
             yield SnippetPreview(id="snippet_preview")
             yield ExpandingInput(id="input")
-        yield Footer()
+        with Horizontal(id="custom_footer"):
+            yield Static("[bold red]^q:[/] [white]quit[/]", id="footer_quit")
+            yield Static("[red]|[/]", id="footer_sep")
+            yield Static("[bold red]^c + c:[/] [white]commands[/]", id="footer_commands")
+
+    @on(events.Click, "#footer_quit")
+    def on_footer_quit_click(self) -> None:
+        self.action_quit()
+
+    @on(events.Click, "#footer_commands")
+    def on_footer_commands_click(self) -> None:
+        self.action_open_commands_modal()
 
     async def on_mount(self) -> None:
+        saved_theme = self._read_theme_from_state()
+        self.set_theme(saved_theme, notify_user=False)
+
         await self.start_socket_server()
         self.call_after_refresh(self._initial_startup_load)
 
@@ -3213,13 +4217,14 @@ class ChatApp(App):
             else:
                 self._start_new_chat(title="")
 
+        self.update_feed_nav_banner()
+        self._update_footer_markup()
         self.query_one("#input").focus()
-
-    # --- Root Overlay Loader Banner Engine ---
 
     def show_loader_banner(self) -> None:
         try:
             banner = self.query_one("#feed_loader_banner", Static)
+            banner.update("▲ Loading messages...")
             banner.styles.display = "block"
             self._banner_shown_time = time.monotonic()
         except Exception:
@@ -3229,24 +4234,24 @@ class ChatApp(App):
         try:
             banner = self.query_one("#feed_loader_banner", Static)
             elapsed = time.monotonic() - self._banner_shown_time
-            if elapsed < 0.2:
-                self.set_timer(0.2 - elapsed, lambda: setattr(banner.styles, "display", "none"))
+            if elapsed < 0.4:
+                self.set_timer(0.4 - elapsed, lambda: setattr(banner.styles, "display", "none"))
             else:
                 banner.styles.display = "none"
         except Exception:
             pass
 
-    # --- Pinned Viewport Status Indicator Engine ---
-
     def set_status_text(self, text: str) -> None:
-        status_lbl = self.query_one("#feed_status", Label)
-        status_lbl.update(text)
-        if status_lbl.styles.display == "none":
+        try:
+            status_lbl = self.query_one("#feed_status", Static)
+            status_lbl.update(text)
             status_lbl.styles.display = "block"
+        except Exception:
+            pass
 
     def hide_status(self) -> None:
         try:
-            status_lbl = self.query_one("#feed_status", Label)
+            status_lbl = self.query_one("#feed_status", Static)
             status_lbl.update("")
             status_lbl.styles.display = "none"
         except Exception:
@@ -3257,6 +4262,7 @@ class ChatApp(App):
             self._status_timer.stop()
         self._request_start_time = time.monotonic()
         self._spinner_idx = 0
+        self._tick_status()  # Immediate render on frame 0
         self._status_timer = self.set_interval(0.1, self._tick_status)
 
     def _stop_status_ticker(self) -> None:
@@ -3285,22 +4291,23 @@ class ChatApp(App):
     @on(RequestPhaseUpdate)
     def on_request_phase_update(self, event: RequestPhaseUpdate) -> None:
         self._request_phase = event.phase
+        self._tick_status()
 
     @on(RequestFinished)
     async def on_request_finished(self, event: RequestFinished) -> None:
         self._stop_status_ticker()
 
         feed = self.query_one("#feed", FeedArea)
-        jump_top = not self.feed_nav_mode
-        await feed.append_message("Gemini", event.full_text, jump_to_start=jump_top)
+        await feed.append_message("gemini", event.full_text, jump_to_start=True)
 
         new_turn_id = f"turn_{uuid4().hex[:8]}"
         self.history.append({"turn_id": new_turn_id, "role": "model", "text": event.full_text})
         self.current_chat_last_index = max(0, len(self.history) - 1)
+        self.current_chat_center_marker = new_turn_id
         self.save_current_chat()
 
         self.set_status_text(f"✓ Response complete ({event.words} words in {event.elapsed:.1f}s)")
-        self.set_timer(1.0, self.hide_status)
+        self.set_timer(1.2, self.hide_status)
 
         self.query_one("#input", ExpandingInput).focus()
 
@@ -3311,8 +4318,6 @@ class ChatApp(App):
         self.notify(f"API Error: {event.error_message}", severity="error")
         self.set_timer(5.0, self.hide_status)
         self.query_one("#input", ExpandingInput).focus()
-
-    # --- Persistent Active Chat & Position State Management ---
 
     def _read_active_chat_from_state(self) -> str | None:
         if STATE_FILE.exists():
@@ -3337,14 +4342,6 @@ class ChatApp(App):
         except Exception:
             pass
 
-    def schedule_save_chat_position(self, turn_idx: int) -> None:
-        self.current_chat_last_index = turn_idx
-        if self._save_position_timer:
-            self._save_position_timer.stop()
-        self._save_position_timer = self.set_timer(0.4, self.save_current_chat)
-
-    # --- Working Directory Scope Management ---
-
     def get_effective_working_dir(self) -> str:
         if self.current_chat_working_dir:
             return self.current_chat_working_dir
@@ -3354,8 +4351,6 @@ class ChatApp(App):
         expanded = os.path.expanduser(directory.strip())
         self.current_chat_working_dir = expanded
         self.save_current_chat()
-
-    # --- Unix Domain Socket Server ---
 
     async def start_socket_server(self) -> None:
         if SOCKET_PATH.exists():
@@ -3418,20 +4413,8 @@ class ChatApp(App):
         self.notify(f"Inserted {tag}{loc} at cursor")
 
     def action_quit(self) -> None:
-        """Flushes chat position to disk synchronously before quitting."""
-        if self._save_position_timer:
-            self._save_position_timer.stop()
-            self._save_position_timer = None
-
         if self.current_chat_id:
-            try:
-                feed = self.query_one("#feed", FeedArea)
-                if feed._all_messages:
-                    self.current_chat_last_index = feed._get_current_visible_turn_index()
-            except Exception:
-                pass
             self.save_current_chat()
-
         self.exit()
 
     def on_unmount(self) -> None:
@@ -3440,25 +4423,17 @@ class ChatApp(App):
             self._c_c_timer.stop()
             self._c_c_timer = None
 
-        if self._save_position_timer:
-            self._save_position_timer.stop()
-            self._save_position_timer = None
+        if self._nav_indicator_timer:
+            self._nav_indicator_timer.stop()
+            self._nav_indicator_timer = None
 
         if self.current_chat_id:
-            try:
-                feed = self.query_one("#feed", FeedArea)
-                if feed._all_messages:
-                    self.current_chat_last_index = feed._get_current_visible_turn_index()
-            except Exception:
-                pass
             self.save_current_chat()
 
         if self._server:
             self._server.close()
         if SOCKET_PATH.exists():
             SOCKET_PATH.unlink(missing_ok=True)
-
-    # --- Storage & Persistence ---
 
     def _get_chat_file(self, chat_id: str) -> Path:
         return CHATS_DIR / f"{chat_id}.json"
@@ -3471,7 +4446,6 @@ class ChatApp(App):
         )
 
     def refresh_history_list(self) -> None:
-        """Renders chats with sub-chat indentation and automatically un-subs orphans."""
         history_widget = self.query_one("#history", HistoryList)
         history_widget.clear_options()
 
@@ -3529,20 +4503,14 @@ class ChatApp(App):
         self._stop_status_ticker()
         self.hide_status()
 
-        if self._save_position_timer:
-            self._save_position_timer.stop()
-            self._save_position_timer = None
-
         if self.current_chat_id and self.current_chat_id != chat_id:
-            feed = self.query_one("#feed", FeedArea)
-            if feed._all_messages:
-                self.current_chat_last_index = feed.active_turn_index
             self.save_current_chat()
 
         self.current_chat_id = chat_id
         self._save_active_chat_to_state(chat_id)
 
         path = self._get_chat_file(chat_id)
+        saved_marker: str = ""
         saved_turn_idx: int | None = None
         if path.exists():
             data = json.loads(path.read_text())
@@ -3557,25 +4525,36 @@ class ChatApp(App):
             self.current_chat_title = data.get("title", "")
             self.current_chat_working_dir = data.get("working_dir")
             self.current_chat_parent_id = data.get("parent_id")
+            saved_marker = data.get("center_marker", "")
             saved_turn_idx = data.get("last_turn_index")
-            if saved_turn_idx is not None and self.history:
+
+            if saved_marker:
+                self.current_chat_center_marker = saved_marker
+            elif saved_turn_idx is not None and self.history:
                 self.current_chat_last_index = max(0, min(len(self.history) - 1, saved_turn_idx))
+                self.current_chat_center_marker = self.history[self.current_chat_last_index].get("turn_id", "")
             else:
                 self.current_chat_last_index = max(0, len(self.history) - 1)
+                self.current_chat_center_marker = self.history[-1].get("turn_id", "") if self.history else ""
         else:
             self.history = []
             self.current_chat_title = ""
             self.current_chat_working_dir = None
             self.current_chat_parent_id = None
             self.current_chat_last_index = 0
+            self.current_chat_center_marker = ""
 
         feed = self.query_one("#feed", FeedArea)
         if feed.styles.display == "none":
             feed.styles.display = "block"
-        feed.set_messages(self.history, initial_target_index=self.current_chat_last_index)
+
+        marker_target = self.current_chat_center_marker or self.current_chat_last_index
+        feed.set_messages(self.history, initial_target_marker=marker_target)
+
         input_widget = self.query_one("#input", ExpandingInput)
         input_widget.reset_snippets()
         self.query_one("#snippet_preview", SnippetPreview).hide_preview()
+        self.update_feed_nav_banner()
 
     def save_current_chat(self) -> None:
         if not self.current_chat_id:
@@ -3595,6 +4574,12 @@ class ChatApp(App):
             if "turn_id" not in m or not m["turn_id"]:
                 m["turn_id"] = f"turn_{uuid4().hex[:8]}"
 
+        final_marker = self.current_chat_center_marker
+        if final_marker.endswith(":+0") or final_marker.endswith(":-0"):
+            final_marker = final_marker.split(":")[0] + ":0"
+        elif not CENTER_SCREEN_MODE and ":" in final_marker:
+            final_marker = final_marker.split(":")[0]
+
         data = {
             "id": self.current_chat_id,
             "title": self.current_chat_title,
@@ -3602,6 +4587,7 @@ class ChatApp(App):
             "updated_at": time.time(),
             "working_dir": self.current_chat_working_dir,
             "last_turn_index": self.current_chat_last_index,
+            "center_marker": final_marker,
             "messages": self.history,
         }
         path.write_text(json.dumps(data, indent=2))
@@ -3628,20 +4614,29 @@ class ChatApp(App):
             except Exception:
                 pass
 
+        current_idx = history_widget.highlighted
+
         files = self._get_sorted_files()
         if self.current_chat_id == target_id:
+            self.current_chat_id = ""
+            self.history = []
+
+            feed = self.query_one("#feed", FeedArea)
             if files:
                 await self.load_chat(files[0].stem)
             else:
                 self._start_new_chat(title="")
-                return
 
-        current_idx = history_widget.highlighted
+            feed.styles.display = "none"
+            history_widget.styles.display = "block"
+            history_widget.focus()
+
         self.refresh_history_list()
         if history_widget.option_count > 0:
             history_widget.highlighted = min(
                 current_idx, history_widget.option_count - 1
             )
+        self.notify("Chat deleted.")
 
     def rename_highlighted_chat(self) -> None:
         history_widget = self.query_one("#history", HistoryList)
@@ -3672,8 +4667,6 @@ class ChatApp(App):
             callback=on_rename,
         )
 
-    # --- Actions & Snippet Controls ---
-
     def action_rename_chat(self) -> None:
         def on_renamed(new_title: str | None) -> None:
             if new_title is not None and new_title.strip():
@@ -3690,47 +4683,44 @@ class ChatApp(App):
         )
 
     def action_fork_chat(self) -> None:
-        """Handles initiation and finalization of chat forking integrated inside Feed Nav."""
         feed = self.query_one("#feed", FeedArea)
 
-        if feed.fork_mode:
-            selected_indices = feed.get_selected_fork_indices()
-            if not selected_indices:
-                self.notify("Please select at least one response to fork.", severity="warning")
-                return
-
-            def on_fork_named(fork_title: str | None) -> None:
-                if not fork_title:
-                    self.notify("Fork cancelled.")
-                    feed.exit_fork_mode()
-                    self.update_feed_nav_banner()
-                    return
-                self._execute_chat_fork(selected_indices, fork_title)
-
-            self.push_screen(
-                ForkModal(default_title=self.current_chat_title),
-                callback=on_fork_named,
-            )
+        if not feed.fork_ui_active:
+            feed.toggle_fork_ui()
+            self.update_feed_nav_banner()
+            self.notify("Fork selection active: Space toggles, 'a' selects all, Enter confirms, Esc / C-c .: Cancel.", timeout=3.5)
             return
 
-        if not self.history:
-            self.notify("No conversation history to fork.", severity="warning")
-            return
-
-        # Ensure Feed Nav mode is active when entering Fork Mode
-        self.feed_nav_mode = True
-        feed.enter_fork_mode(self.history)
+        feed.toggle_fork_ui()
         self.update_feed_nav_banner()
-        self.notify("Fork mode active: Space toggles, Enter forks, '.' exits to Feed Nav, Esc cancels.", timeout=4.0)
+        self.notify("Exited fork mode")
+
+    def action_confirm_fork(self) -> None:
+        feed = self.query_one("#feed", FeedArea)
+        if not feed.fork_ui_active:
+            return
+
+        selected_indices = feed.get_selected_fork_indices()
+        if not selected_indices:
+            self.notify("Please select at least one response to fork.", severity="warning")
+            return
+
+        def on_fork_named(fork_title: str | None) -> None:
+            if not fork_title:
+                self.notify("Fork cancelled.")
+                feed.toggle_fork_ui()
+                self.update_feed_nav_banner()
+                return
+            self._execute_chat_fork(selected_indices, fork_title)
+
+        self.push_screen(
+            ForkModal(default_title=self.current_chat_title),
+            callback=on_fork_named,
+        )
 
     def _execute_chat_fork(self, selected_indices: list[int], fork_title: str) -> None:
-        """Constructs and switches to the new forked chat without triggering Gemini API call."""
         feed = self.query_one("#feed", FeedArea)
-        feed.fork_mode = False
-        feed._fork_selected_indices.clear()
-
-        # Seamless exit of Feed Nav mode upon successful fork creation
-        self.feed_nav_mode = False
+        feed.toggle_fork_ui()
         self.update_feed_nav_banner()
 
         selected_turns = [copy.deepcopy(self.history[i]) for i in selected_indices]
@@ -3763,6 +4753,7 @@ class ChatApp(App):
         self.current_chat_parent_id = parent_chat_id
         self.current_chat_working_dir = parent_working_dir
         self.current_chat_last_index = 0
+        self.current_chat_center_marker = selected_turns[0].get("turn_id", "")
         self.history = selected_turns
 
         self.save_current_chat()
@@ -3770,11 +4761,13 @@ class ChatApp(App):
 
     def _render_forked_chat(self, turns: list[dict]) -> None:
         feed = self.query_one("#feed", FeedArea)
-        feed.set_messages(turns, initial_target_index=0)
+        first_marker = turns[0].get("turn_id", 0) if turns else 0
+        feed.set_messages(turns, initial_target_marker=first_marker)
         input_widget = self.query_one("#input", ExpandingInput)
         input_widget.reset_snippets()
         self.query_one("#snippet_preview", SnippetPreview).hide_preview()
         input_widget.focus()
+        self.update_feed_nav_banner()
         self.refresh_history_list()
         self.notify(f"Fork created: '{self.current_chat_title}' (Awaiting response)", timeout=4.0)
 
@@ -3784,11 +4777,7 @@ class ChatApp(App):
         input_widget = self.query_one("#input", ExpandingInput)
 
         if history_widget.styles.display == "none":
-            if self._save_position_timer:
-                self._save_position_timer.stop()
-                self._save_position_timer = None
-            if self.current_chat_id and feed._all_messages:
-                self.current_chat_last_index = feed._get_current_visible_turn_index()
+            if self.current_chat_id and feed._all_messages and feed.styles.display != "none":
                 self.save_current_chat()
 
             self.refresh_history_list()
@@ -3800,10 +4789,38 @@ class ChatApp(App):
             history_widget.styles.display = "none"
             feed.styles.display = "block"
             feed.refresh(layout=True)
-            saved_idx = self.current_chat_last_index
-            target_w = feed._get_target_widget(saved_idx)
-            if target_w:
-                feed.call_after_refresh(lambda: feed.scroll_to_widget(target_w, top=True, animate=False))
+
+            marker = self.current_chat_center_marker
+            target_w = None
+            line_offset = None
+
+            if marker == "end":
+                feed.call_after_refresh(lambda: feed.scroll_end(animate=False))
+            else:
+                if ":" in marker:
+                    tid, offset_str = marker.split(":", 1)
+                    if CENTER_SCREEN_MODE:
+                        try:
+                            line_offset = int(offset_str)
+                        except Exception:
+                            line_offset = None
+                    else:
+                        line_offset = None
+                    target_w = feed._get_target_widget_by_id(tid)
+                elif marker:
+                    target_w = feed._get_target_widget_by_id(marker)
+
+                if not target_w:
+                    target_w = feed._get_target_widget(self.current_chat_last_index)
+
+                if target_w:
+                    feed.call_after_refresh(
+                        lambda: feed._scroll_to_turn_widget(
+                            target_w,
+                            center=CENTER_SCREEN_MODE and (line_offset is not None),
+                            line_offset=line_offset,
+                        )
+                    )
             input_widget.focus()
 
     def action_new_chat(self) -> None:
@@ -3821,14 +4838,7 @@ class ChatApp(App):
         self._stop_status_ticker()
         self.hide_status()
 
-        if self._save_position_timer:
-            self._save_position_timer.stop()
-            self._save_position_timer = None
-
         if self.current_chat_id:
-            feed = self.query_one("#feed", FeedArea)
-            if feed._all_messages:
-                self.current_chat_last_index = feed.active_turn_index
             self.save_current_chat()
 
         self.query_one("#history").styles.display = "none"
@@ -3839,6 +4849,7 @@ class ChatApp(App):
         self.current_chat_parent_id = None
         self.current_chat_working_dir = None
         self.current_chat_last_index = 0
+        self.current_chat_center_marker = ""
         self.history = []
 
         feed = self.query_one("#feed", FeedArea)
@@ -3847,10 +4858,10 @@ class ChatApp(App):
         input_widget.reset_snippets()
         self.query_one("#snippet_preview", SnippetPreview).hide_preview()
         input_widget.focus()
+        self.update_feed_nav_banner()
         self._save_active_chat_to_state(self.current_chat_id)
 
     def action_save_snippet_to_disk(self) -> None:
-        """Write active feed snippet directly to a file on disk with overwrite protection (C-c r)."""
         feed = self.query_one("#feed", FeedArea)
         content = feed.get_active_snippet()
 
@@ -3902,7 +4913,6 @@ class ChatApp(App):
         )
 
     def action_insert_file_from_disk(self) -> None:
-        """Prompt user to select a file from disk and insert it as a snippet."""
         initial_dir = self.get_effective_working_dir()
 
         def on_file_result(result: dict | None) -> None:
@@ -3962,7 +4972,6 @@ class ChatApp(App):
         )
 
     def action_open_git_tree(self) -> None:
-        """Scans and presents Git repository tree with selectable files."""
         initial_dir = self.get_effective_working_dir()
 
         def on_git_tree_result(result: dict | None) -> None:
@@ -4065,7 +5074,6 @@ class ChatApp(App):
         return []
 
     def _send_to_emacs_buffer(self, code_text: str, target_buf: str | None = None) -> bool:
-        """Safely inserts code_text into Emacs using a temporary file and insert-file-contents."""
         temp_path = None
         try:
             with tempfile.NamedTemporaryFile(suffix=".txt", mode="w", delete=False, encoding="utf-8") as tmp:
@@ -4097,7 +5105,6 @@ class ChatApp(App):
                     pass
 
     def action_send_to_emacs(self) -> None:
-        """Sends active snippet to Emacs window (C-c e). Requires selected snippet."""
         feed = self.query_one("#feed", FeedArea)
         text_to_send = feed.get_active_snippet()
         if not text_to_send:
@@ -4125,7 +5132,6 @@ class ChatApp(App):
         self.push_screen(FrameSelectModal(frames), callback=on_window_chosen)
 
     def action_copy_active_snippet(self) -> None:
-        """Copies active snippet strictly to clipboard (C-c w). Requires selected snippet."""
         feed = self.query_one("#feed", FeedArea)
         text_to_send = feed.get_active_snippet()
         if not text_to_send:
@@ -4136,7 +5142,6 @@ class ChatApp(App):
         self.notify("Copied to system clipboard")
 
     def action_yank_to_input(self) -> None:
-        """Yanks/pastes current system clipboard into prompt input (C-c y)."""
         try:
             paste_text = pyperclip.paste()
             if not paste_text:
@@ -4168,18 +5173,23 @@ class ChatApp(App):
 
     async def on_expanding_input_submitted(self, event: ExpandingInput.Submitted) -> None:
         user_msg = event.value
-        await self.append_to_feed("You", user_msg, jump_to_start=False)
+
+        if user_msg and user_msg[0] == "!" and user_msg.startswith("!/"):
+            self.execute_command(user_msg)
+            return
+
+        await self.append_to_feed(CURRENT_USER, user_msg, jump_to_start=False)
 
         new_turn_id = f"turn_{uuid4().hex[:8]}"
         self.history.append({"turn_id": new_turn_id, "role": "user", "text": user_msg})
         self.current_chat_last_index = max(0, len(self.history) - 1)
+        self.current_chat_center_marker = new_turn_id
         self.save_current_chat()
 
         self.ask_gemini()
 
     @work(exclusive=True, thread=True)
     def ask_gemini(self) -> None:
-        """Call Gemini generate_content in background thread and render response on arrival."""
         chat_id_snapshot = self.current_chat_id
 
         payload = []
@@ -4192,8 +5202,11 @@ class ChatApp(App):
         if payload and payload[0]["role"] != "user":
             payload.insert(0, {"role": "user", "parts": [{"text": FORK_HEADER_TEXT}]})
 
-        self.app.call_from_thread(self._start_status_ticker)
-        self.app.call_from_thread(self.post_message, RequestPhaseUpdate("connecting"))
+        def _begin_request():
+            self._request_phase = "connecting"
+            self._start_status_ticker()
+
+        self.app.call_from_thread(_begin_request)
 
         start_time = time.monotonic()
 

@@ -1,6 +1,8 @@
 # Gemini
 
-PLEASE NOTE: THIS IS OUT OF DATE! I WILL UPDATE LATER ;-)
+![gemini-integrated screenshot 1](./screenshots/screen1.svg)
+![gemini-integrated screenshot 2](./screenshots/screen2.svg)
+![gemini-integrated screenshot 3](./screenshots/screen3.svg)
 
 A terminal-based AI chat application built with **Textual** and the **Google GenAI SDK** (`gemini-3.8-flash`), featuring interactive chat branching (forking), code snippet insertion and extraction, Git tree exploration, and tight Emacs integration.
 

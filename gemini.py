@@ -2085,7 +2085,6 @@ class EmacsBaseTextArea(TextArea):
     def undo(self) -> None:
         """Safe wrapper around Textual's undo to prevent out-of-bounds index crashes on huge edits."""
         try:
-            # If the next undo operation will wipe/collapse text, safe-guard the cursor first
             if hasattr(self, "history") and self.history._undo_stack:
                 next_batch = self.history._undo_stack[-1]
                 if next_batch:
@@ -2094,7 +2093,6 @@ class EmacsBaseTextArea(TextArea):
 
             super().undo()
         except Exception:
-            # Fallback resilience: clamp cursor safely to document limits and re-sync
             try:
                 max_lines = max(1, self.document.line_count)
                 safe_row = max(0, min(self.cursor_location[0], max_lines - 1))
@@ -2688,7 +2686,7 @@ class ExpandingInput(EmacsBaseTextArea):
                         if start_l == end_l:
                             line_part = f" (Line {start_l})"
                         else:
-                            line_part = f" (Lines {start_l}-{end_line})"
+                            line_part = f" (Lines {start_l}-{end_l})"
                     file_part = f" - `{file}`{line_part}"
 
                 lang_part = f" - `{lang}`" if lang else ""

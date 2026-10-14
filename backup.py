@@ -308,7 +308,7 @@ def generate_theme_css_rules() -> str:
             border: double {acc};
             text-style: none;
         }}
-        .tree_pane Tree {{
+        .theme-{name} .tree_pane Tree {{
             border: solid {acc};
             scrollbar-color: {acc} #181818;
             scrollbar-color-hover: {acc_bright} #252525;
@@ -327,6 +327,20 @@ def generate_theme_css_rules() -> str:
         .theme-{name} #git_buttons Button:focus {{
             border: double {acc};
             text-style: none;
+        }}
+
+        /* Radio Buttons themed color */
+        .theme-{name} RadioButton.-selected > .toggle--button {{
+            color: {acc};
+            background: {acc};
+        }}
+        .theme-{name} RadioButton > .toggle--button {{
+            color: #555555;
+            background: #222222;
+            border: none;
+        }}
+        .theme-{name} RadioButton:focus > .toggle--label {{
+            color: {acc_bright};
         }}
 
         .theme-{name} #dialog {{
@@ -2068,6 +2082,30 @@ class EmacsBaseTextArea(TextArea):
         self.soft_wrap = True
         self._mark_point: tuple[int, int] | None = None
 
+    def undo(self) -> None:
+        """Safe wrapper around Textual's undo to prevent out-of-bounds index crashes on huge edits."""
+        try:
+            # If the next undo operation will wipe/collapse text, safe-guard the cursor first
+            if hasattr(self, "history") and self.history._undo_stack:
+                next_batch = self.history._undo_stack[-1]
+                if next_batch:
+                    target_loc = next_batch[0].from_location
+                    self.move_cursor(target_loc, select=False)
+
+            super().undo()
+        except Exception:
+            # Fallback resilience: clamp cursor safely to document limits and re-sync
+            try:
+                max_lines = max(1, self.document.line_count)
+                safe_row = max(0, min(self.cursor_location[0], max_lines - 1))
+                line_len = len(self.document.get_line(safe_row)) if safe_row < max_lines else 0
+                safe_col = max(0, min(self.cursor_location[1], line_len))
+                self.move_cursor((safe_row, safe_col), select=False)
+                if hasattr(self, "_rewrap_and_refresh_virtual_size"):
+                    self._rewrap_and_refresh_virtual_size()
+            except Exception:
+                pass
+
     def _sync_selection(self) -> None:
         if self._mark_point is not None:
             self.selection = Selection(self._mark_point, self.cursor_location)
@@ -2624,7 +2662,7 @@ class ExpandingInput(EmacsBaseTextArea):
             return
 
         if raw_text[0] == "!" and raw_text.startswith("!/"):
-            self.execute_command(raw_text)
+            self.app.execute_command(raw_text)
             self.clear()
             self.reset_snippets()
             self._clear_mark()

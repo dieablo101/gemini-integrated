@@ -4,6 +4,7 @@ import asyncio
 import copy
 from datetime import datetime
 import getpass
+import json
 import os
 from pathlib import Path
 import re
@@ -12,32 +13,6 @@ import tempfile
 import time
 from typing import Callable, TypeVar
 from uuid import uuid4
-
-try:
-    import orjson
-
-    def json_loads(data: str | bytes):
-        return orjson.loads(data)
-
-    def json_dumps(data: any, indent: bool = False) -> str:
-        opts = orjson.OPT_INDENT_2 if indent else 0
-        return orjson.dumps(data, option=opts).decode("utf-8")
-
-    def json_dumps_bytes(data: any, indent: bool = False) -> bytes:
-        opts = orjson.OPT_INDENT_2 if indent else 0
-        return orjson.dumps(data, option=opts)
-
-except ImportError:
-    import json
-
-    def json_loads(data: str | bytes):
-        return json.loads(data)
-
-    def json_dumps(data: any, indent: bool = False) -> str:
-        return json.dumps(data, indent=2 if indent else None)
-
-    def json_dumps_bytes(data: any, indent: bool = False) -> bytes:
-        return json.dumps(data, indent=2 if indent else None).encode("utf-8")
 
 import pyperclip
 from google import genai
@@ -3906,7 +3881,7 @@ class ChatApp(App):
     def _read_theme_from_state(self) -> str:
         if STATE_FILE.exists():
             try:
-                data = json_loads(STATE_FILE.read_bytes())
+                data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
                 stored = data.get("ui_theme")
                 if stored in THEMES:
                     return stored
@@ -3919,11 +3894,11 @@ class ChatApp(App):
             state: dict = {}
             if STATE_FILE.exists():
                 try:
-                    state = json_loads(STATE_FILE.read_bytes())
+                    state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
                 except Exception:
                     state = {}
             state["ui_theme"] = palette_name
-            STATE_FILE.write_bytes(json_dumps_bytes(state, indent=True))
+            STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
             STATE_FILE.chmod(0o600)
         except Exception:
             pass
@@ -4347,7 +4322,7 @@ class ChatApp(App):
     def _read_active_chat_from_state(self) -> str | None:
         if STATE_FILE.exists():
             try:
-                data = json_loads(STATE_FILE.read_bytes())
+                data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
                 return data.get("active_chat")
             except Exception:
                 pass
@@ -4358,11 +4333,11 @@ class ChatApp(App):
             state: dict = {}
             if STATE_FILE.exists():
                 try:
-                    state = json_loads(STATE_FILE.read_bytes())
+                    state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
                 except Exception:
                     state = {}
             state["active_chat"] = chat_id
-            STATE_FILE.write_bytes(json_dumps_bytes(state, indent=True))
+            STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
             STATE_FILE.chmod(0o600)
         except Exception:
             pass
@@ -4396,7 +4371,7 @@ class ChatApp(App):
         data = await reader.read()
         if data:
             try:
-                payload = json_loads(data)
+                payload = json.loads(data.decode("utf-8"))
                 if payload.get("action") == "insert":
                     self.post_message(RemoteInsert(
                         text=payload.get("text", ""),
@@ -4478,7 +4453,7 @@ class ChatApp(App):
         chats_by_id: dict[str, dict] = {}
         for f in files:
             try:
-                data = json_loads(f.read_bytes())
+                data = json.loads(f.read_text())
                 cid = data.get("id", f.stem)
                 chats_by_id[cid] = data
             except Exception:
@@ -4490,7 +4465,7 @@ class ChatApp(App):
                 data["parent_id"] = None
                 target_file = self._get_chat_file(cid)
                 if target_file.exists():
-                    target_file.write_bytes(json_dumps_bytes(data, indent=True))
+                    target_file.write_text(json.dumps(data, indent=2))
 
         children_map: dict[str, list[dict]] = {}
         roots: list[dict] = []
@@ -4538,7 +4513,7 @@ class ChatApp(App):
         saved_marker: str = ""
         saved_turn_idx: int | None = None
         if path.exists():
-            data = json_loads(path.read_bytes())
+            data = json.loads(path.read_text())
             raw_messages = data.get("messages", [])
             self.history = []
             for m in raw_messages:
@@ -4615,7 +4590,7 @@ class ChatApp(App):
             "center_marker": final_marker,
             "messages": self.history,
         }
-        path.write_bytes(json_dumps_bytes(data, indent=True))
+        path.write_text(json.dumps(data, indent=2))
         self._save_active_chat_to_state(self.current_chat_id)
 
     async def delete_highlighted_chat(self) -> None:
@@ -4632,10 +4607,10 @@ class ChatApp(App):
 
         for f in self._get_sorted_files():
             try:
-                data = json_loads(f.read_bytes())
+                data = json.loads(f.read_text())
                 if data.get("parent_id") == target_id:
                     data["parent_id"] = None
-                    f.write_bytes(json_dumps_bytes(data, indent=True))
+                    f.write_text(json.dumps(data, indent=2))
             except Exception:
                 pass
 
@@ -4674,14 +4649,14 @@ class ChatApp(App):
         if not target_file.exists():
             return
 
-        data = json_loads(target_file.read_bytes())
+        data = json.loads(target_file.read_text())
         current_title = data.get("title", "")
 
         def on_rename(new_title: str | None) -> None:
             if new_title is not None and new_title.strip():
                 data["title"] = new_title.strip()
                 data["updated_at"] = time.time()
-                target_file.write_bytes(json_dumps_bytes(data, indent=True))
+                target_file.write_text(json.dumps(data, indent=2))
                 if target_id == self.current_chat_id:
                     self.current_chat_title = new_title.strip()
                 self.refresh_history_list()
@@ -5089,9 +5064,9 @@ class ChatApp(App):
             )
             if res.returncode == 0:
                 raw_json = res.stdout.strip()
-                parsed = json_loads(raw_json)
+                parsed = json.loads(raw_json)
                 while isinstance(parsed, str):
-                    parsed = json_loads(parsed)
+                    parsed = json.loads(parsed)
                 if isinstance(parsed, list):
                     return parsed
         except Exception:
@@ -5106,9 +5081,9 @@ class ChatApp(App):
                 tmp.flush()
                 temp_path = tmp.name
 
-            escaped_tmp = json_dumps(temp_path)
+            escaped_tmp = json.dumps(temp_path)
             if target_buf:
-                escaped_buf = json_dumps(target_buf)
+                escaped_buf = json.dumps(target_buf)
                 elisp = f'(gemini-insert-file-into-window {escaped_buf} {escaped_tmp})'
             else:
                 elisp = f'(with-current-buffer (window-buffer (selected-window)) (insert-file-contents {escaped_tmp}))'

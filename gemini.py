@@ -51,10 +51,8 @@ try:
 except Exception:
     _MD_PARSER = None
 
-# Current system username
 CURRENT_USER: str = getpass.getuser()
 
-# User-specific directory and socket paths
 GEMINI_HOME = Path.home() / ".gemini"
 GEMINI_HOME.mkdir(mode=0o700, parents=True, exist_ok=True)
 
@@ -71,9 +69,6 @@ FORK_HEADER_TEXT = "## This chat is a fork of another / previous chat"
 
 SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
-# ---------------------------------------------------------------------------
-# Global Engine Toggles, Runway Constants & Theming Palettes
-# ---------------------------------------------------------------------------
 CENTER_SCREEN_MODE: bool = True
 
 RUNWAY_ABOVE_BUDGET: int = 4
@@ -161,8 +156,8 @@ def generate_theme_css_rules() -> str:
             border: solid {acc};
         }}
         .theme-{name} #feed_loader_banner {{
-            color: {acc};
-            border-bottom: solid {acc};
+            color: #ffffff;
+            background: {banner};
         }}
         .theme-{name} #feed {{
             border: solid {acc};
@@ -315,7 +310,7 @@ def generate_theme_css_rules() -> str:
             border: double {acc};
             text-style: none;
         }}
-        .theme-{name} .tree_pane Tree {{
+        .tree_pane Tree {{
             border: solid {acc};
             scrollbar-color: {acc} #181818;
             scrollbar-color-hover: {acc_bright} #252525;
@@ -385,7 +380,6 @@ def generate_theme_css_rules() -> str:
         """)
     return "\n".join(blocks)
 
-# Keys selectively gated and consumed at the App Root during lockout
 GATED_NAV_KEYS = {
     "home",
     "end",
@@ -400,10 +394,6 @@ GATED_NAV_KEYS = {
     "alt+p",
     "meta+p",
 }
-
-# ---------------------------------------------------------------------------
-# Pure 1D Outward Raycast Math Function
-# ---------------------------------------------------------------------------
 
 def cast_ray_from_center(
     center_y: int,
@@ -420,17 +410,11 @@ def cast_ray_from_center(
     lowest_header_y = sorted_headers[0]
     highest_header_y = sorted_headers[-1]
 
-    if center_y < lowest_header_y:
-        if win_start > 0:
-            target_idx = win_start - 1
-            return target_idx, f"turn_{target_idx}", int(center_y - lowest_header_y)
+    if center_y <= lowest_header_y:
         t_idx, t_id = header_map[lowest_header_y]
         return t_idx, t_id, int(center_y - lowest_header_y)
 
-    if center_y > (highest_header_y + 40):
-        if win_end < total_messages:
-            target_idx = win_end
-            return target_idx, f"turn_{target_idx}", int(center_y - highest_header_y)
+    if center_y >= highest_header_y:
         t_idx, t_id = header_map[highest_header_y]
         return t_idx, t_id, int(center_y - highest_header_y)
 
@@ -452,9 +436,6 @@ def cast_ray_from_center(
     t_idx, t_id = header_map[closest_line]
     return t_idx, t_id, int(center_y - closest_line)
 
-# ---------------------------------------------------------------------------
-# Dynamic MarkdownFence Hook
-# ---------------------------------------------------------------------------
 _orig_markdown_fence_render = MarkdownFence.render
 
 def _enhanced_markdown_fence_render(self: MarkdownFence) -> RenderableType:
@@ -490,10 +471,6 @@ def _enhanced_markdown_fence_render(self: MarkdownFence) -> RenderableType:
     return renderable
 
 MarkdownFence.render = _enhanced_markdown_fence_render
-
-# ---------------------------------------------------------------------------
-# Reusable Core File & Git Services
-# ---------------------------------------------------------------------------
 
 EXTENSION_LANG_MAP: dict[str, str] = {
     ".py": "python", ".pyw": "python", ".js": "javascript", ".mjs": "javascript",
@@ -587,10 +564,6 @@ def build_ascii_tree(files: list[str], root_name: str = ".", ignored_set: set[st
     _render(nested, Path())
     return "\n".join(lines)
 
-# ---------------------------------------------------------------------------
-# Event & Message System
-# ---------------------------------------------------------------------------
-
 class RemoteInsert(Message):
     def __init__(
         self,
@@ -634,10 +607,6 @@ class AppLockReleased(Message):
         super().__init__()
         self.reason = reason
 
-# ---------------------------------------------------------------------------
-# Expandable App-Wide Root Lock Controller
-# ---------------------------------------------------------------------------
-
 class AppLockController:
     def __init__(self, app: App) -> None:
         self.app = app
@@ -661,10 +630,6 @@ class AppLockController:
             self._active_reasons.remove(reason)
             if not self.is_locked:
                 self.app.post_message(AppLockReleased(reason))
-
-# ---------------------------------------------------------------------------
-# Modals & Dialog Widgets
-# ---------------------------------------------------------------------------
 
 ModalResultType = TypeVar("ModalResultType")
 
@@ -2661,7 +2626,7 @@ class ExpandingInput(EmacsBaseTextArea):
             return
 
         if raw_text[0] == "!" and raw_text.startswith("!/"):
-            self.app.execute_command(raw_text)
+            self.execute_command(raw_text)
             self.clear()
             self.reset_snippets()
             self._clear_mark()
@@ -2687,7 +2652,7 @@ class ExpandingInput(EmacsBaseTextArea):
                         if start_l == end_l:
                             line_part = f" (Line {start_l})"
                         else:
-                            line_part = f" (Lines {start_l}-{end_l})"
+                            line_part = f" (Lines {start_l}-{end_line})"
                     file_part = f" - `{file}`{line_part}"
 
                 lang_part = f" - `{lang}`" if lang else ""
@@ -2727,6 +2692,7 @@ class FeedArea(VerticalScroll):
         self._win_end: int = 0
 
         self._header_map: dict[int, tuple[int, str]] = {}
+        self._last_wall_step_time: float = 0.0
 
     def compose(self) -> ComposeResult:
         yield Vertical(id="turns_container")
@@ -2801,36 +2767,16 @@ class FeedArea(VerticalScroll):
 
         if self.active_turn_index != prev_target and not self.is_locked():
             self.highlight_card(self.active_turn_index, scroll=False)
-            self.request_runway_sync(self.active_turn_index, prev_idx=prev_target, discrete_dock=False)
 
-    def will_require_load(self, target_idx: int) -> bool:
-        cards_above = min(target_idx, RUNWAY_ABOVE_BUDGET)
-        cards_below = min(len(self._all_messages) - 1 - target_idx, RUNWAY_BELOW_BUDGET)
-        rem = DEFAULT_WINDOW_CAPACITY - (1 + cards_above + cards_below)
-        if target_idx - cards_above == 0:
-            cards_below = min(len(self._all_messages) - 1 - target_idx, cards_below + rem)
-        elif target_idx + cards_below == len(self._all_messages) - 1:
-            cards_above = min(target_idx, cards_above + rem)
+    def request_wall_shift(self, anchor_turn_idx: int, discrete_dock: bool = False) -> None:
+        now = time.monotonic()
+        if now - self._last_wall_step_time < 0.15 or self.is_locked():
+            return
+        self._last_wall_step_time = now
 
-        ideal_start = max(0, target_idx - cards_above)
-        ideal_end = min(len(self._all_messages), target_idx + cards_below + 1)
-        return not (self._win_start == ideal_start and self._win_end == ideal_end)
-
-    def request_runway_sync(
-        self,
-        target_idx: int,
-        prev_idx: int | None = None,
-        discrete_dock: bool = False,
-    ) -> None:
-        if self.will_require_load(target_idx):
-            self.app.lock.acquire("dom_load")
-            self.app.show_loader_banner()
-
-        self._sync_runway_to_target(
-            target_idx,
-            prev_idx=prev_idx,
-            discrete_dock=discrete_dock,
-        )
+        self.app.lock.acquire("dom_load")
+        self.app.show_loader_banner()
+        self._sync_runway_to_target(anchor_turn_idx, discrete_dock=discrete_dock)
 
     @work(exclusive=True)
     async def _sync_runway_to_target(
@@ -2859,15 +2805,7 @@ class FeedArea(VerticalScroll):
             ideal_start = max(0, target_idx - cards_above)
             ideal_end = min(total, target_idx + cards_below + 1)
 
-            container = self.query_one("#turns_container", Vertical)
-            mounted_cards = [c for c in container.children if isinstance(c, TurnCard)]
-            mounted_indices = {c.turn_index for c in mounted_cards}
-            desired_indices = set(range(ideal_start, ideal_end))
-
-            if mounted_indices == desired_indices:
-                self._win_start = ideal_start
-                self._win_end = ideal_end
-
+            if self._win_start == ideal_start and self._win_end == ideal_end:
                 if discrete_dock:
                     target_card = self._get_target_widget(target_idx)
                     if target_card:
@@ -2876,30 +2814,21 @@ class FeedArea(VerticalScroll):
 
             anchor_card = self._get_target_widget(self.active_turn_index)
             signed_delta = 0
+            view_h = self.container_size.height or 24
             if anchor_card and anchor_card.virtual_region:
-                view_h = self.container_size.height or 24
                 center_y = int(self.scroll_y) + (view_h // 2)
                 signed_delta = center_y - int(anchor_card.virtual_region.y)
 
-            cards_to_remove = [c for c in mounted_cards if c.turn_index not in desired_indices]
-            for c in cards_to_remove:
-                await c.remove()
+            container = self.query_one("#turns_container", Vertical)
+            await container.remove_children()
 
-            for idx in range(ideal_start, ideal_end):
-                if idx not in mounted_indices and (not mounted_cards or idx > mounted_cards[-1].turn_index):
-                    new_card = self._create_turn_widget(idx)
-                    if new_card:
-                        await container.mount(new_card)
-
-            for idx in range(ideal_start, ideal_end):
-                if idx not in mounted_indices and (mounted_cards and idx < mounted_cards[0].turn_index):
-                    new_card = self._create_turn_widget(idx)
-                    if new_card:
-                        first_child = container.children[0] if container.children else None
-                        if first_child:
-                            await container.mount(new_card, before=first_child)
-                        else:
-                            await container.mount(new_card)
+            # Mount all widgets in strict, ascending numerical order!
+            new_cards = [
+                card for idx in range(ideal_start, ideal_end)
+                if (card := self._create_turn_widget(idx)) is not None
+            ]
+            if new_cards:
+                await container.mount_all(new_cards)
 
             self._win_start = ideal_start
             self._win_end = ideal_end
@@ -2909,8 +2838,6 @@ class FeedArea(VerticalScroll):
             def _on_runway_settle() -> None:
                 try:
                     self._sync_header_map()
-                    view_h = self.container_size.height or 24
-
                     if discrete_dock:
                         target_card = self._get_target_widget(target_idx)
                         if target_card:
@@ -2918,12 +2845,13 @@ class FeedArea(VerticalScroll):
                             self._scroll_to_turn_widget(target_card, center=False)
                     else:
                         ref_card = self._get_target_widget(self.active_turn_index)
-                        if ref_card and getattr(ref_card, "virtual_region", None):
+                        if ref_card and ref_card.virtual_region:
                             new_header_y = int(ref_card.virtual_region.y)
                             new_center_y = new_header_y + signed_delta
                             target_scroll_y = max(0, new_center_y - (view_h // 2))
                             max_scroll = getattr(self, "max_scroll_y", max(0, self.virtual_size.height - view_h))
                             self.scroll_y = min(max_scroll, target_scroll_y)
+                        self.highlight_card(self.active_turn_index, scroll=False)
                 finally:
                     settle_event.set()
 
@@ -2935,9 +2863,7 @@ class FeedArea(VerticalScroll):
 
         finally:
             self.app.hide_loader_banner()
-            def _complete_unlock() -> None:
-                self.app.lock.release("dom_load")
-            self.call_after_refresh(_complete_unlock)
+            self.app.lock.release("dom_load")
 
     def _create_turn_widget(self, idx: int) -> TurnCard | None:
         if not (0 <= idx < len(self._all_messages)):
@@ -3018,6 +2944,12 @@ class FeedArea(VerticalScroll):
             event.stop()
             return
         self.app.trigger_nav_indicator("scroll_down")
+
+        max_scroll = getattr(self, "max_scroll_y", max(0, self.virtual_size.height - self.container_size.height))
+        if (self.active_turn_index >= (self._win_end - 1) or self.scroll_y >= max_scroll) and self._win_end < len(self._all_messages):
+            self.request_wall_shift(self.active_turn_index, discrete_dock=False)
+            return
+
         self.scroll_down(animate=False)
         self._execute_1d_raycast()
 
@@ -3026,6 +2958,11 @@ class FeedArea(VerticalScroll):
             event.stop()
             return
         self.app.trigger_nav_indicator("scroll_up")
+
+        if (self.active_turn_index <= self._win_start or self.scroll_y <= 0) and self._win_start > 0:
+            self.request_wall_shift(self.active_turn_index, discrete_dock=False)
+            return
+
         self.scroll_up(animate=False)
         self._execute_1d_raycast()
 
@@ -3038,6 +2975,7 @@ class FeedArea(VerticalScroll):
         target_marker: str | int | None = None,
     ) -> None:
         self.app.lock.acquire("dom_load")
+        self.app.show_loader_banner()
         container = self.query_one("#turns_container", Vertical)
         capacity, _ = self.get_tier_config()
 
@@ -3168,7 +3106,6 @@ class FeedArea(VerticalScroll):
                     self.scroll_home(animate=False)
                     return
 
-                self.app.show_loader_banner()
                 self._win_start = 0
                 self._win_end = min(capacity, total)
 
@@ -3203,7 +3140,6 @@ class FeedArea(VerticalScroll):
                     self.scroll_end(animate=False)
                     return
 
-                self.app.show_loader_banner()
                 self._win_start = max(0, total - capacity)
                 self._win_end = total
 
@@ -3238,9 +3174,7 @@ class FeedArea(VerticalScroll):
 
         finally:
             self.app.hide_loader_banner()
-            def _settle_release():
-                self.app.lock.release("dom_load")
-            self.call_after_refresh(_settle_release)
+            self.app.lock.release("dom_load")
 
     def step_card(self, delta: int) -> None:
         total = len(self._all_messages)
@@ -3251,18 +3185,17 @@ class FeedArea(VerticalScroll):
         if target_idx == self.active_turn_index:
             return
 
-        prev_idx = self.active_turn_index
         self.active_turn_index = target_idx
         if hasattr(self.app, "current_chat_last_index"):
             self.app.current_chat_last_index = target_idx
             self.app.current_chat_center_marker = self._all_messages[target_idx].get("turn_id", "")
 
         existing_card = self._get_target_widget(target_idx)
-        if isinstance(existing_card, TurnCard) and not self.will_require_load(target_idx):
+        if isinstance(existing_card, TurnCard):
             self.highlight_card(target_idx, scroll=False)
             self._scroll_to_turn_widget(existing_card, center=False)
         else:
-            self.request_runway_sync(target_idx, prev_idx=prev_idx, discrete_dock=True)
+            self.request_wall_shift(target_idx, discrete_dock=True)
 
     def viewport_page_navigate(self, direction: int) -> None:
         if self.is_locked():
@@ -3277,9 +3210,15 @@ class FeedArea(VerticalScroll):
         max_scroll = getattr(self, "max_scroll_y", max(0, self.virtual_size.height - self.container_size.height))
 
         if direction < 0:
+            if (self.active_turn_index <= self._win_start or self.scroll_y <= 0) and self._win_start > 0:
+                self.request_wall_shift(self.active_turn_index, discrete_dock=False)
+                return
             target_y = max(0, self.scroll_y - page_step)
             self.scroll_to(y=target_y, animate=False)
         else:
+            if (self.active_turn_index >= (self._win_end - 1) or self.scroll_y >= max_scroll) and self._win_end < len(self._all_messages):
+                self.request_wall_shift(self.active_turn_index, discrete_dock=False)
+                return
             target_y = min(max_scroll, self.scroll_y + page_step)
             self.scroll_to(y=target_y, animate=False)
 
@@ -3298,29 +3237,9 @@ class FeedArea(VerticalScroll):
         max_scroll = getattr(self, "max_scroll_y", max(0, self.virtual_size.height - self.container_size.height))
         total = len(self._all_messages)
 
-        center_target = self._get_center_raycast_target()
-        raycast_idx = center_target[0] if center_target else self.active_turn_index
-
         if direction > 0:
-            if self.scroll_y >= max_scroll:
-                if self.active_turn_index < total - 1:
-                    new_idx = self.active_turn_index + 1
-                    self.active_turn_index = new_idx
-                    turn_id = self._all_messages[new_idx].get("turn_id", f"turn_{new_idx}")
-                    if hasattr(self.app, "current_chat_last_index"):
-                        self.app.current_chat_last_index = new_idx
-                        self.app.current_chat_center_marker = turn_id
-                    self.highlight_card(new_idx, scroll=False)
-                return
-
-            if self.active_turn_index < raycast_idx:
-                new_idx = self.active_turn_index + 1
-                self.active_turn_index = new_idx
-                turn_id = self._all_messages[new_idx].get("turn_id", f"turn_{new_idx}")
-                if hasattr(self.app, "current_chat_last_index"):
-                    self.app.current_chat_last_index = new_idx
-                    self.app.current_chat_center_marker = turn_id
-                self.highlight_card(new_idx, scroll=False)
+            if (self.active_turn_index >= (self._win_end - 1) or self.scroll_y >= max_scroll) and self._win_end < total:
+                self.request_wall_shift(self.active_turn_index, discrete_dock=False)
                 return
 
             target_y = min(max_scroll, self.scroll_y + line_step)
@@ -3328,25 +3247,8 @@ class FeedArea(VerticalScroll):
             self._execute_1d_raycast(target_y)
 
         else:
-            if self.scroll_y <= 0:
-                if self.active_turn_index > 0:
-                    new_idx = self.active_turn_index - 1
-                    self.active_turn_index = new_idx
-                    turn_id = self._all_messages[new_idx].get("turn_id", f"turn_{new_idx}")
-                    if hasattr(self.app, "current_chat_last_index"):
-                        self.app.current_chat_last_index = new_idx
-                        self.app.current_chat_center_marker = turn_id
-                    self.highlight_card(new_idx, scroll=False)
-                return
-
-            if self.active_turn_index > raycast_idx:
-                new_idx = self.active_turn_index - 1
-                self.active_turn_index = new_idx
-                turn_id = self._all_messages[new_idx].get("turn_id", f"turn_{new_idx}")
-                if hasattr(self.app, "current_chat_last_index"):
-                    self.app.current_chat_last_index = new_idx
-                    self.app.current_chat_center_marker = turn_id
-                self.highlight_card(new_idx, scroll=False)
+            if (self.active_turn_index <= self._win_start or self.scroll_y <= 0) and self._win_start > 0:
+                self.request_wall_shift(self.active_turn_index, discrete_dock=False)
                 return
 
             target_y = max(0, self.scroll_y - line_step)
@@ -3602,10 +3504,10 @@ class ChatApp(App):
     #feed_loader_banner {{
         width: 100%;
         height: 1;
-        background: #141414;
-        color: red;
-        border-bottom: solid red;
+        background: #8b0000;
+        color: #ffffff;
         content-align: center middle;
+        text-align: center;
         text-style: bold;
         display: none;
     }}
@@ -3822,7 +3724,6 @@ class ChatApp(App):
         self._request_start_time: float = 0.0
         self._spinner_idx: int = 0
         self._status_timer: Timer | None = None
-        self._banner_shown_time: float = 0.0
 
         self._nav_indicator_action: str | None = None
         self._nav_indicator_timer: Timer | None = None
@@ -4226,18 +4127,14 @@ class ChatApp(App):
             banner = self.query_one("#feed_loader_banner", Static)
             banner.update("▲ Loading messages...")
             banner.styles.display = "block"
-            self._banner_shown_time = time.monotonic()
+            banner.refresh(layout=True)
         except Exception:
             pass
 
     def hide_loader_banner(self) -> None:
         try:
             banner = self.query_one("#feed_loader_banner", Static)
-            elapsed = time.monotonic() - self._banner_shown_time
-            if elapsed < 0.4:
-                self.set_timer(0.4 - elapsed, lambda: setattr(banner.styles, "display", "none"))
-            else:
-                banner.styles.display = "none"
+            banner.styles.display = "none"
         except Exception:
             pass
 
@@ -4262,7 +4159,7 @@ class ChatApp(App):
             self._status_timer.stop()
         self._request_start_time = time.monotonic()
         self._spinner_idx = 0
-        self._tick_status()  # Immediate render on frame 0
+        self._tick_status()
         self._status_timer = self.set_interval(0.1, self._tick_status)
 
     def _stop_status_ticker(self) -> None:

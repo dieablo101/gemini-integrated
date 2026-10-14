@@ -71,8 +71,6 @@ SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇",
 
 CENTER_SCREEN_MODE: bool = True
 
-RUNWAY_ABOVE_BUDGET: int = 4
-RUNWAY_BELOW_BUDGET: int = 5
 DEFAULT_WINDOW_CAPACITY: int = 10
 DEFAULT_MODEL: str = "gemini-3.8-flash"
 
@@ -2768,7 +2766,7 @@ class FeedArea(VerticalScroll):
         if self.active_turn_index != prev_target and not self.is_locked():
             self.highlight_card(self.active_turn_index, scroll=False)
 
-    def request_wall_shift(self, anchor_turn_idx: int, discrete_dock: bool = False) -> None:
+    def request_wall_shift(self, anchor_turn_idx: int, discrete_dock: bool = False, moving_up: bool = False) -> None:
         now = time.monotonic()
         if now - self._last_wall_step_time < 0.15 or self.is_locked():
             return
@@ -2776,7 +2774,7 @@ class FeedArea(VerticalScroll):
 
         self.app.lock.acquire("dom_load")
         self.app.show_loader_banner()
-        self._sync_runway_to_target(anchor_turn_idx, discrete_dock=discrete_dock)
+        self._sync_runway_to_target(anchor_turn_idx, discrete_dock=discrete_dock, moving_up=moving_up)
 
     @work(exclusive=True)
     async def _sync_runway_to_target(
@@ -2784,6 +2782,7 @@ class FeedArea(VerticalScroll):
         target_idx: int,
         prev_idx: int | None = None,
         discrete_dock: bool = False,
+        moving_up: bool = False,
     ) -> None:
         try:
             total = len(self._all_messages)
@@ -2794,8 +2793,16 @@ class FeedArea(VerticalScroll):
                         self._scroll_to_turn_widget(target_card, center=False)
                 return
 
-            cards_above = min(target_idx, RUNWAY_ABOVE_BUDGET)
-            cards_below = min(total - 1 - target_idx, RUNWAY_BELOW_BUDGET)
+            # Keep exactly 10 cards mounted, biased slightly toward travel direction
+            if moving_up:
+                preferred_above = 5
+                preferred_below = 4
+            else:
+                preferred_above = 4
+                preferred_below = 5
+
+            cards_above = min(target_idx, preferred_above)
+            cards_below = min(total - 1 - target_idx, preferred_below)
             rem = DEFAULT_WINDOW_CAPACITY - (1 + cards_above + cards_below)
             if target_idx - cards_above == 0:
                 cards_below = min(total - 1 - target_idx, cards_below + rem)
@@ -2947,7 +2954,7 @@ class FeedArea(VerticalScroll):
 
         max_scroll = getattr(self, "max_scroll_y", max(0, self.virtual_size.height - self.container_size.height))
         if (self.active_turn_index >= (self._win_end - 1) or self.scroll_y >= max_scroll) and self._win_end < len(self._all_messages):
-            self.request_wall_shift(self.active_turn_index, discrete_dock=False)
+            self.request_wall_shift(self.active_turn_index, discrete_dock=False, moving_up=False)
             return
 
         self.scroll_down(animate=False)
@@ -2960,7 +2967,7 @@ class FeedArea(VerticalScroll):
         self.app.trigger_nav_indicator("scroll_up")
 
         if (self.active_turn_index <= self._win_start or self.scroll_y <= 0) and self._win_start > 0:
-            self.request_wall_shift(self.active_turn_index, discrete_dock=False)
+            self.request_wall_shift(self.active_turn_index, discrete_dock=False, moving_up=True)
             return
 
         self.scroll_up(animate=False)
@@ -3056,8 +3063,8 @@ class FeedArea(VerticalScroll):
                 else:
                     req_idx = max(0, total - 1)
 
-                cards_above = min(req_idx, RUNWAY_ABOVE_BUDGET)
-                cards_below = min(total - 1 - req_idx, RUNWAY_BELOW_BUDGET)
+                cards_above = min(req_idx, 4)
+                cards_below = min(total - 1 - req_idx, 5)
                 rem = capacity - (1 + cards_above + cards_below)
                 if req_idx - cards_above == 0:
                     cards_below = min(total - 1 - req_idx, cards_below + rem)
@@ -3185,17 +3192,33 @@ class FeedArea(VerticalScroll):
         if target_idx == self.active_turn_index:
             return
 
-        self.active_turn_index = target_idx
-        if hasattr(self.app, "current_chat_last_index"):
-            self.app.current_chat_last_index = target_idx
-            self.app.current_chat_center_marker = self._all_messages[target_idx].get("turn_id", "")
+        # Check if we hit the edge of the mounted runway and can load more cards
+        if delta > 0 and target_idx >= self._win_end and self._win_end < total:
+            self.request_wall_shift(target_idx, discrete_dock=True, moving_up=False)
+            return
+        elif delta < 0 and target_idx < self._win_start and self._win_start > 0:
+            self.request_wall_shift(target_idx, discrete_dock=True, moving_up=True)
+            return
 
         existing_card = self._get_target_widget(target_idx)
+        max_scroll = getattr(self, "max_scroll_y", max(0, self.virtual_size.height - self.container_size.height))
+
+        # At the ceiling/floor, move selection onto edge cards without shifting viewport
+        if (delta > 0 and self.scroll_y >= max_scroll) or (delta < 0 and self.scroll_y <= 0):
+            self.active_turn_index = target_idx
+            if hasattr(self.app, "current_chat_last_index"):
+                self.app.current_chat_last_index = target_idx
+                self.app.current_chat_center_marker = self._all_messages[target_idx].get("turn_id", "")
+            self.highlight_card(target_idx, scroll=False)
+            return
+
         if isinstance(existing_card, TurnCard):
+            self.active_turn_index = target_idx
+            if hasattr(self.app, "current_chat_last_index"):
+                self.app.current_chat_last_index = target_idx
+                self.app.current_chat_center_marker = self._all_messages[target_idx].get("turn_id", "")
             self.highlight_card(target_idx, scroll=False)
             self._scroll_to_turn_widget(existing_card, center=False)
-        else:
-            self.request_wall_shift(target_idx, discrete_dock=True)
 
     def viewport_page_navigate(self, direction: int) -> None:
         if self.is_locked():
@@ -3211,13 +3234,13 @@ class FeedArea(VerticalScroll):
 
         if direction < 0:
             if (self.active_turn_index <= self._win_start or self.scroll_y <= 0) and self._win_start > 0:
-                self.request_wall_shift(self.active_turn_index, discrete_dock=False)
+                self.request_wall_shift(self.active_turn_index, discrete_dock=False, moving_up=True)
                 return
             target_y = max(0, self.scroll_y - page_step)
             self.scroll_to(y=target_y, animate=False)
         else:
             if (self.active_turn_index >= (self._win_end - 1) or self.scroll_y >= max_scroll) and self._win_end < len(self._all_messages):
-                self.request_wall_shift(self.active_turn_index, discrete_dock=False)
+                self.request_wall_shift(self.active_turn_index, discrete_dock=False, moving_up=False)
                 return
             target_y = min(max_scroll, self.scroll_y + page_step)
             self.scroll_to(y=target_y, animate=False)
@@ -3237,9 +3260,36 @@ class FeedArea(VerticalScroll):
         max_scroll = getattr(self, "max_scroll_y", max(0, self.virtual_size.height - self.container_size.height))
         total = len(self._all_messages)
 
+        center_target = self._get_center_raycast_target()
+        raycast_idx = center_target[0] if center_target else self.active_turn_index
+
         if direction > 0:
+            # Check if wall shift is required
             if (self.active_turn_index >= (self._win_end - 1) or self.scroll_y >= max_scroll) and self._win_end < total:
-                self.request_wall_shift(self.active_turn_index, discrete_dock=False)
+                self.request_wall_shift(self.active_turn_index, discrete_dock=False, moving_up=False)
+                return
+
+            # If currently above the center raycast target (e.g. at ceiling): step selection down naturally
+            if self.active_turn_index < raycast_idx:
+                new_idx = self.active_turn_index + 1
+                self.active_turn_index = new_idx
+                turn_id = self._all_messages[new_idx].get("turn_id", f"turn_{new_idx}")
+                if hasattr(self.app, "current_chat_last_index"):
+                    self.app.current_chat_last_index = new_idx
+                    self.app.current_chat_center_marker = turn_id
+                self.highlight_card(new_idx, scroll=False)
+                return
+
+            # At absolute floor: walk selection down to the remaining visible cards without shifting screen
+            if self.scroll_y >= max_scroll:
+                if self.active_turn_index < total - 1:
+                    new_idx = self.active_turn_index + 1
+                    self.active_turn_index = new_idx
+                    turn_id = self._all_messages[new_idx].get("turn_id", f"turn_{new_idx}")
+                    if hasattr(self.app, "current_chat_last_index"):
+                        self.app.current_chat_last_index = new_idx
+                        self.app.current_chat_center_marker = turn_id
+                    self.highlight_card(new_idx, scroll=False)
                 return
 
             target_y = min(max_scroll, self.scroll_y + line_step)
@@ -3247,8 +3297,32 @@ class FeedArea(VerticalScroll):
             self._execute_1d_raycast(target_y)
 
         else:
+            # Check if wall shift is required (with 1-card lookahead hysteresis to prevent oscillation)
             if (self.active_turn_index <= self._win_start or self.scroll_y <= 0) and self._win_start > 0:
-                self.request_wall_shift(self.active_turn_index, discrete_dock=False)
+                self.request_wall_shift(self.active_turn_index, discrete_dock=False, moving_up=True)
+                return
+
+            # If currently below the center raycast target (e.g. at floor): step selection up naturally
+            if self.active_turn_index > raycast_idx:
+                new_idx = self.active_turn_index - 1
+                self.active_turn_index = new_idx
+                turn_id = self._all_messages[new_idx].get("turn_id", f"turn_{new_idx}")
+                if hasattr(self.app, "current_chat_last_index"):
+                    self.app.current_chat_last_index = new_idx
+                    self.app.current_chat_center_marker = turn_id
+                self.highlight_card(new_idx, scroll=False)
+                return
+
+            # At absolute ceiling: walk selection up to the remaining visible cards without shifting screen
+            if self.scroll_y <= 0:
+                if self.active_turn_index > 0:
+                    new_idx = self.active_turn_index - 1
+                    self.active_turn_index = new_idx
+                    turn_id = self._all_messages[new_idx].get("turn_id", f"turn_{new_idx}")
+                    if hasattr(self.app, "current_chat_last_index"):
+                        self.app.current_chat_last_index = new_idx
+                        self.app.current_chat_center_marker = turn_id
+                    self.highlight_card(new_idx, scroll=False)
                 return
 
             target_y = max(0, self.scroll_y - line_step)

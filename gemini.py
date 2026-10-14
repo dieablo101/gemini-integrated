@@ -18,7 +18,6 @@ import pyperclip
 from google import genai
 from rich.cells import cell_len
 from rich.console import RenderableType
-from rich.markup import escape
 from rich.syntax import Syntax
 from textual import events, on, work
 from textual.app import App, ComposeResult
@@ -44,12 +43,6 @@ from textual.widgets.markdown import MarkdownFence
 from textual.widgets.option_list import Option
 from textual.widgets.text_area import Selection
 from textual.widgets.tree import TreeNode
-
-try:
-    from markdown_it import MarkdownIt
-    _MD_PARSER = MarkdownIt()
-except Exception:
-    _MD_PARSER = None
 
 CURRENT_USER: str = getpass.getuser()
 
@@ -410,10 +403,6 @@ GATED_NAV_KEYS = {
 def cast_ray_from_center(
     center_y: int,
     header_map: dict[int, tuple[int, str]],
-    win_start: int,
-    win_end: int,
-    total_messages: int,
-    max_radius: int = 150,
 ) -> tuple[int, str, int]:
     if not header_map:
         return 0, "", 0
@@ -430,21 +419,10 @@ def cast_ray_from_center(
         t_idx, t_id = header_map[highest_header_y]
         return t_idx, t_id, int(center_y - highest_header_y)
 
-    for radius in range(max_radius + 1):
-        down_line = center_y + radius
-        if down_line in header_map:
-            t_idx, t_id = header_map[down_line]
-            delta = center_y - down_line
-            return t_idx, t_id, delta
-
-        if radius > 0:
-            up_line = center_y - radius
-            if up_line in header_map:
-                t_idx, t_id = header_map[up_line]
-                delta = center_y - up_line
-                return t_idx, t_id, delta
-
-    closest_line = min(header_map.keys(), key=lambda y: abs(y - center_y))
+    closest_line = min(
+        sorted_headers,
+        key=lambda y: (abs(y - center_y), 0 if y >= center_y else 1),
+    )
     t_idx, t_id = header_map[closest_line]
     return t_idx, t_id, int(center_y - closest_line)
 
@@ -458,24 +436,27 @@ def _enhanced_markdown_fence_render(self: MarkdownFence) -> RenderableType:
             renderable.padding = 0
             renderable.line_numbers = True
 
-            start_line = 1
-            if self.parent:
-                siblings = list(self.parent.children)
-                if self in siblings:
-                    idx = siblings.index(self)
-                    for s in reversed(siblings[:idx]):
-                        s_text = getattr(s, "_text", "") or ""
-                        if hasattr(s, "walk_children"):
-                            for child in s.walk_children():
-                                text_val = getattr(child, "text", "")
-                                if text_val:
-                                    s_text += " " + str(text_val)
-                        m = re.search(r"\(Lines?\s+(\d+)", s_text)
-                        if m:
-                            start_line = int(m.group(1))
-                            break
-                        if isinstance(s, MarkdownFence):
-                            break
+            start_line = getattr(self, "_detected_start_line", None)
+            if start_line is None:
+                start_line = 1
+                if self.parent:
+                    siblings = list(self.parent.children)
+                    if self in siblings:
+                        idx = siblings.index(self)
+                        for s in reversed(siblings[:idx]):
+                            s_text = getattr(s, "_text", "") or ""
+                            if hasattr(s, "walk_children"):
+                                for child in s.walk_children():
+                                    text_val = getattr(child, "text", "")
+                                    if text_val:
+                                        s_text += " " + str(text_val)
+                            m = re.search(r"\(Lines?\s+(\d+)", s_text)
+                            if m:
+                                start_line = int(m.group(1))
+                                break
+                            if isinstance(s, MarkdownFence):
+                                break
+                self._detected_start_line = start_line
 
             renderable.start_line = start_line
     except Exception:
@@ -501,7 +482,11 @@ def detect_language(filepath: str | Path) -> str:
 
 def write_code_to_disk(working_dir: str | Path, filename: str, content: str) -> Path:
     base = Path(os.path.expanduser(str(working_dir).strip())).resolve()
-    target = (base / filename.strip()).resolve()
+    fn_path = Path(os.path.expanduser(filename.strip()))
+    if fn_path.is_absolute():
+        target = fn_path.resolve()
+    else:
+        target = (base / fn_path).resolve()
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content, encoding="utf-8")
     return target
@@ -1151,17 +1136,6 @@ class TurnCard(Vertical):
         self.sender = sender
         self.text_content = text
         self.is_selected = is_selected
-        self.data = {"turn_index": index, "turn_id": turn_id}
-
-        self.snippets: list[str] = []
-        if _MD_PARSER:
-            try:
-                tokens = _MD_PARSER.parse(text)
-                self.snippets = [t.content for t in tokens if t.type == "fence"]
-            except Exception:
-                pass
-        if not self.snippets:
-            self.snippets = [m.group(1) for m in re.finditer(r"```[^\n]*\n(.*?)```", text, re.DOTALL)]
 
     def compose(self) -> ComposeResult:
         with Horizontal(classes="turn_header"):
@@ -2659,7 +2633,7 @@ class ExpandingInput(EmacsBaseTextArea):
         if not raw_text:
             return
 
-        if raw_text[0] == "!" and raw_text.startswith("!/"):
+        if raw_text.startswith("!/"):
             self.app.execute_command(raw_text)
             self.clear()
             self.reset_snippets()
@@ -2731,8 +2705,8 @@ class FeedArea(VerticalScroll):
     def compose(self) -> ComposeResult:
         yield Vertical(id="turns_container")
 
-    def get_tier_config(self) -> tuple[int, int]:
-        return (DEFAULT_WINDOW_CAPACITY, 1)
+    def get_tier_config(self) -> int:
+        return DEFAULT_WINDOW_CAPACITY
 
     def is_locked(self) -> bool:
         return self.app.lock.is_locked
@@ -2763,13 +2737,10 @@ class FeedArea(VerticalScroll):
 
         y = int(self.scroll_y) if current_y is None else int(current_y)
         view_h = self.container_size.height or 24
-        total = len(self._all_messages)
 
         if CENTER_SCREEN_MODE:
             center_y = y + (view_h // 2)
-            return cast_ray_from_center(
-                center_y, self._header_map, self._win_start, self._win_end, total
-            )
+            return cast_ray_from_center(center_y, self._header_map)
         else:
             for line_y in sorted(self._header_map.keys()):
                 if line_y >= y:
@@ -2829,7 +2800,6 @@ class FeedArea(VerticalScroll):
                         self._scroll_to_turn_widget(target_card, center=False)
                 return
 
-            # Keep exactly 10 cards mounted, biased slightly toward travel direction
             if moving_up:
                 preferred_above = 5
                 preferred_below = 4
@@ -2865,7 +2835,6 @@ class FeedArea(VerticalScroll):
             container = self.query_one("#turns_container", Vertical)
             await container.remove_children()
 
-            # Mount all widgets in strict, ascending numerical order!
             new_cards = [
                 card for idx in range(ideal_start, ideal_end)
                 if (card := self._create_turn_widget(idx)) is not None
@@ -3020,7 +2989,7 @@ class FeedArea(VerticalScroll):
         self.app.lock.acquire("dom_load")
         self.app.show_loader_banner()
         container = self.query_one("#turns_container", Vertical)
-        capacity, _ = self.get_tier_config()
+        capacity = self.get_tier_config()
 
         try:
             if action == "reset_chat":
@@ -3228,7 +3197,6 @@ class FeedArea(VerticalScroll):
         if target_idx == self.active_turn_index:
             return
 
-        # Check if we hit the edge of the mounted runway and can load more cards
         if delta > 0 and target_idx >= self._win_end and self._win_end < total:
             self.request_wall_shift(target_idx, discrete_dock=True, moving_up=False)
             return
@@ -3239,7 +3207,6 @@ class FeedArea(VerticalScroll):
         existing_card = self._get_target_widget(target_idx)
         max_scroll = getattr(self, "max_scroll_y", max(0, self.virtual_size.height - self.container_size.height))
 
-        # At the ceiling/floor, move selection onto edge cards without shifting viewport
         if (delta > 0 and self.scroll_y >= max_scroll) or (delta < 0 and self.scroll_y <= 0):
             self.active_turn_index = target_idx
             if hasattr(self.app, "current_chat_last_index"):
@@ -3300,12 +3267,10 @@ class FeedArea(VerticalScroll):
         raycast_idx = center_target[0] if center_target else self.active_turn_index
 
         if direction > 0:
-            # Check if wall shift is required
             if (self.active_turn_index >= (self._win_end - 1) or self.scroll_y >= max_scroll) and self._win_end < total:
                 self.request_wall_shift(self.active_turn_index, discrete_dock=False, moving_up=False)
                 return
 
-            # If currently above the center raycast target (e.g. at ceiling): step selection down naturally
             if self.active_turn_index < raycast_idx:
                 new_idx = self.active_turn_index + 1
                 self.active_turn_index = new_idx
@@ -3316,7 +3281,6 @@ class FeedArea(VerticalScroll):
                 self.highlight_card(new_idx, scroll=False)
                 return
 
-            # At absolute floor: walk selection down to the remaining visible cards without shifting screen
             if self.scroll_y >= max_scroll:
                 if self.active_turn_index < total - 1:
                     new_idx = self.active_turn_index + 1
@@ -3333,12 +3297,10 @@ class FeedArea(VerticalScroll):
             self._execute_1d_raycast(target_y)
 
         else:
-            # Check if wall shift is required (with 1-card lookahead hysteresis to prevent oscillation)
             if (self.active_turn_index <= self._win_start or self.scroll_y <= 0) and self._win_start > 0:
                 self.request_wall_shift(self.active_turn_index, discrete_dock=False, moving_up=True)
                 return
 
-            # If currently below the center raycast target (e.g. at floor): step selection up naturally
             if self.active_turn_index > raycast_idx:
                 new_idx = self.active_turn_index - 1
                 self.active_turn_index = new_idx
@@ -3349,7 +3311,6 @@ class FeedArea(VerticalScroll):
                 self.highlight_card(new_idx, scroll=False)
                 return
 
-            # At absolute ceiling: walk selection up to the remaining visible cards without shifting screen
             if self.scroll_y <= 0:
                 if self.active_turn_index > 0:
                     new_idx = self.active_turn_index - 1
@@ -3388,7 +3349,7 @@ class FeedArea(VerticalScroll):
         self._all_messages.append(turn_data)
 
         container = self.query_one("#turns_container", Vertical)
-        capacity, _ = self.get_tier_config()
+        capacity = self.get_tier_config()
 
         if self._win_end == new_idx:
             new_widget = self._create_turn_widget(new_idx)
@@ -3844,20 +3805,17 @@ class ChatApp(App):
 
     def clear_toasts(self) -> None:
         try:
-            for toast in list(self.query("Toast")):
-                try:
-                    toast.dismiss()
-                except Exception:
-                    pass
-
+            seen_toasts = set()
             stack = getattr(self, "screen_stack", None) or getattr(self, "_screen_stack", [])
             for screen in list(stack):
                 if hasattr(screen, "query"):
                     for toast in list(screen.query("Toast")):
-                        try:
-                            toast.dismiss()
-                        except Exception:
-                            pass
+                        if toast not in seen_toasts:
+                            seen_toasts.add(toast)
+                            try:
+                                toast.dismiss()
+                            except Exception:
+                                pass
         except Exception:
             pass
 
@@ -3875,7 +3833,7 @@ class ChatApp(App):
             return False
 
         self.active_palette_name = theme_clean
-        self._save_theme_to_state(theme_clean)
+        self._save_to_state("ui_theme", theme_clean)
 
         if self.screen:
             for t in THEMES:
@@ -3900,7 +3858,7 @@ class ChatApp(App):
                 pass
         return DEFAULT_PALETTE
 
-    def _save_theme_to_state(self, palette_name: str) -> None:
+    def _save_to_state(self, key: str, value: str) -> None:
         try:
             state: dict = {}
             if STATE_FILE.exists():
@@ -3908,7 +3866,7 @@ class ChatApp(App):
                     state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
                 except Exception:
                     state = {}
-            state["ui_theme"] = palette_name
+            state[key] = value
             STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
             STATE_FILE.chmod(0o600)
         except Exception:
@@ -3979,8 +3937,7 @@ class ChatApp(App):
         try:
             pyperclip.copy(text)
         except Exception:
-            pass
-        super().copy_to_clipboard(text)
+            super().copy_to_clipboard(text)
 
     def set_c_c_prefix(self) -> None:
         if self._c_c_timer:
@@ -4335,20 +4292,6 @@ class ChatApp(App):
                 pass
         return None
 
-    def _save_active_chat_to_state(self, chat_id: str) -> None:
-        try:
-            state: dict = {}
-            if STATE_FILE.exists():
-                try:
-                    state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
-                except Exception:
-                    state = {}
-            state["active_chat"] = chat_id
-            STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
-            STATE_FILE.chmod(0o600)
-        except Exception:
-            pass
-
     def get_effective_working_dir(self) -> str:
         if self.current_chat_working_dir:
             return self.current_chat_working_dir
@@ -4514,7 +4457,7 @@ class ChatApp(App):
             self.save_current_chat()
 
         self.current_chat_id = chat_id
-        self._save_active_chat_to_state(chat_id)
+        self._save_to_state("active_chat", chat_id)
 
         path = self._get_chat_file(chat_id)
         saved_marker: str = ""
@@ -4598,7 +4541,7 @@ class ChatApp(App):
             "messages": self.history,
         }
         path.write_text(json.dumps(data, indent=2))
-        self._save_active_chat_to_state(self.current_chat_id)
+        self._save_to_state("active_chat", self.current_chat_id)
 
     async def delete_highlighted_chat(self) -> None:
         history_widget = self.query_one("#history", HistoryList)
@@ -4612,7 +4555,8 @@ class ChatApp(App):
         if target_file.exists():
             target_file.unlink()
 
-        for f in self._get_sorted_files():
+        sorted_files = self._get_sorted_files()
+        for f in sorted_files:
             try:
                 data = json.loads(f.read_text())
                 if data.get("parent_id") == target_id:
@@ -4623,14 +4567,13 @@ class ChatApp(App):
 
         current_idx = history_widget.highlighted
 
-        files = self._get_sorted_files()
         if self.current_chat_id == target_id:
             self.current_chat_id = ""
             self.history = []
 
             feed = self.query_one("#feed", FeedArea)
-            if files:
-                await self.load_chat(files[0].stem)
+            if sorted_files:
+                await self.load_chat(sorted_files[0].stem)
             else:
                 self._start_new_chat(title="")
 
@@ -4866,7 +4809,7 @@ class ChatApp(App):
         self.query_one("#snippet_preview", SnippetPreview).hide_preview()
         input_widget.focus()
         self.update_feed_nav_banner()
-        self._save_active_chat_to_state(self.current_chat_id)
+        self._save_to_state("active_chat", self.current_chat_id)
 
     def action_save_snippet_to_disk(self) -> None:
         feed = self.query_one("#feed", FeedArea)
@@ -4887,7 +4830,11 @@ class ChatApp(App):
             code = result["content"]
 
             base = Path(os.path.expanduser(str(working_dir).strip())).resolve()
-            target = (base / filename.strip()).resolve()
+            fn_path = Path(os.path.expanduser(filename.strip()))
+            if fn_path.is_absolute():
+                target = fn_path.resolve()
+            else:
+                target = (base / fn_path).resolve()
 
             def do_write() -> None:
                 try:
@@ -5180,10 +5127,6 @@ class ChatApp(App):
 
     async def on_expanding_input_submitted(self, event: ExpandingInput.Submitted) -> None:
         user_msg = event.value
-
-        if user_msg and user_msg[0] == "!" and user_msg.startswith("!/"):
-            self.execute_command(user_msg)
-            return
 
         await self.append_to_feed(CURRENT_USER, user_msg, jump_to_start=False)
 

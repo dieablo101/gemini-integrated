@@ -5005,46 +5005,89 @@ class ChatApp(App):
         self.call_after_refresh(lambda: notes_panel.update_notes_content(is_history, text, lineage, chat_id=cid))
 
     def action_toggle_notes(self) -> None:
-        self.notes_open = not self.notes_open
+        if self.lock.is_locked:
+            return
+        self._toggle_notes_lockstep()
+
+    @work(exclusive=True)
+    async def _toggle_notes_lockstep(self) -> None:
+        self.lock.acquire("dom_load")
+        self.show_loader_banner()
+
+        feed = self.query_one("#feed", FeedArea)
         notes_panel = self.query_one("#notes_panel", NotesPanel)
 
-        if self.notes_open:
-            notes_panel.styles.display = "block"
-            if self.screen:
-                self.screen.add_class("-notes-open")
-            self.sync_notes_ui()
-        else:
-            self.flush_current_notes()
-            if self.active_notes_mode == "global":
-                self._flush_global_notes_to_state()
+        target_snap = feed._get_center_raycast_target()
+        opening = not self.notes_open
+        self.notes_open = opening
+
+        try:
+            if opening:
+                notes_panel.styles.display = "block"
+                if self.screen:
+                    self.screen.add_class("-notes-open")
+                self.sync_notes_ui()
             else:
-                self._direct_flush_chat_to_disk(self.current_chat_id, self.current_chat_notes)
-                self.save_current_chat()
+                self.flush_current_notes()
+                if self.active_notes_mode == "global":
+                    self._flush_global_notes_to_state()
+                else:
+                    self._direct_flush_chat_to_disk(self.current_chat_id, self.current_chat_notes)
+                    self.save_current_chat()
 
-            notes_panel.styles.display = "none"
-            if self.screen:
-                self.screen.remove_class("-notes-open")
+                notes_panel.styles.display = "none"
+                if self.screen:
+                    self.screen.remove_class("-notes-open")
 
-            target_id = self._last_non_notes_input_id
-            if target_id == "snippet_preview":
+            settle_event = asyncio.Event()
+
+            def _on_notes_toggle_settle() -> None:
                 try:
-                    preview = self.query_one("#snippet_preview", SnippetPreview)
-                    if preview.styles.display != "none":
-                        preview.focus()
+                    feed._sync_header_map()
+                    if target_snap:
+                        t_idx, t_id, delta = target_snap
+                        card = feed._get_target_widget(t_idx) or feed._get_target_widget_by_id(t_id)
+                        if card:
+                            feed._scroll_to_turn_widget(card, center=CENTER_SCREEN_MODE, line_offset=delta)
+
+                    if opening:
+                        try:
+                            self.query_one("#notes_editor", NotesEditorArea).focus()
+                        except Exception:
+                            pass
                     else:
-                        self.query_one("#input", ExpandingInput).focus()
-                except Exception:
-                    self.query_one("#input", ExpandingInput).focus()
-            elif target_id == "history" and self.is_history_open():
-                try:
-                    self.query_one("#history", HistoryList).focus()
-                except Exception:
-                    self.query_one("#input", ExpandingInput).focus()
-            else:
-                try:
-                    self.query_one("#input", ExpandingInput).focus()
-                except Exception:
-                    pass
+                        target_id = self._last_non_notes_input_id
+                        if target_id == "snippet_preview":
+                            try:
+                                preview = self.query_one("#snippet_preview", SnippetPreview)
+                                if preview.styles.display != "none":
+                                    preview.focus()
+                                else:
+                                    self.query_one("#input", ExpandingInput).focus()
+                            except Exception:
+                                self.query_one("#input", ExpandingInput).focus()
+                        elif target_id == "history" and self.is_history_open():
+                            try:
+                                self.query_one("#history", HistoryList).focus()
+                            except Exception:
+                                self.query_one("#input", ExpandingInput).focus()
+                        else:
+                            try:
+                                self.query_one("#input", ExpandingInput).focus()
+                            except Exception:
+                                pass
+                finally:
+                    settle_event.set()
+
+            self.call_after_refresh(_on_notes_toggle_settle)
+            try:
+                await asyncio.wait_for(settle_event.wait(), timeout=0.6)
+            except asyncio.TimeoutError:
+                feed._sync_header_map()
+
+        finally:
+            self.hide_loader_banner()
+            self.lock.release("dom_load")
 
     def cycle_global_focus(self, direction: int = 1, escape_parents: bool = False) -> None:
         ring: list[Widget] = []

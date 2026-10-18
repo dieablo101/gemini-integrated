@@ -63,6 +63,7 @@ FORK_HEADER_TEXT = "## This chat is a fork of another / previous chat"
 SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
 CENTER_SCREEN_MODE: bool = True
+MOBILE_BREAKPOINT: int = 80
 
 DEFAULT_WINDOW_CAPACITY: int = 10
 DEFAULT_MODEL: str = "gemini-3.8-flash"
@@ -151,7 +152,7 @@ def generate_theme_css_rules() -> str:
             background: {banner};
         }}
         .theme-{name} #feed {{
-            border: solid {acc};
+            border: round {acc};
         }}
         .theme-{name} .turn_card.card-active .turn_header {{
             background: {active_card};
@@ -181,6 +182,31 @@ def generate_theme_css_rules() -> str:
             border: solid {acc};
             scrollbar-color: {acc} #181818;
             scrollbar-color-hover: {acc_bright} #252525;
+        }}
+        .theme-{name} #history > .option-list--option-highlighted {{
+            background: {active_card};
+            color: {acc_bright};
+            text-style: bold;
+        }}
+        .theme-{name} #history:focus > .option-list--option-highlighted {{
+            background: {banner};
+            color: #ffffff;
+            text-style: bold;
+        }}
+        .theme-{name} #notes_panel {{
+            border: round {acc};
+            scrollbar-color: {acc} #181818;
+            scrollbar-color-hover: {acc_bright} #252525;
+        }}
+        .theme-{name} .parent_note_card:focus {{
+            border: none;
+        }}
+        .theme-{name} .parent_note_card:focus .parent_note_title {{
+            background: {active_card};
+            color: {acc_bright};
+        }}
+        .theme-{name} .parent_note_card .parent_note_title {{
+            color: {acc};
         }}
         .theme-{name} #snippet_preview {{
             border: round {acc};
@@ -631,11 +657,9 @@ class AppLockController:
 ModalResultType = TypeVar("ModalResultType")
 
 class ResponsiveModalScreen(ModalScreen[ModalResultType]):
-    MOBILE_BREAKPOINT: int = 80
-
     def _update_screen_classes(self, width: int | None = None) -> None:
         current_w = width if width is not None else (self.size.width or (self.app.size.width if self.app else 100))
-        self.set_class(current_w <= self.MOBILE_BREAKPOINT, "-mobile")
+        self.set_class(current_w <= MOBILE_BREAKPOINT, "-mobile")
 
     def on_mount(self) -> None:
         if hasattr(self.app, "clear_toasts"):
@@ -736,7 +760,8 @@ class CommandsModal(ResponsiveModalScreen[None]):
             yield Label("[bold]Ctrl+G / Escape[/] : Clear active mark or selection", classes="cmd_row")
 
             yield Label("PowerKeys:", classes="cmd_section_title")
-            yield Label("[bold]C-c c / C-c /[/]  : Open this Commands reference window", classes="cmd_row")
+            yield Label("[bold]C-c c[/]            : Open this Commands reference window", classes="cmd_row")
+            yield Label(r"[bold]C-c \[[/]          : Toggle notes editor panel", classes="cmd_row")
             yield Label("[bold]C-c e[/]          : Send selected snippet to Emacs buffer", classes="cmd_row")
             yield Label("[bold]C-c w[/]          : Copy selected code snippet to clipboard", classes="cmd_row")
             yield Label("[bold]C-c y[/]          : Yank system clipboard into prompt input", classes="cmd_row")
@@ -2259,6 +2284,265 @@ class EmacsBaseTextArea(TextArea):
             self.delete(end, start)
             self.app.copy_to_clipboard(killed)
 
+class ParentNoteCard(Vertical):
+    can_focus = True
+
+    def __init__(self, chat_id: str, title: str, notes_text: str, depth: int, is_expanded: bool = False, **kwargs) -> None:
+        super().__init__(classes="parent_note_card", **kwargs)
+        self.chat_id = chat_id
+        self.raw_title = title
+        self.notes_text = notes_text
+        self.depth = depth
+        self.is_expanded = is_expanded
+        self._last_tab_time: float = 0.0
+
+    def compose(self) -> ComposeResult:
+        yield Label(self._get_title_display(), classes="parent_note_title")
+        with Vertical(classes="parent_note_body"):
+            yield Markdown(self.notes_text.strip())
+
+    def on_mount(self) -> None:
+        self.query_one(".parent_note_body", Vertical).styles.display = "block" if self.is_expanded else "none"
+
+    def _get_title_display(self) -> str:
+        arrow = "▼" if self.is_expanded else ">"
+        indent = "   " * self.depth + "└─ " if self.depth > 0 else ""
+        return f"{indent}{self.raw_title}: {arrow}"
+
+    def toggle(self) -> None:
+        self.is_expanded = not self.is_expanded
+        body = self.query_one(".parent_note_body", Vertical)
+        body.styles.display = "block" if self.is_expanded else "none"
+        self.query_one(".parent_note_title", Label).update(self._get_title_display())
+        notes_panel = self.app.query_one("#notes_panel", NotesPanel)
+        notes_panel.record_parent_expanded_state(self.chat_id, self.is_expanded)
+
+    def _on_key(self, event: events.Key) -> None:
+        if self.app.intercept_c_c_key(event):
+            return
+
+        if event.key in ("space", "enter", "return"):
+            event.prevent_default(); event.stop()
+            self.toggle()
+            return
+
+        if event.key in ("shift+tab", "tab"):
+            event.prevent_default(); event.stop()
+            now = time.monotonic()
+            if event.key == "tab" and (now - self._last_tab_time < 0.35):
+                self._last_tab_time = 0.0
+                self.app.cycle_global_focus(direction=1, escape_parents=True)
+            else:
+                self._last_tab_time = now
+                direction = -1 if event.key == "shift+tab" else 1
+                self.app.cycle_global_focus(direction=direction, escape_parents=False)
+            return
+
+        super()._on_key(event)
+
+    @on(events.Click)
+    def on_click(self, event: events.Click) -> None:
+        event.stop()
+        self.focus()
+        self.toggle()
+
+class NotesEditorArea(EmacsBaseTextArea):
+    can_focus = True
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._last_nav_time: float = 0.0
+        self._nav_cooldown: float = 0.022
+        self._suppress_change_sync: bool = False
+
+    def on_mount(self) -> None:
+        super().on_mount()
+        self.show_line_numbers = False
+
+    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        if self._suppress_change_sync or not self.has_focus:
+            return
+        if getattr(self.app, "active_notes_mode", "chat") == "global":
+            self.app.global_notes = self.text
+            self.app.schedule_global_notes_flush()
+        else:
+            self.app.current_chat_notes = self.text
+            self.app.schedule_chat_notes_flush()
+
+    def _on_key(self, event: events.Key) -> None:
+        if self.app.intercept_c_c_key(event):
+            return
+
+        if event.key in ("ctrl+j", "shift+enter", "shift+return"):
+            event.prevent_default(); event.stop()
+            self.insert("\n")
+            return
+
+        if event.key in ("enter", "return"):
+            event.prevent_default(); event.stop()
+            self.app.flush_current_notes()
+            if self.app.active_notes_mode == "chat":
+                self.app._direct_flush_chat_to_disk(self.app.current_chat_id, self.app.current_chat_notes)
+                self.app.save_current_chat()
+            else:
+                self.app._flush_global_notes_to_state()
+            self.app.action_toggle_notes()
+            return
+
+        if event.key in ("escape", "ctrl+g"):
+            event.prevent_default(); event.stop()
+            if self._mark_point is not None or self.selected_text:
+                self._clear_mark()
+                self.app.notify("Quit", timeout=1.0)
+            else:
+                self.app.action_toggle_notes()
+            return
+
+        if event.key in ("tab", "shift+tab"):
+            event.prevent_default(); event.stop()
+            direction = -1 if event.key == "shift+tab" else 1
+            self.app.cycle_global_focus(direction=direction)
+            return
+
+        if getattr(self.app, "active_notes_mode", "chat") == "global":
+            try:
+                history_list = self.app.query_one("#history", HistoryList)
+                if event.key in ("up", "ctrl+p", "k"):
+                    event.prevent_default(); event.stop()
+                    history_list.action_cursor_up()
+                    return
+                elif event.key in ("down", "ctrl+n", "j"):
+                    event.prevent_default(); event.stop()
+                    history_list.action_cursor_down()
+                    return
+                elif event.key in ("pageup",):
+                    event.prevent_default(); event.stop()
+                    history_list.action_cursor_page_up()
+                    return
+                elif event.key in ("pagedown",):
+                    event.prevent_default(); event.stop()
+                    history_list.action_cursor_page_down()
+                    return
+                elif event.key == "home":
+                    event.prevent_default(); event.stop()
+                    history_list.action_first()
+                    return
+                elif event.key == "end":
+                    event.prevent_default(); event.stop()
+                    history_list.action_last()
+                    return
+            except Exception:
+                pass
+
+        feed = self.app.query_one("#feed", FeedArea)
+        now = time.monotonic()
+        if event.key in ("down", "up", "shift+up", "shift+down"):
+            if now - self._last_nav_time < self._nav_cooldown:
+                event.prevent_default(); event.stop()
+                return
+            self._last_nav_time = now
+
+        if event.key in ("shift+up", "shift+down"):
+            event.prevent_default(); event.stop()
+            direction = -1 if event.key == "shift+up" else 1
+            feed.viewport_page_navigate(direction)
+            return
+        elif event.key == "down":
+            event.prevent_default(); event.stop()
+            feed.arrow_navigate(1)
+            return
+        elif event.key == "up":
+            event.prevent_default(); event.stop()
+            feed.arrow_navigate(-1)
+            return
+        elif event.key == "pagedown":
+            event.prevent_default(); event.stop()
+            feed.step_card(1)
+            return
+        elif event.key == "pageup":
+            event.prevent_default(); event.stop()
+            feed.step_card(-1)
+            return
+        elif event.key in ("alt+n", "meta+n"):
+            event.prevent_default(); event.stop()
+            feed.navigate_snippet(1)
+            return
+        elif event.key in ("alt+p", "meta+p"):
+            event.prevent_default(); event.stop()
+            feed.navigate_snippet(-1)
+            return
+        elif event.key == "home":
+            event.prevent_default(); event.stop()
+            feed.jump_to_home()
+            return
+        elif event.key == "end":
+            event.prevent_default(); event.stop()
+            feed.jump_to_end()
+            return
+
+        super()._on_key(event)
+
+class NotesPanel(Vertical):
+    def __init__(self, **kwargs) -> None:
+        super().__init__(id="notes_panel", **kwargs)
+        self._parent_expanded_states: dict[str, bool] = {}
+        self.border_title = " Notes "
+
+    def compose(self) -> ComposeResult:
+        yield NotesEditorArea(id="notes_editor")
+
+    def record_parent_expanded_state(self, chat_id: str, expanded: bool) -> None:
+        self._parent_expanded_states[chat_id] = expanded
+
+    def clear_session_expansion_states(self) -> None:
+        self._parent_expanded_states.clear()
+
+    async def update_notes_content(self, is_history: bool, notes_text: str, parent_lineage: list[dict], chat_id: str = "") -> None:
+        self.border_title = " Global Notes " if is_history else " Notes "
+        editor = self.query_one("#notes_editor", NotesEditorArea)
+
+        editor._suppress_change_sync = True
+        try:
+            editor.load_text(notes_text)
+
+            app = self.app
+            if not is_history and chat_id and chat_id not in app._seen_chats_in_session:
+                app._seen_chats_in_session.add(chat_id)
+                editor.move_cursor(editor.document.end, select=False)
+            else:
+                old_loc = editor.cursor_location
+                max_r = max(0, editor.document.line_count - 1)
+                r = min(old_loc[0], max_r)
+                c = min(old_loc[1], len(editor.document.get_line(r)))
+                editor.move_cursor((r, c), select=False)
+        finally:
+            editor._suppress_change_sync = False
+
+        existing_parents = list(self.query("#notes_parents_container"))
+        if existing_parents:
+            await existing_parents[0].remove()
+
+        valid_parents = [item for item in parent_lineage if (item.get("notes") or "").strip()] if (not is_history and parent_lineage) else []
+
+        if valid_parents:
+            parents_container = Vertical(id="notes_parents_container")
+            await self.mount(parents_container, before=editor)
+
+            cards = []
+            for item in valid_parents:
+                cid = item["id"]
+                is_exp = self._parent_expanded_states.get(cid, False)
+                card = ParentNoteCard(
+                    chat_id=cid,
+                    title=item["title"],
+                    notes_text=item["notes"],
+                    depth=item["depth"],
+                    is_expanded=is_exp,
+                )
+                cards.append(card)
+
+            await parents_container.mount_all(cards)
+
 class SnippetPreview(EmacsBaseTextArea):
     can_focus = True
 
@@ -2328,17 +2612,48 @@ class SnippetPreview(EmacsBaseTextArea):
         if self.app.intercept_c_c_key(event):
             return
 
-        feed = self.app.query_one("#feed", FeedArea)
-
-        if event.key == "tab":
+        if event.key in ("tab", "shift+tab"):
             event.prevent_default(); event.stop()
-            self.app.query_one("#input", ExpandingInput).focus()
+            direction = -1 if event.key == "shift+tab" else 1
+            self.app.cycle_global_focus(direction=direction)
             return
+
+        feed = self.app.query_one("#feed", FeedArea)
 
         if event.key == "ctrl+q":
             event.prevent_default(); event.stop()
             self.app.action_quit()
             return
+
+        if self.app.is_history_open():
+            try:
+                history_list = self.app.query_one("#history", HistoryList)
+                if event.key in ("up", "ctrl+p", "k"):
+                    event.prevent_default(); event.stop()
+                    history_list.action_cursor_up()
+                    return
+                elif event.key in ("down", "ctrl+n", "j"):
+                    event.prevent_default(); event.stop()
+                    history_list.action_cursor_down()
+                    return
+                elif event.key in ("pageup",):
+                    event.prevent_default(); event.stop()
+                    history_list.action_cursor_page_up()
+                    return
+                elif event.key in ("pagedown",):
+                    event.prevent_default(); event.stop()
+                    history_list.action_cursor_page_down()
+                    return
+                elif event.key == "home":
+                    event.prevent_default(); event.stop()
+                    history_list.action_first()
+                    return
+                elif event.key == "end":
+                    event.prevent_default(); event.stop()
+                    history_list.action_last()
+                    return
+            except Exception:
+                pass
 
         now = time.monotonic()
         if event.key in ("down", "up", "shift+up", "shift+down"):
@@ -2392,7 +2707,9 @@ class SnippetPreview(EmacsBaseTextArea):
 
         if event.key in ("escape", "ctrl+g"):
             event.prevent_default(); event.stop()
-            if self._mark_point is not None or self.selected_text:
+            if self.app.is_history_open():
+                self.app.action_toggle_history()
+            elif self._mark_point is not None or self.selected_text:
                 self._clear_mark()
                 self.app.notify("Quit", timeout=1.0)
             else:
@@ -2510,17 +2827,46 @@ class ExpandingInput(EmacsBaseTextArea):
         feed = self.app.query_one("#feed", FeedArea)
         fork_active = feed.fork_ui_active
 
-        if event.key == "tab":
-            preview_box = self.app.query_one("#snippet_preview", SnippetPreview)
-            if preview_box.styles.display != "none" and preview_box.active_tag:
-                event.prevent_default(); event.stop()
-                preview_box.focus()
-                return
+        if event.key in ("tab", "shift+tab"):
+            event.prevent_default(); event.stop()
+            direction = -1 if event.key == "shift+tab" else 1
+            self.app.cycle_global_focus(direction=direction)
+            return
 
         if event.key == "ctrl+q":
             event.prevent_default(); event.stop()
             self.app.action_quit()
             return
+
+        if self.app.is_history_open():
+            try:
+                history_list = self.app.query_one("#history", HistoryList)
+                if event.key in ("up", "ctrl+p", "k"):
+                    event.prevent_default(); event.stop()
+                    history_list.action_cursor_up()
+                    return
+                elif event.key in ("down", "ctrl+n", "j"):
+                    event.prevent_default(); event.stop()
+                    history_list.action_cursor_down()
+                    return
+                elif event.key in ("pageup",):
+                    event.prevent_default(); event.stop()
+                    history_list.action_cursor_page_up()
+                    return
+                elif event.key in ("pagedown",):
+                    event.prevent_default(); event.stop()
+                    history_list.action_cursor_page_down()
+                    return
+                elif event.key == "home":
+                    event.prevent_default(); event.stop()
+                    history_list.action_first()
+                    return
+                elif event.key == "end":
+                    event.prevent_default(); event.stop()
+                    history_list.action_last()
+                    return
+            except Exception:
+                pass
 
         now = time.monotonic()
         if event.key in ("down", "up", "shift+up", "shift+down"):
@@ -2604,7 +2950,9 @@ class ExpandingInput(EmacsBaseTextArea):
 
         if event.key in ("ctrl+g", "escape"):
             event.prevent_default(); event.stop()
-            if self._mark_point is not None or self.selected_text:
+            if self.app.is_history_open():
+                self.app.action_toggle_history()
+            elif self._mark_point is not None or self.selected_text:
                 self._clear_mark()
                 self.app.notify("Quit", timeout=1.0)
             return
@@ -3044,7 +3392,7 @@ class FeedArea(VerticalScroll):
                 if target_marker is not None:
                     marker_str = str(target_marker).strip()
                     if ":" in marker_str:
-                        tid, offset_str = marker_str.split(":", 1)
+                        tid, offset_str = marker_split = marker_str.split(":", 1)
                         if CENTER_SCREEN_MODE:
                             try:
                                 line_offset = int(offset_str)
@@ -3522,6 +3870,12 @@ class HistoryList(OptionList):
         if self.app.intercept_c_c_key(event):
             return
 
+        if event.key in ("tab", "shift+tab"):
+            event.prevent_default(); event.stop()
+            direction = -1 if event.key == "shift+tab" else 1
+            self.app.cycle_global_focus(direction=direction)
+            return
+
         if event.key in ("escape", "ctrl+g", "q"):
             event.prevent_default(); event.stop()
             self.app.action_toggle_history()
@@ -3588,19 +3942,121 @@ class ChatApp(App):
         layout: vertical;
         background: #000000;
     }}
-    #feed {{
+    #middle_split {{
         height: 1fr;
-        border: solid red;
+        width: 100%;
+        layout: horizontal;
+        background: #000000;
+    }}
+    Screen.-mobile #middle_split {{
+        layout: vertical;
+    }}
+    #feed {{
+        height: 100%;
+        width: 1fr;
+        border: round red;
         overflow-y: auto;
         overflow-x: hidden;
         scrollbar-size-vertical: 0;
         scrollbar-size-horizontal: 0;
         scrollbar-gutter: auto;
         padding: 0 1;
-        width: 100%;
-        max-width: 100%;
         background: #000000;
     }}
+    #history {{
+        height: 100%;
+        width: 1fr;
+        border: solid red;
+        background: #000000;
+        color: #ffffff;
+        display: none;
+    }}
+    #notes_panel {{
+        height: 100%;
+        width: 40%;
+        border: round red;
+        background: #000000;
+        color: #ffffff;
+        display: none;
+        padding: 0;
+    }}
+    Screen.-notes-open #feed,
+    Screen.-notes-open #history {{
+        width: 60%;
+    }}
+    Screen.-mobile #feed,
+    Screen.-mobile #history {{
+        width: 100%;
+        height: 1fr;
+    }}
+    Screen.-mobile #notes_panel {{
+        width: 100%;
+        height: 1fr;
+    }}
+    Screen.-mobile.-notes-open #feed,
+    Screen.-mobile.-notes-open #history {{
+        width: 100%;
+        height: 1fr;
+    }}
+    Screen.-mobile.-notes-open #notes_panel {{
+        width: 100%;
+        height: 1fr;
+    }}
+    #notes_parents_container {{
+        width: 100%;
+        height: auto;
+        background: #000000;
+        margin: 0 0 1 0;
+        padding: 0;
+        border: none;
+    }}
+    .parent_note_card {{
+        width: 100%;
+        height: auto;
+        margin: 0;
+        padding: 0;
+        border: none;
+        background: #000000;
+    }}
+    .parent_note_card .parent_note_title {{
+        width: 100%;
+        padding: 0 1;
+        text-style: bold;
+        background: #141414;
+        color: red;
+    }}
+    .parent_note_card .parent_note_body {{
+        width: 100%;
+        height: auto;
+        padding: 0 1;
+        margin: 0;
+        display: none;
+        background: #080808;
+    }}
+    .parent_note_card .parent_note_body Markdown {{
+        margin: 0;
+        padding: 0;
+    }}
+    .parent_note_card .parent_note_body MarkdownParagraph {{
+        margin-bottom: 0;
+        padding-bottom: 0;
+    }}
+    #notes_editor {{
+        width: 100%;
+        height: 1fr;
+        border: none;
+        padding: 0 1;
+        background: #000000;
+        color: #ffffff;
+        scrollbar-size-vertical: 0;
+        scrollbar-size-horizontal: 0;
+        scrollbar-gutter: auto;
+    }}
+    #notes_editor:focus {{
+        border: none;
+        background: #000000;
+    }}
+
     #feed #turns_container {{
         width: 100%;
         max-width: 100%;
@@ -3699,13 +4155,6 @@ class ChatApp(App):
         width: 100%;
         max-width: 100%;
     }}
-    #history {{
-        height: 1fr;
-        border: solid red;
-        background: #000000;
-        color: #ffffff;
-        display: none;
-    }}
     #snippet_preview {{
         width: 100%;
         max-height: 10;
@@ -3785,6 +4234,18 @@ class ChatApp(App):
         self.current_chat_working_dir: str | None = None
         self.current_chat_last_index: int = 0
         self.current_chat_center_marker: str = ""
+        self.current_chat_notes: str = ""
+        self.global_notes: str = ""
+
+        self.notes_open: bool = False
+        self.active_notes_mode: str = "chat"
+        self._last_focused_input_id: str = "input"
+        self._last_non_notes_input_id: str = "input"
+        self._seen_chats_in_session: set[str] = set()
+
+        self._chat_notes_flush_timer: Timer | None = None
+        self._global_notes_flush_timer: Timer | None = None
+
         self.history: list[dict] = []
         self._server: asyncio.AbstractServer | None = None
 
@@ -3802,6 +4263,26 @@ class ChatApp(App):
         self._commands_registry: dict[str, Callable[[str], None]] = {
             "ui-theme": self._cmd_ui_theme,
         }
+
+    def schedule_chat_notes_flush(self) -> None:
+        if self._chat_notes_flush_timer:
+            self._chat_notes_flush_timer.stop()
+        self._chat_notes_flush_timer = self.set_timer(0.4, self._do_chat_notes_flush)
+
+    def _do_chat_notes_flush(self) -> None:
+        self._chat_notes_flush_timer = None
+        if self.current_chat_id and self.active_notes_mode == "chat":
+            self._direct_flush_chat_to_disk(self.current_chat_id, self.current_chat_notes)
+
+    def schedule_global_notes_flush(self) -> None:
+        if self._global_notes_flush_timer:
+            self._global_notes_flush_timer.stop()
+        self._global_notes_flush_timer = self.set_timer(0.4, self._do_global_notes_flush)
+
+    def _do_global_notes_flush(self) -> None:
+        self._global_notes_flush_timer = None
+        if self.active_notes_mode == "global":
+            self._save_to_state("global_notes", self.global_notes or "")
 
     def clear_toasts(self) -> None:
         try:
@@ -3858,6 +4339,15 @@ class ChatApp(App):
                 pass
         return DEFAULT_PALETTE
 
+    def _read_global_notes_from_state(self) -> str:
+        if STATE_FILE.exists():
+            try:
+                data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+                return data.get("global_notes", "") or ""
+            except Exception:
+                pass
+        return ""
+
     def _save_to_state(self, key: str, value: str) -> None:
         try:
             state: dict = {}
@@ -3872,12 +4362,31 @@ class ChatApp(App):
         except Exception:
             pass
 
+    def _flush_global_notes_to_state(self) -> None:
+        self.flush_current_notes()
+        self._save_to_state("global_notes", self.global_notes or "")
+
     def _update_footer_markup(self) -> None:
         try:
             c = self.accent_color
             self.query_one("#footer_quit", Static).update(f"[bold {c}]^q:[/] [white]quit[/]")
             self.query_one("#footer_sep", Static).update(f"[{c}]|[/]")
             self.query_one("#footer_commands", Static).update(f"[bold {c}]^c + c:[/] [white]commands[/]")
+        except Exception:
+            pass
+
+    def is_history_open(self) -> bool:
+        return self.active_notes_mode == "global"
+
+    def flush_current_notes(self) -> None:
+        try:
+            editors = list(self.query("#notes_editor"))
+            if editors and editors[0].has_focus:
+                text_val = editors[0].text
+                if self.active_notes_mode == "global":
+                    self.global_notes = text_val
+                else:
+                    self.current_chat_notes = text_val
         except Exception:
             pass
 
@@ -3987,8 +4496,11 @@ class ChatApp(App):
         if key in ("ctrl+g", "escape"):
             return True
 
-        if key in ("ctrl+c", "c", "slash", "ctrl+slash") or char in ("c", "/"):
+        if key in ("ctrl+c", "c") or char == "c":
             self.action_open_commands_modal()
+            return True
+        elif key in ("bracketleft", "left_bracket", "bracket_left", "[") or char == "[":
+            self.action_toggle_notes()
             return True
         elif key in ("ctrl+e", "e") or char == "e":
             self.action_send_to_emacs()
@@ -4014,7 +4526,7 @@ class ChatApp(App):
         elif key in ("ctrl+f", "f") or char == "f":
             self.action_insert_file_from_disk()
             return True
-        elif key in ("ctrl+g", "g", "ctrl+backslash", "backslash") or char == "g":
+        elif key in ("ctrl+g", "g") or char == "g":
             self.action_open_git_tree()
             return True
         elif key in ("period", "full_stop", ".") or char == ".":
@@ -4130,7 +4642,26 @@ class ChatApp(App):
             pass
 
     def on_resize(self, event: events.Resize) -> None:
+        is_mobile = event.size.width <= MOBILE_BREAKPOINT
+        if self.screen:
+            self.screen.set_class(is_mobile, "-mobile")
         self.call_after_refresh(self.update_feed_nav_banner)
+
+    def on_app_focus(self) -> None:
+        try:
+            target = self.query_one(f"#{self._last_focused_input_id}")
+            if target and target.is_mounted and target.can_focus:
+                target.focus()
+        except Exception:
+            pass
+
+    def on_descendant_focus(self, event: events.DescendantFocus) -> None:
+        w = event.widget
+        wid = getattr(w, "id", None)
+        if wid in ("input", "snippet_preview", "history"):
+            self._last_non_notes_input_id = wid
+        if wid in ("input", "notes_editor", "snippet_preview", "history"):
+            self._last_focused_input_id = wid
 
     def on_key(self, event: events.Key) -> None:
         key_name = event.key.lower()
@@ -4147,8 +4678,10 @@ class ChatApp(App):
     def compose(self) -> ComposeResult:
         with Vertical(id="main_container"):
             yield Static("▲ Loading messages...", id="feed_loader_banner")
-            yield FeedArea(id="feed")
-            yield HistoryList(id="history")
+            with Horizontal(id="middle_split"):
+                yield FeedArea(id="feed")
+                yield HistoryList(id="history")
+                yield NotesPanel()
             yield Static("", id="feed_status")
             yield Static("", id="feed_nav_banner")
             yield SnippetPreview(id="snippet_preview")
@@ -4169,6 +4702,11 @@ class ChatApp(App):
     async def on_mount(self) -> None:
         saved_theme = self._read_theme_from_state()
         self.set_theme(saved_theme, notify_user=False)
+
+        self.global_notes = self._read_global_notes_from_state()
+
+        if self.size and self.size.width <= MOBILE_BREAKPOINT and self.screen:
+            self.screen.add_class("-mobile")
 
         await self.start_socket_server()
         self.call_after_refresh(self._initial_startup_load)
@@ -4362,9 +4900,25 @@ class ChatApp(App):
         loc = f" ({event.file}:{event.start_line}-{event.end_line})" if event.file else ""
         self.notify(f"Inserted {tag}{loc} at cursor")
 
+    def _direct_flush_chat_to_disk(self, chat_id: str, notes_text: str) -> None:
+        if not chat_id:
+            return
+        path = self._get_chat_file(chat_id)
+        if path.exists():
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                data["notes"] = notes_text or ""
+                data["updated_at"] = time.time()
+                path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            except Exception:
+                pass
+
     def action_quit(self) -> None:
-        if self.current_chat_id:
+        self.flush_current_notes()
+        if self.current_chat_id and self.active_notes_mode == "chat":
+            self._direct_flush_chat_to_disk(self.current_chat_id, self.current_chat_notes)
             self.save_current_chat()
+        self._flush_global_notes_to_state()
         self.exit()
 
     def on_unmount(self) -> None:
@@ -4377,8 +4931,12 @@ class ChatApp(App):
             self._nav_indicator_timer.stop()
             self._nav_indicator_timer = None
 
-        if self.current_chat_id:
+        self.flush_current_notes()
+        if self.current_chat_id and self.active_notes_mode == "chat":
+            self._direct_flush_chat_to_disk(self.current_chat_id, self.current_chat_notes)
             self.save_current_chat()
+
+        self._flush_global_notes_to_state()
 
         if self._server:
             self._server.close()
@@ -4394,6 +4952,152 @@ class ChatApp(App):
             key=lambda f: f.stat().st_mtime,
             reverse=True,
         )
+
+    def _get_ancestor_lineage(self, parent_id: str | None) -> list[dict]:
+        ancestors: list[dict] = []
+        visited = set()
+        curr_id = parent_id
+
+        while curr_id and curr_id not in visited:
+            visited.add(curr_id)
+            p_file = self._get_chat_file(curr_id)
+            if not p_file.exists():
+                break
+
+            try:
+                p_data = json.loads(p_file.read_text(encoding="utf-8"))
+            except Exception:
+                break
+
+            notes_val = str(p_data.get("notes", "") or "").strip()
+            if notes_val:
+                ancestors.append({
+                    "id": curr_id,
+                    "title": p_data.get("title", curr_id),
+                    "notes": notes_val,
+                    "parent_id": p_data.get("parent_id"),
+                })
+            curr_id = p_data.get("parent_id")
+
+        ancestors.reverse()
+        for idx, anc in enumerate(ancestors):
+            anc["depth"] = idx
+
+        return ancestors
+
+    def sync_notes_ui(self) -> None:
+        is_history = (self.active_notes_mode == "global")
+        try:
+            notes_panel = self.query_one("#notes_panel", NotesPanel)
+        except Exception:
+            return
+
+        if is_history:
+            text = self.global_notes or ""
+            lineage: list[dict] = []
+            cid = ""
+        else:
+            text = self.current_chat_notes or ""
+            lineage = self._get_ancestor_lineage(self.current_chat_parent_id)
+            cid = self.current_chat_id
+
+        self.call_after_refresh(lambda: notes_panel.update_notes_content(is_history, text, lineage, chat_id=cid))
+
+    def action_toggle_notes(self) -> None:
+        self.notes_open = not self.notes_open
+        notes_panel = self.query_one("#notes_panel", NotesPanel)
+
+        if self.notes_open:
+            notes_panel.styles.display = "block"
+            if self.screen:
+                self.screen.add_class("-notes-open")
+            self.sync_notes_ui()
+        else:
+            self.flush_current_notes()
+            if self.active_notes_mode == "global":
+                self._flush_global_notes_to_state()
+            else:
+                self._direct_flush_chat_to_disk(self.current_chat_id, self.current_chat_notes)
+                self.save_current_chat()
+
+            notes_panel.styles.display = "none"
+            if self.screen:
+                self.screen.remove_class("-notes-open")
+
+            target_id = self._last_non_notes_input_id
+            if target_id == "snippet_preview":
+                try:
+                    preview = self.query_one("#snippet_preview", SnippetPreview)
+                    if preview.styles.display != "none":
+                        preview.focus()
+                    else:
+                        self.query_one("#input", ExpandingInput).focus()
+                except Exception:
+                    self.query_one("#input", ExpandingInput).focus()
+            elif target_id == "history" and self.is_history_open():
+                try:
+                    self.query_one("#history", HistoryList).focus()
+                except Exception:
+                    self.query_one("#input", ExpandingInput).focus()
+            else:
+                try:
+                    self.query_one("#input", ExpandingInput).focus()
+                except Exception:
+                    pass
+
+    def cycle_global_focus(self, direction: int = 1, escape_parents: bool = False) -> None:
+        ring: list[Widget] = []
+
+        try:
+            input_widget = self.query_one("#input", ExpandingInput)
+            snippet_widget = self.query_one("#snippet_preview", SnippetPreview)
+            notes_panel = self.query_one("#notes_panel", NotesPanel)
+            history_widget = self.query_one("#history", HistoryList)
+        except Exception:
+            return
+
+        ring.append(input_widget)
+
+        if self.notes_open:
+            notes_editor = self.query_one("#notes_editor", NotesEditorArea)
+            ring.append(notes_editor)
+
+            if not escape_parents:
+                parent_cards = list(notes_panel.query(ParentNoteCard))
+                ring.extend(parent_cards)
+
+        if self.is_history_open() and history_widget.styles.display != "none":
+            ring.append(history_widget)
+
+        if snippet_widget.styles.display != "none":
+            ring.append(snippet_widget)
+
+        if len(ring) <= 1:
+            return
+
+        current_focused = self.focused
+        curr_idx = -1
+        for idx, w in enumerate(ring):
+            if w is current_focused:
+                curr_idx = idx
+                break
+
+        if curr_idx == -1:
+            next_idx = 0 if direction > 0 else (len(ring) - 1)
+        else:
+            if escape_parents and isinstance(current_focused, ParentNoteCard):
+                if self.is_history_open() and history_widget.styles.display != "none":
+                    history_widget.focus()
+                elif snippet_widget.styles.display != "none":
+                    snippet_widget.focus()
+                else:
+                    input_widget.focus()
+                return
+
+            next_idx = (curr_idx + direction) % len(ring)
+
+        target = ring[next_idx]
+        target.focus()
 
     def refresh_history_list(self) -> None:
         history_widget = self.query_one("#history", HistoryList)
@@ -4454,7 +5158,10 @@ class ChatApp(App):
         self.hide_status()
 
         if self.current_chat_id and self.current_chat_id != chat_id:
-            self.save_current_chat()
+            if self.active_notes_mode == "chat":
+                self.flush_current_notes()
+                self._direct_flush_chat_to_disk(self.current_chat_id, self.current_chat_notes)
+                self.save_current_chat()
 
         self.current_chat_id = chat_id
         self._save_to_state("active_chat", chat_id)
@@ -4463,7 +5170,7 @@ class ChatApp(App):
         saved_marker: str = ""
         saved_turn_idx: int | None = None
         if path.exists():
-            data = json.loads(path.read_text())
+            data = json.loads(path.read_text(encoding="utf-8"))
             raw_messages = data.get("messages", [])
             self.history = []
             for m in raw_messages:
@@ -4475,6 +5182,7 @@ class ChatApp(App):
             self.current_chat_title = data.get("title", "")
             self.current_chat_working_dir = data.get("working_dir")
             self.current_chat_parent_id = data.get("parent_id")
+            self.current_chat_notes = data.get("notes", "") or ""
             saved_marker = data.get("center_marker", "")
             saved_turn_idx = data.get("last_turn_index")
 
@@ -4491,6 +5199,7 @@ class ChatApp(App):
             self.current_chat_title = ""
             self.current_chat_working_dir = None
             self.current_chat_parent_id = None
+            self.current_chat_notes = ""
             self.current_chat_last_index = 0
             self.current_chat_center_marker = ""
 
@@ -4498,8 +5207,15 @@ class ChatApp(App):
         if feed.styles.display == "none":
             feed.styles.display = "block"
 
+        display_title = self.current_chat_title or "Untitled Chat"
+        feed.border_title = f" {display_title} "
+
         marker_target = self.current_chat_center_marker or self.current_chat_last_index
         feed.set_messages(self.history, initial_target_marker=marker_target)
+
+        notes_panel = self.query_one("#notes_panel", NotesPanel)
+        notes_panel.clear_session_expansion_states()
+        self.sync_notes_ui()
 
         input_widget = self.query_one("#input", ExpandingInput)
         input_widget.reset_snippets()
@@ -4509,6 +5225,9 @@ class ChatApp(App):
     def save_current_chat(self) -> None:
         if not self.current_chat_id:
             return
+
+        if self.active_notes_mode == "chat":
+            self.flush_current_notes()
 
         path = self._get_chat_file(self.current_chat_id)
 
@@ -4520,6 +5239,12 @@ class ChatApp(App):
 
         self.current_chat_title = title
 
+        try:
+            feed = self.query_one("#feed", FeedArea)
+            feed.border_title = f" {title} "
+        except Exception:
+            pass
+
         for m in self.history:
             if "turn_id" not in m or not m["turn_id"]:
                 m["turn_id"] = f"turn_{uuid4().hex[:8]}"
@@ -4530,7 +5255,15 @@ class ChatApp(App):
         elif not CENTER_SCREEN_MODE and ":" in final_marker:
             final_marker = final_marker.split(":")[0]
 
+        existing_data = {}
+        if path.exists():
+            try:
+                existing_data = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                existing_data = {}
+
         data = {
+            **existing_data,
             "id": self.current_chat_id,
             "title": self.current_chat_title,
             "parent_id": self.current_chat_parent_id,
@@ -4538,9 +5271,10 @@ class ChatApp(App):
             "working_dir": self.current_chat_working_dir,
             "last_turn_index": self.current_chat_last_index,
             "center_marker": final_marker,
+            "notes": self.current_chat_notes or "",
             "messages": self.history,
         }
-        path.write_text(json.dumps(data, indent=2))
+        path.write_text(json.dumps(data, indent=2), encoding="utf-8")
         self._save_to_state("active_chat", self.current_chat_id)
 
     async def delete_highlighted_chat(self) -> None:
@@ -4570,6 +5304,7 @@ class ChatApp(App):
         if self.current_chat_id == target_id:
             self.current_chat_id = ""
             self.history = []
+            self.current_chat_notes = ""
 
             feed = self.query_one("#feed", FeedArea)
             if sorted_files:
@@ -4609,6 +5344,10 @@ class ChatApp(App):
                 target_file.write_text(json.dumps(data, indent=2))
                 if target_id == self.current_chat_id:
                     self.current_chat_title = new_title.strip()
+                    try:
+                        self.query_one("#feed", FeedArea).border_title = f" {self.current_chat_title} "
+                    except Exception:
+                        pass
                 self.refresh_history_list()
                 self.notify("Chat renamed.")
 
@@ -4622,6 +5361,10 @@ class ChatApp(App):
             if new_title is not None and new_title.strip():
                 self.current_chat_title = new_title.strip()
                 self.save_current_chat()
+                try:
+                    self.query_one("#feed", FeedArea).border_title = f" {self.current_chat_title} "
+                except Exception:
+                    pass
                 self.notify(f"Renamed chat to: {self.current_chat_title}")
 
         self.push_screen(
@@ -4692,6 +5435,8 @@ class ChatApp(App):
         for turn in selected_turns:
             turn["turn_id"] = f"turn_{uuid4().hex[:8]}"
 
+        self.flush_current_notes()
+        self._direct_flush_chat_to_disk(self.current_chat_id, self.current_chat_notes)
         self.save_current_chat()
 
         parent_chat_id = self.current_chat_id
@@ -4704,6 +5449,7 @@ class ChatApp(App):
         self.current_chat_working_dir = parent_working_dir
         self.current_chat_last_index = 0
         self.current_chat_center_marker = selected_turns[0].get("turn_id", "")
+        self.current_chat_notes = ""
         self.history = selected_turns
 
         self.save_current_chat()
@@ -4716,6 +5462,14 @@ class ChatApp(App):
         input_widget = self.query_one("#input", ExpandingInput)
         input_widget.reset_snippets()
         self.query_one("#snippet_preview", SnippetPreview).hide_preview()
+
+        display_title = self.current_chat_title or "Untitled Chat"
+        feed.border_title = f" {display_title} "
+
+        notes_panel = self.query_one("#notes_panel", NotesPanel)
+        notes_panel.clear_session_expansion_states()
+        self.sync_notes_ui()
+
         input_widget.focus()
         self.update_feed_nav_banner()
         self.refresh_history_list()
@@ -4726,19 +5480,42 @@ class ChatApp(App):
         history_widget = self.query_one("#history", HistoryList)
         input_widget = self.query_one("#input", ExpandingInput)
 
-        if history_widget.styles.display == "none":
+        self.flush_current_notes()
+
+        if self.active_notes_mode == "chat":
             if self.current_chat_id and feed._all_messages and feed.styles.display != "none":
+                self._direct_flush_chat_to_disk(self.current_chat_id, self.current_chat_notes)
                 self.save_current_chat()
 
+            self.active_notes_mode = "global"
             self.refresh_history_list()
             self.hide_status()
             feed.styles.display = "none"
             history_widget.styles.display = "block"
+
+            if history_widget.option_count > 0:
+                current_idx = 0
+                for idx in range(history_widget.option_count):
+                    opt = history_widget.get_option_at_index(idx)
+                    if opt.id == self.current_chat_id:
+                        current_idx = idx
+                        break
+                history_widget.highlighted = current_idx
+
+            self.sync_notes_ui()
             history_widget.focus()
         else:
+            self._flush_global_notes_to_state()
+            self.active_notes_mode = "chat"
+
             history_widget.styles.display = "none"
             feed.styles.display = "block"
             feed.refresh(layout=True)
+
+            display_title = self.current_chat_title or "Untitled Chat"
+            feed.border_title = f" {display_title} "
+
+            self.sync_notes_ui()
 
             marker = self.current_chat_center_marker
             target_w = None
@@ -4788,9 +5565,12 @@ class ChatApp(App):
         self._stop_status_ticker()
         self.hide_status()
 
-        if self.current_chat_id:
+        self.flush_current_notes()
+        if self.current_chat_id and self.active_notes_mode == "chat":
+            self._direct_flush_chat_to_disk(self.current_chat_id, self.current_chat_notes)
             self.save_current_chat()
 
+        self.active_notes_mode = "chat"
         self.query_one("#history").styles.display = "none"
         self.query_one("#feed").styles.display = "block"
 
@@ -4800,10 +5580,17 @@ class ChatApp(App):
         self.current_chat_working_dir = None
         self.current_chat_last_index = 0
         self.current_chat_center_marker = ""
+        self.current_chat_notes = ""
         self.history = []
 
         feed = self.query_one("#feed", FeedArea)
         feed.clear()
+        feed.border_title = f" {title or 'New Chat'} "
+
+        notes_panel = self.query_one("#notes_panel", NotesPanel)
+        notes_panel.clear_session_expansion_states()
+        self.sync_notes_ui()
+
         input_widget = self.query_one("#input", ExpandingInput)
         input_widget.reset_snippets()
         self.query_one("#snippet_preview", SnippetPreview).hide_preview()
@@ -5116,6 +5903,10 @@ class ChatApp(App):
     async def on_history_selected(self, event: OptionList.OptionSelected) -> None:
         if event.option_id:
             chat_id = str(event.option_id)
+            self.flush_current_notes()
+            self._flush_global_notes_to_state()
+            self.active_notes_mode = "chat"
+
             self.query_one("#history").styles.display = "none"
             self.query_one("#feed").styles.display = "block"
             await self.load_chat(chat_id)

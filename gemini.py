@@ -3038,6 +3038,7 @@ class FeedArea(VerticalScroll):
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
+        self.can_focus = False
         self.active_turn_index: int = 0
 
         self.fork_ui_active: bool = False
@@ -3392,7 +3393,7 @@ class FeedArea(VerticalScroll):
                 if target_marker is not None:
                     marker_str = str(target_marker).strip()
                     if ":" in marker_str:
-                        tid, offset_str = marker_split = marker_str.split(":", 1)
+                        tid, offset_str = marker_str.split(":", 1)
                         if CENTER_SCREEN_MODE:
                             try:
                                 line_offset = int(offset_str)
@@ -5056,8 +5057,10 @@ class ChatApp(App):
         except Exception:
             return
 
+        # 1. Prompt Input is always tabbable
         ring.append(input_widget)
 
+        # 2. Notes Editor & Parent Note Cards (only when open)
         if self.notes_open:
             notes_editor = self.query_one("#notes_editor", NotesEditorArea)
             ring.append(notes_editor)
@@ -5066,13 +5069,17 @@ class ChatApp(App):
                 parent_cards = list(notes_panel.query(ParentNoteCard))
                 ring.extend(parent_cards)
 
+        # 3. Chat Navigation window (only when history is open & displayed)
         if self.is_history_open() and history_widget.styles.display != "none":
             ring.append(history_widget)
 
+        # 4. Snippet Preview (only when active snippet is displayed)
         if snippet_widget.styles.display != "none":
             ring.append(snippet_widget)
 
         if len(ring) <= 1:
+            if ring:
+                ring[0].focus()
             return
 
         current_focused = self.focused

@@ -42,6 +42,11 @@ class TestTools(unittest.TestCase):
         self.assertIn("main.py", tree_str)
         self.assertIn("README.md", tree_str)
 
+    def test_scan_workspace_tree_max_depth(self):
+        tree_str = scan_workspace_tree(self.work_dir, include_ignored=True, max_depth=1)
+        self.assertIn("src/ ...", tree_str)
+        self.assertNotIn("main.py", tree_str)
+
     def test_write_file(self):
         res = write_file(self.work_dir, path="src/sub/test.txt", content="Sample Content")
         self.assertEqual(res["status"], "success")
@@ -100,6 +105,42 @@ class TestTools(unittest.TestCase):
         self.assertEqual(result["turns"]["T2"]["content"], "Turn 2 content")
         self.assertIn("README.md", result["files"])
         self.assertIn("# Test Repo", result["files"]["README.md"])
+
+    def test_expand_mind_slice_and_outline(self):
+        sample_code = (
+            "class Engine:\n"
+            "    def start(self):\n"
+            "        return True\n\n"
+            "def run():\n"
+            "    e = Engine()\n"
+            "    return e.start()\n"
+        )
+        (self.work_dir / "src" / "engine.py").write_text(sample_code, encoding="utf-8")
+
+        # Test line slice
+        res_slice = expand_mind(
+            self.work_dir,
+            history=[],
+            file_paths=["src/engine.py:2-3"],
+        )
+        self.assertIn("src/engine.py:2-3", res_slice["files"])
+        slice_text = res_slice["files"]["src/engine.py:2-3"]
+        self.assertIn("lines 2 to 3", slice_text)
+        self.assertIn("def start(self):", slice_text)
+        self.assertNotIn("class Engine:", slice_text)
+
+        # Test symbol outline
+        res_outline = expand_mind(
+            self.work_dir,
+            history=[],
+            file_paths=["src/engine.py:outline"],
+        )
+        self.assertIn("src/engine.py:outline", res_outline["files"])
+        outline_text = res_outline["files"]["src/engine.py:outline"]
+        self.assertIn("Outline of src/engine.py", outline_text)
+        self.assertIn("class Engine:", outline_text)
+        self.assertIn("def start(self):", outline_text)
+        self.assertIn("def run():", outline_text)
 
     def test_recall_memory(self):
         self.memory_index.index_turn(

@@ -59,6 +59,16 @@ class TestHelpers(unittest.TestCase):
         self.assertIn("main.py", tree)
         self.assertIn("utils.py", tree)
 
+    def test_build_ascii_tree_max_depth(self):
+        files = ["src/nested/sub/deep.py", "src/nested/file.py", "README.md"]
+        tree_depth1 = build_ascii_tree(files, root_name="project", max_depth=1)
+        self.assertIn("src/ ...", tree_depth1)
+        self.assertNotIn("deep.py", tree_depth1)
+
+        tree_depth2 = build_ascii_tree(files, root_name="project", max_depth=2)
+        self.assertIn("nested/ ...", tree_depth2)
+        self.assertNotIn("deep.py", tree_depth2)
+
     def test_truncate_wire_snippets(self):
         # Snippet within limit (<25 lines)
         short_code = "```python\nprint(1)\nprint(2)\n```"

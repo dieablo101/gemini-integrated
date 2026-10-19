@@ -4,9 +4,53 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import re
 from typing import Any, List, Optional
 
 from gemini_app.storage.memory_index import MemoryIndex
+
+
+def format_file_slice(content: str, start: int, end: int, rel_path: str = "") -> str:
+    """Formats a specific line range slice with line numbers."""
+    lines = content.splitlines()
+    total = len(lines)
+    if total == 0:
+        return f"# [{rel_path} - empty file]"
+    start_idx = max(1, start)
+    end_idx = min(total, max(start_idx, end))
+    if start_idx > total:
+        return f"# Error: Requested start line {start_idx} exceeds total lines ({total}) in {rel_path}."
+
+    header = f"# [{rel_path} - lines {start_idx} to {end_idx} of {total}]"
+    out = [header]
+    width = len(str(end_idx))
+    for i in range(start_idx, end_idx + 1):
+        line_str = lines[i - 1]
+        out.append(f"{i:{width}d} | {line_str}")
+    return "\n".join(out)
+
+
+def format_file_outline(content: str, rel_path: str = "") -> str:
+    """Extracts class and def declarations with line numbers for rapid structural scanning."""
+    lines = content.splitlines()
+    total = len(lines)
+    header = f"# [Outline of {rel_path} - {total} lines]"
+    out = [header]
+    found = 0
+    for idx, line in enumerate(lines, 1):
+        stripped = line.strip()
+        if (
+            stripped.startswith("def ")
+            or stripped.startswith("async def ")
+            or stripped.startswith("class ")
+        ):
+            indent_len = len(line) - len(line.lstrip())
+            indent = " " * indent_len
+            out.append(f"Line {idx:4d}: {indent}{stripped}")
+            found += 1
+    if found == 0:
+        out.append("  (No class or function definitions detected)")
+    return "\n".join(out)
 
 
 def expand_mind(
@@ -62,13 +106,49 @@ def expand_mind(
                     "title": turn_row.get("title", ""),
                 }
 
-    # 3. Read requested files from disk
+    # 3. Read requested files from disk (supports whole file, line range slice 'path:10-50', and outline 'path:outline')
     base = Path(os.path.expanduser(str(working_dir).strip())).resolve()
     for fp in file_paths:
         p = (base / fp).resolve()
         if p.exists() and p.is_file():
             try:
                 results["files"][fp] = p.read_text(encoding="utf-8", errors="replace")
+            except Exception as fe:
+                results["files"][fp] = f"Error reading file: {fe}"
+            continue
+
+        target_str = fp
+        spec = ""
+        if "#" in fp:
+            target_str, spec = fp.split("#", 1)
+        elif ":" in fp:
+            target_str, spec = fp.rsplit(":", 1)
+
+        spec = spec.strip().lower()
+        p_spec = (base / target_str).resolve()
+        if p_spec.exists() and p_spec.is_file():
+            try:
+                raw_text = p_spec.read_text(encoding="utf-8", errors="replace")
+                if spec in ("outline", "symbols"):
+                    results["files"][fp] = format_file_outline(raw_text, target_str)
+                elif spec:
+                    m_range = re.match(r"^(\d+)\s*(?:-|to|\.\.)\s*(\d+)$", spec)
+                    m_plus = re.match(r"^(\d+)\s*\+\s*(\d+)$", spec)
+                    m_single = re.match(r"^(\d+)$", spec)
+                    if m_range:
+                        s, e = int(m_range.group(1)), int(m_range.group(2))
+                        results["files"][fp] = format_file_slice(raw_text, s, e, target_str)
+                    elif m_plus:
+                        s = int(m_plus.group(1))
+                        count = int(m_plus.group(2))
+                        results["files"][fp] = format_file_slice(raw_text, s, s + count - 1, target_str)
+                    elif m_single:
+                        s = int(m_single.group(1))
+                        results["files"][fp] = format_file_slice(raw_text, s, s + 30, target_str)
+                    else:
+                        results["files"][fp] = raw_text
+                else:
+                    results["files"][fp] = raw_text
             except Exception as fe:
                 results["files"][fp] = f"Error reading file: {fe}"
         else:

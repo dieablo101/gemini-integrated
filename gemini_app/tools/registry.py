@@ -49,17 +49,17 @@ class ToolRegistry:
     def get_tool_callables(self) -> Tuple[List[Callable], Dict[str, Callable]]:
         """Returns SDK-compatible function callables and a lookup dictionary."""
 
-        def scan_workspace_tree(include_ignored: bool = True) -> str:
+        def scan_workspace_tree(include_ignored: bool = True, max_depth: Optional[int] = None) -> str:
             """Scans the working directory git tree, returning tracked and .gitignore files."""
             self._notify_phase("scanning", "scanning workspace tree")
-            return _scan_workspace_tree(self.working_dir, include_ignored=include_ignored)
+            return _scan_workspace_tree(self.working_dir, include_ignored=include_ignored, max_depth=max_depth)
 
         def expand_mind(
             turn_numbers: List[int] = [],
             file_paths: List[str] = [],
             turn_ids: List[str] = [],
         ) -> Dict[str, Any]:
-            """Fetches up to 50 items (historical chat turns and local files/dependencies)."""
+            """Fetches up to 50 items (historical chat turns and local files/slices/outlines)."""
             if file_paths:
                 display_f = file_paths[0] if len(file_paths) == 1 else f"{file_paths[0]} (+{len(file_paths)-1})"
                 self._notify_phase("reading", f"reading file ({display_f})")

@@ -10,14 +10,23 @@ from typing import Any, Dict, List, Union
 from gemini_app.helpers import build_ascii_tree, get_git_files_catalog
 
 
-def scan_workspace_tree(working_dir: Union[str, Path], include_ignored: bool = True) -> str:
+def scan_workspace_tree(
+    working_dir: Union[str, Path],
+    include_ignored: bool = True,
+    max_depth: Optional[int] = None,
+) -> str:
     """Scans the working directory git tree, returning tracked and .gitignore files."""
     try:
         working_path = Path(os.path.expanduser(str(working_dir).strip())).resolve()
         cat = get_git_files_catalog(working_path)
         files = cat["tracked"] + (cat["ignored"] if include_ignored else [])
         root_lbl = working_path.name or "workspace"
-        return build_ascii_tree(files, root_name=root_lbl, ignored_set=set(cat["ignored"]))
+        return build_ascii_tree(
+            files,
+            root_name=root_lbl,
+            ignored_set=set(cat["ignored"]),
+            max_depth=max_depth,
+        )
     except Exception as e:
         return f"Error scanning tree: {e}"
 

@@ -149,6 +149,17 @@ def write_code_to_disk(working_dir: str | Path, filename: str, content: str) -> 
     return target
 
 
+COLLAPSIBLE_IGNORED_DIRS = (
+    ".venv",
+    "venv",
+    "node_modules",
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".git",
+)
+
+
 def get_git_files_catalog(repo_dir: str | Path) -> dict[str, list[str]]:
     """Lists tracked and git-ignored files for the repository at repo_dir."""
     base = Path(os.path.expanduser(str(repo_dir).strip())).resolve()
@@ -174,11 +185,28 @@ def get_git_files_catalog(repo_dir: str | Path) -> dict[str, list[str]]:
         text=True,
         check=True,
     )
-    ignored = [
+    ignored_raw = [
         f.strip()
         for f in res_ignored.stdout.splitlines()
         if f.strip() and not f.strip().startswith(".git/") and not f.strip() == ".git"
     ]
+
+    # Prune massive ignored folders to root entries so tree building doesn't blow up
+    ignored: list[str] = []
+    seen_pruned: set[str] = set()
+    for f in ignored_raw:
+        matched = False
+        parts = Path(f).parts
+        for i, part in enumerate(parts):
+            if part in COLLAPSIBLE_IGNORED_DIRS:
+                collapsed_path = "/".join(parts[: i + 1])
+                if collapsed_path not in seen_pruned:
+                    seen_pruned.add(collapsed_path)
+                    ignored.append(collapsed_path)
+                matched = True
+                break
+        if not matched:
+            ignored.append(f)
 
     return {
         "tracked": sorted(tracked),
@@ -186,7 +214,12 @@ def get_git_files_catalog(repo_dir: str | Path) -> dict[str, list[str]]:
     }
 
 
-def build_ascii_tree(files: list[str], root_name: str = ".", ignored_set: set[str] | None = None) -> str:
+def build_ascii_tree(
+    files: list[str],
+    root_name: str = ".",
+    ignored_set: set[str] | None = None,
+    max_depth: int | None = None,
+) -> str:
     """Renders a sorted list of relative file paths into an ASCII tree."""
     nested: dict = {}
     ignored_set = ignored_set or set()
@@ -199,7 +232,7 @@ def build_ascii_tree(files: list[str], root_name: str = ".", ignored_set: set[st
 
     lines: list[str] = [root_name + "/"]
 
-    def _render(node: dict, current_acc: Path, prefix: str = "") -> None:
+    def _render(node: dict, current_acc: Path, prefix: str = "", depth: int = 1) -> None:
         items = sorted(node.keys())
         for idx, key in enumerate(items):
             child_acc = current_acc / key
@@ -208,18 +241,21 @@ def build_ascii_tree(files: list[str], root_name: str = ".", ignored_set: set[st
             child_prefix = "    " if is_last else "│   "
             is_dir = bool(node[key])
 
+            rel_str = str(child_acc)
+            tag = " (ignored)" if rel_str in ignored_set else ""
+
             if is_dir:
                 display = f"{key}/"
+                if max_depth is not None and depth >= max_depth and node[key]:
+                    lines.append(f"{prefix}{branch}{display}{tag} ...")
+                else:
+                    lines.append(f"{prefix}{branch}{display}{tag}")
+                    _render(node[key], child_acc, prefix + child_prefix, depth + 1)
             else:
-                rel_str = str(child_acc)
-                tag = " (ignored)" if rel_str in ignored_set else ""
                 display = f"{key}{tag}"
+                lines.append(f"{prefix}{branch}{display}")
 
-            lines.append(f"{prefix}{branch}{display}")
-            if is_dir:
-                _render(node[key], child_acc, prefix + child_prefix)
-
-    _render(nested, Path())
+    _render(nested, Path(), depth=1)
     return "\n".join(lines)
 
 

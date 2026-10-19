@@ -1,0 +1,6635 @@
+#!/opt/gemini/.venv/bin/python3
+
+import asyncio
+import copy
+from datetime import datetime
+import getpass
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import tempfile
+import time
+from typing import Callable, TypeVar
+from uuid import uuid4
+
+import pyperclip
+from google import genai
+from google.genai import types
+from rich.cells import cell_len
+from rich.console import RenderableType
+from rich.syntax import Syntax
+from textual import events, on, work
+from textual.app import App, ComposeResult
+from textual.binding import Binding
+from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.message import Message
+from textual.screen import ModalScreen, Screen
+from textual.timer import Timer
+from textual.widget import Widget
+from textual.widgets import (
+    Button,
+    Input,
+    Label,
+    Markdown,
+    OptionList,
+    RadioButton,
+    RadioSet,
+    Static,
+    TextArea,
+    Tree,
+)
+from textual.widgets.markdown import MarkdownFence
+from textual.widgets.option_list import Option
+from textual.widgets.text_area import Selection
+from textual.widgets.tree import TreeNode
+
+CURRENT_USER: str = getpass.getuser()
+
+GEMINI_HOME = Path.home() / ".gemini"
+GEMINI_HOME.mkdir(mode=0o700, parents=True, exist_ok=True)
+
+CHATS_DIR = GEMINI_HOME / "chats"
+CHATS_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+
+ARCHIVE_DIR = CHATS_DIR / ".archive"
+ARCHIVE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+
+SCREENSHOTS_DIR = GEMINI_HOME / "screenshots"
+SCREENSHOTS_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+
+STATE_FILE = GEMINI_HOME / "state.json"
+SOCKET_PATH = GEMINI_HOME / "gemini_textual.sock"
+
+FORK_HEADER_TEXT = "## This chat is a fork of another / previous chat"
+
+SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
+CENTER_SCREEN_MODE: bool = True
+MOBILE_BREAKPOINT: int = 80
+
+DEFAULT_WINDOW_CAPACITY: int = 10
+DEFAULT_MODEL: str = "gemini-3.8-flash"
+MAX_SNIPPET_LINES_ON_WIRE: int = 25
+TURNS_PER_SEGMENT: int = 200
+
+THEMES: dict[str, dict[str, str]] = {
+    "red": {
+        "accent": "#ff3333",
+        "accent_dim": "#aa1111",
+        "accent_bright": "#ff6666",
+        "banner_bg": "#8b0000",
+        "card_active_bg": "#2a0808",
+    },
+    "blue": {
+        "accent": "#3399ff",
+        "accent_dim": "#1155aa",
+        "accent_bright": "#66b3ff",
+        "banner_bg": "#003388",
+        "card_active_bg": "#08182a",
+    },
+    "green": {
+        "accent": "#33cc66",
+        "accent_dim": "#118833",
+        "accent_bright": "#66e08a",
+        "banner_bg": "#005522",
+        "card_active_bg": "#082a12",
+    },
+    "orange": {
+        "accent": "#ff8800",
+        "accent_dim": "#aa5500",
+        "accent_bright": "#ffa333",
+        "banner_bg": "#884400",
+        "card_active_bg": "#2a1608",
+    },
+    "purple": {
+        "accent": "#bb55ff",
+        "accent_dim": "#7722aa",
+        "accent_bright": "#cc77ff",
+        "banner_bg": "#551188",
+        "card_active_bg": "#22082a",
+    },
+    "yellow": {
+        "accent": "#ffcc00",
+        "accent_dim": "#aa8800",
+        "accent_bright": "#ffdb33",
+        "banner_bg": "#886600",
+        "card_active_bg": "#2a2208",
+    },
+    "pink": {
+        "accent": "#ff55aa",
+        "accent_dim": "#aa2266",
+        "accent_bright": "#ff77bb",
+        "banner_bg": "#881144",
+        "card_active_bg": "#2a081a",
+    },
+}
+
+DEFAULT_PALETTE: str = "red"
+
+def generate_theme_css_rules() -> str:
+    blocks: list[str] = []
+    for name, cfg in THEMES.items():
+        acc = cfg["accent"]
+        acc_dim = cfg["accent_dim"]
+        acc_bright = cfg["accent_bright"]
+        banner = cfg["banner_bg"]
+        active_card = cfg["card_active_bg"]
+
+        blocks.append(f"""
+        .theme-{name} ScrollBar {{
+            color: {acc};
+            background: #181818;
+        }}
+        .theme-{name} ScrollBar:hover {{
+            color: {acc_bright};
+            background: #252525;
+        }}
+        .theme-{name} ScrollBarCorner {{
+            background: #000000;
+        }}
+
+        .theme-{name} Toast {{
+            border: solid {acc};
+        }}
+        .theme-{name} #feed_loader_banner {{
+            color: #ffffff;
+            background: {banner};
+        }}
+        .theme-{name} #feed {{
+            border: round {acc};
+        }}
+        .theme-{name} .turn_card.card-active .turn_header {{
+            background: {active_card};
+        }}
+        .theme-{name} .turn_card.card-active .turn_box_label {{
+            color: {acc};
+        }}
+        .theme-{name} MarkdownHorizontalRule {{
+            border-bottom: solid {acc};
+            color: {acc};
+        }}
+        .theme-{name} #feed_status {{
+            color: {acc};
+            border-bottom: solid {acc};
+        }}
+        .theme-{name} #feed_nav_banner {{
+            color: #ffffff;
+            background: #141414;
+        }}
+        .theme-{name} #feed_nav_banner.fork-active {{
+            background: {banner};
+        }}
+        .theme-{name} #feed MarkdownFence.active-snippet {{
+            border: solid {acc} !important;
+        }}
+        .theme-{name} #history {{
+            border: solid {acc};
+            scrollbar-color: {acc} #181818;
+            scrollbar-color-hover: {acc_bright} #252525;
+        }}
+        .theme-{name} #history > .option-list--option-highlighted {{
+            background: {active_card};
+            color: {acc_bright};
+            text-style: bold;
+        }}
+        .theme-{name} #history:focus > .option-list--option-highlighted {{
+            background: {banner};
+            color: #ffffff;
+            text-style: bold;
+        }}
+        .theme-{name} #notes_panel {{
+            border: round {acc};
+            scrollbar-color: {acc} #181818;
+            scrollbar-color-hover: {acc_bright} #252525;
+        }}
+        .theme-{name} .parent_note_card:focus {{
+            border: none;
+        }}
+        .theme-{name} .parent_note_card:focus .parent_note_title {{
+            background: {active_card};
+            color: {acc_bright};
+        }}
+        .theme-{name} .parent_note_card .parent_note_title {{
+            color: {acc};
+        }}
+        .theme-{name} #snippet_preview {{
+            border: round {acc};
+            scrollbar-color: {acc} #181818;
+            scrollbar-color-hover: {acc_bright} #252525;
+        }}
+        .theme-{name} #input {{
+            border: solid {acc};
+        }}
+        .theme-{name} #input:focus {{
+            border: solid {acc};
+        }}
+        .theme-{name} Button {{
+            border: solid {acc};
+            color: #ffffff;
+            text-style: none;
+        }}
+        .theme-{name} Button:hover {{
+            color: {acc};
+            background: #141414;
+            text-style: none;
+        }}
+        .theme-{name} Button:focus {{
+            border: double {acc};
+            text-style: none;
+        }}
+
+        /* Modal dialog borders, scrollbars & inputs */
+        .theme-{name} #confirm_dialog {{
+            border: thick {acc};
+            scrollbar-color: {acc} #181818;
+            scrollbar-color-hover: {acc_bright} #252525;
+        }}
+        .theme-{name} #confirm_buttons Button {{
+            border: solid {acc};
+            text-style: none;
+        }}
+        .theme-{name} #confirm_buttons Button:hover {{
+            color: {acc};
+            text-style: none;
+        }}
+        .theme-{name} #confirm_buttons Button:focus {{
+            border: double {acc};
+            text-style: none;
+        }}
+
+        .theme-{name} #fork_dialog {{
+            border: thick {acc};
+            scrollbar-color: {acc} #181818;
+            scrollbar-color-hover: {acc_bright} #252525;
+        }}
+        .theme-{name} #fork_prefix_hint {{
+            color: {acc};
+        }}
+        .theme-{name} #fork_title_input {{
+            border: solid {acc};
+        }}
+        .theme-{name} #fork_buttons Button {{
+            border: solid {acc};
+            text-style: none;
+        }}
+        .theme-{name} #fork_buttons Button:hover {{
+            color: {acc};
+            text-style: none;
+        }}
+        .theme-{name} #fork_buttons Button:focus {{
+            border: double {acc};
+            text-style: none;
+        }}
+
+        .theme-{name} #save_dialog {{
+            border: thick {acc};
+            scrollbar-color: {acc} #181818;
+            scrollbar-color-hover: {acc_bright} #252525;
+        }}
+        .theme-{name} #save_dialog Input {{
+            border: solid {acc};
+        }}
+        .theme-{name} #dialog_buttons Button {{
+            border: solid {acc};
+            text-style: none;
+        }}
+        .theme-{name} #dialog_buttons Button:hover {{
+            color: {acc};
+            text-style: none;
+        }}
+        .theme-{name} #dialog_buttons Button:focus {{
+            border: double {acc};
+            text-style: none;
+        }}
+
+        .theme-{name} #insert_file_dialog {{
+            border: thick {acc};
+            scrollbar-color: {acc} #181818;
+            scrollbar-color-hover: {acc_bright} #252525;
+        }}
+        .theme-{name} #insert_file_dialog Input {{
+            border: solid {acc};
+        }}
+
+        .theme-{name} #git_dialog {{
+            border: thick {acc};
+            scrollbar-color: {acc} #181818;
+            scrollbar-color-hover: {acc_bright} #252525;
+        }}
+        .theme-{name} #git_repo_row DirectoryPathInput {{
+            border: solid {acc};
+        }}
+        .theme-{name} #git_repo_row Button {{
+            border: solid {acc};
+            text-style: none;
+        }}
+        .theme-{name} #git_repo_row Button:hover {{
+            color: {acc};
+            text-style: none;
+        }}
+        .theme-{name} #git_repo_row Button:focus {{
+            border: double {acc};
+            text-style: none;
+        }}
+        .theme-{name} .tree_pane Tree {{
+            border: solid {acc};
+            scrollbar-color: {acc} #181818;
+            scrollbar-color-hover: {acc_bright} #252525;
+        }}
+        .theme-{name} #status_label {{
+            color: {acc};
+        }}
+        .theme-{name} #git_buttons Button {{
+            border: solid {acc};
+            text-style: none;
+        }}
+        .theme-{name} #git_buttons Button:hover {{
+            color: {acc};
+            text-style: none;
+        }}
+        .theme-{name} #git_buttons Button:focus {{
+            border: double {acc};
+            text-style: none;
+        }}
+
+        /* Radio Buttons themed color */
+        .theme-{name} RadioButton.-selected > .toggle--button {{
+            color: {acc};
+            background: {acc};
+        }}
+        .theme-{name} RadioButton > .toggle--button {{
+            color: #555555;
+            background: #222222;
+            border: none;
+        }}
+        .theme-{name} RadioButton:focus > .toggle--label {{
+            color: {acc_bright};
+        }}
+
+        .theme-{name} #dialog {{
+            border: thick {acc};
+            scrollbar-color: {acc} #181818;
+            scrollbar-color-hover: {acc_bright} #252525;
+        }}
+        .theme-{name} #dialog Input {{
+            border: solid {acc};
+        }}
+        .theme-{name} #dialog-buttons Button {{
+            border: solid {acc};
+            text-style: none;
+        }}
+        .theme-{name} #dialog-buttons Button:hover {{
+            color: {acc};
+            text-style: none;
+        }}
+        .theme-{name} #dialog-buttons Button:focus {{
+            border: double {acc};
+            text-style: none;
+        }}
+
+        .theme-{name} #frame_dialog {{
+            border: thick {acc};
+            scrollbar-color: {acc} #181818;
+            scrollbar-color-hover: {acc_bright} #252525;
+        }}
+        .theme-{name} #frame_options {{
+            border: solid {acc};
+            scrollbar-color: {acc} #181818;
+            scrollbar-color-hover: {acc_bright} #252525;
+        }}
+
+        .theme-{name} #commands_dialog {{
+            border: thick {acc};
+            scrollbar-color: {acc} #181818;
+            scrollbar-color-hover: {acc_bright} #252525;
+        }}
+        .theme-{name} .cmd_section_title {{
+            color: {acc};
+        }}
+        .theme-{name} .cmd_key {{
+            color: {acc_bright};
+        }}
+        .theme-{name} #cmd_footer_hint {{
+            color: {acc_dim};
+        }}
+
+        /* Mind Map Screen Theming */
+        .theme-{name} #mind_states_column {{
+            border-right: solid {acc};
+        }}
+        .theme-{name} #gemini_mind_card {{
+            border-bottom: solid {acc};
+        }}
+        .theme-{name} .mind_header {{
+            color: {acc};
+        }}
+        .theme-{name} #mind_input {{
+            border: solid {acc};
+        }}
+        .theme-{name} #mind_input:focus {{
+            border: solid {acc};
+        }}
+        """)
+    return "\n".join(blocks)
+
+GATED_NAV_KEYS = {
+    "home",
+    "end",
+    "pageup",
+    "pagedown",
+    "up",
+    "down",
+    "shift+up",
+    "shift+down",
+    "alt+n",
+    "meta+n",
+    "alt+p",
+    "meta+p",
+}
+
+def cast_ray_from_center(
+    center_y: int,
+    header_map: dict[int, tuple[int, str]],
+) -> tuple[int, str, int]:
+    if not header_map:
+        return 0, "", 0
+
+    sorted_headers = sorted(header_map.keys())
+    lowest_header_y = sorted_headers[0]
+    highest_header_y = sorted_headers[-1]
+
+    if center_y <= lowest_header_y:
+        t_idx, t_id = header_map[lowest_header_y]
+        return t_idx, t_id, int(center_y - lowest_header_y)
+
+    if center_y >= highest_header_y:
+        t_idx, t_id = header_map[highest_header_y]
+        return t_idx, t_id, int(center_y - highest_header_y)
+
+    closest_line = min(
+        sorted_headers,
+        key=lambda y: (abs(y - center_y), 0 if y >= center_y else 1),
+    )
+    t_idx, t_id = header_map[closest_line]
+    return t_idx, t_id, int(center_y - closest_line)
+
+_orig_markdown_fence_render = MarkdownFence.render
+
+def _enhanced_markdown_fence_render(self: MarkdownFence) -> RenderableType:
+    renderable = _orig_markdown_fence_render(self)
+    try:
+        if isinstance(renderable, Syntax):
+            renderable.word_wrap = True
+            renderable.padding = 0
+            renderable.line_numbers = True
+
+            start_line = getattr(self, "_detected_start_line", None)
+            if start_line is None:
+                start_line = 1
+                if self.parent:
+                    siblings = list(self.parent.children)
+                    if self in siblings:
+                        idx = siblings.index(self)
+                        for s in reversed(siblings[:idx]):
+                            s_text = getattr(s, "_text", "") or ""
+                            if hasattr(s, "walk_children"):
+                                for child in s.walk_children():
+                                    text_val = getattr(child, "text", "")
+                                    if text_val:
+                                        s_text += " " + str(text_val)
+                            m = re.search(r"\(Lines?\s+(\d+)", s_text)
+                            if m:
+                                start_line = int(m.group(1))
+                                break
+                            if isinstance(s, MarkdownFence):
+                                break
+                self._detected_start_line = start_line
+
+            renderable.start_line = start_line
+    except Exception:
+        pass
+    return renderable
+
+MarkdownFence.render = _enhanced_markdown_fence_render
+
+EXTENSION_LANG_MAP: dict[str, str] = {
+    ".py": "python", ".pyw": "python", ".js": "javascript", ".mjs": "javascript",
+    ".cjs": "javascript", ".ts": "typescript", ".tsx": "tsx", ".jsx": "jsx",
+    ".html": "html", ".htm": "html", ".css": "css", ".scss": "scss",
+    ".sass": "sass", ".json": "json", ".md": "markdown", ".markdown": "markdown",
+    ".sh": "bash", ".bash": "bash", ".zsh": "bash", ".c": "c", ".h": "c",
+    ".cpp": "cpp", ".hpp": "cpp", ".cc": "cpp", ".rs": "rust", ".go": "go",
+    ".rb": "ruby", ".php": "php", ".java": "java", ".yaml": "yaml",
+    ".yml": "yaml", ".toml": "toml", ".sql": "sql", ".el": "lisp", ".lisp": "lisp",
+}
+
+def detect_language(filepath: str | Path) -> str:
+    ext = Path(filepath).suffix.lower()
+    return EXTENSION_LANG_MAP.get(ext, "")
+
+def write_code_to_disk(working_dir: str | Path, filename: str, content: str) -> Path:
+    base = Path(os.path.expanduser(str(working_dir).strip())).resolve()
+    fn_path = Path(os.path.expanduser(filename.strip()))
+    if fn_path.is_absolute():
+        target = fn_path.resolve()
+    else:
+        target = (base / fn_path).resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content, encoding="utf-8")
+    return target
+
+def get_git_files_catalog(repo_dir: str | Path) -> dict[str, list[str]]:
+    base = Path(os.path.expanduser(str(repo_dir).strip())).resolve()
+    check = subprocess.run(
+        ["git", "-C", str(base), "rev-parse", "--is-inside-work-tree"],
+        capture_output=True,
+        text=True,
+    )
+    if check.returncode != 0 or check.stdout.strip() != "true":
+        raise ValueError(f"Directory '{base}' is not a valid Git repository.")
+
+    res_tracked = subprocess.run(
+        ["git", "-C", str(base), "ls-files"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    tracked = [f.strip() for f in res_tracked.stdout.splitlines() if f.strip()]
+
+    res_ignored = subprocess.run(
+        ["git", "-C", str(base), "ls-files", "--others", "--ignored", "--exclude-standard"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    ignored = [
+        f.strip()
+        for f in res_ignored.stdout.splitlines()
+        if f.strip() and not f.strip().startswith(".git/") and not f.strip() == ".git"
+    ]
+
+    return {
+        "tracked": sorted(tracked),
+        "ignored": sorted(ignored),
+    }
+
+def build_ascii_tree(files: list[str], root_name: str = ".", ignored_set: set[str] | None = None) -> str:
+    nested: dict = {}
+    ignored_set = ignored_set or set()
+
+    for path in sorted(files):
+        parts = Path(path).parts
+        curr = nested
+        for part in parts:
+            curr = curr.setdefault(part, {})
+
+    lines: list[str] = [root_name + "/"]
+
+    def _render(node: dict, current_acc: Path, prefix: str = "") -> None:
+        items = sorted(node.keys())
+        for idx, key in enumerate(items):
+            child_acc = current_acc / key
+            is_last = idx == len(items) - 1
+            branch = "└── " if is_last else "├── "
+            child_prefix = "    " if is_last else "│   "
+            is_dir = bool(node[key])
+
+            if is_dir:
+                display = f"{key}/"
+            else:
+                rel_str = str(child_acc)
+                tag = " (ignored)" if rel_str in ignored_set else ""
+                display = f"{key}{tag}"
+
+            lines.append(f"{prefix}{branch}{display}")
+            if is_dir:
+                _render(node[key], child_acc, prefix + child_prefix)
+
+    _render(nested, Path())
+    return "\n".join(lines)
+
+def truncate_wire_snippets(text: str, max_lines: int = MAX_SNIPPET_LINES_ON_WIRE) -> str:
+    """Truncates large code blocks on the API wire to preserve token capacity."""
+    pattern = re.compile(r"(```[a-zA-Z0-9_-]*\n)([\s\S]*?)(```)")
+
+    def repl(m: re.Match) -> str:
+        opener = m.group(1)
+        code = m.group(2)
+        closer = m.group(3)
+        lines = code.split("\n")
+        if len(lines) > max_lines:
+            kept = "\n".join(lines[:max_lines])
+            omitted = len(lines) - max_lines
+            stub = f"\n# ... [{omitted} lines truncated from wire. Call expand_mind() to inspect full file/snippet] ...\n"
+            return f"{opener}{kept}{stub}{closer}"
+        return m.group(0)
+
+    return pattern.sub(repl, text)
+
+class RemoteInsert(Message):
+    def __init__(
+        self,
+        text: str,
+        lang: str = "",
+        file: str = "",
+        start_line: int | None = None,
+        end_line: int | None = None,
+    ) -> None:
+        super().__init__()
+        self.text = text
+        self.lang = lang
+        self.file = file
+        self.start_line = start_line
+        self.end_line = end_line
+
+class RequestPhaseUpdate(Message):
+    def __init__(self, phase: str) -> None:
+        super().__init__()
+        self.phase = phase
+
+class RequestFinished(Message):
+    def __init__(self, full_text: str, elapsed: float, words: int) -> None:
+        super().__init__()
+        self.full_text = full_text
+        self.elapsed = elapsed
+        self.words = words
+
+class RequestFailed(Message):
+    def __init__(self, error_message: str) -> None:
+        super().__init__()
+        self.error_message = error_message
+
+class MindMapRecalibrated(Message):
+    def __init__(self, gemini_state: str, user_state: str, tree_content: str, tree_state: list) -> None:
+        super().__init__()
+        self.gemini_state = gemini_state
+        self.user_state = user_state
+        self.tree_content = tree_content
+        self.tree_state = tree_state
+
+class AppLockEngaged(Message):
+    def __init__(self, reason: str) -> None:
+        super().__init__()
+        self.reason = reason
+
+class AppLockReleased(Message):
+    def __init__(self, reason: str) -> None:
+        super().__init__()
+        self.reason = reason
+
+class AppLockController:
+    def __init__(self, app: App) -> None:
+        self.app = app
+        self._active_reasons: set[str] = set()
+
+    @property
+    def is_locked(self) -> bool:
+        return len(self._active_reasons) > 0
+
+    def has_reason(self, reason: str) -> bool:
+        return reason in self._active_reasons
+
+    def acquire(self, reason: str) -> None:
+        was_locked = self.is_locked
+        self._active_reasons.add(reason)
+        if not was_locked:
+            self.app.post_message(AppLockEngaged(reason))
+
+    def release(self, reason: str) -> None:
+        if reason in self._active_reasons:
+            self._active_reasons.remove(reason)
+            if not self.is_locked:
+                self.app.post_message(AppLockReleased(reason))
+
+ModalResultType = TypeVar("ModalResultType")
+
+class ResponsiveModalScreen(ModalScreen[ModalResultType]):
+    def _update_screen_classes(self, width: int | None = None) -> None:
+        current_w = width if width is not None else (self.size.width or (self.app.size.width if self.app else 100))
+        self.set_class(current_w <= MOBILE_BREAKPOINT, "-mobile")
+
+    def on_mount(self) -> None:
+        if hasattr(self.app, "clear_toasts"):
+            self.app.clear_toasts()
+        if hasattr(self.app, "active_palette_name"):
+            self.add_class(f"theme-{self.app.active_palette_name}")
+        self._update_screen_classes()
+
+    def on_resize(self, event: events.Resize) -> None:
+        self._update_screen_classes(event.size.width)
+
+class CommandsModal(ResponsiveModalScreen[None]):
+    DEFAULT_CSS = """
+    CommandsModal {
+        align: center middle;
+        layer: overlay;
+        background: rgba(0, 0, 0, 0.85);
+    }
+    #commands_dialog {
+        padding: 1 2;
+        width: 78;
+        max-width: 92vw;
+        height: auto;
+        max-height: 90vh;
+        overflow-y: auto;
+        overflow-x: hidden;
+        background: #000000;
+    }
+    #cmd_modal_title {
+        text-style: bold;
+        text-align: center;
+        width: 100%;
+        margin-bottom: 1;
+        color: #ffffff;
+    }
+    .cmd_section_title {
+        text-style: bold;
+        margin-top: 1;
+        margin-bottom: 0;
+        width: 100%;
+    }
+    .cmd_row {
+        width: 100%;
+        height: auto;
+        color: #dddddd;
+        text-wrap: wrap;
+        margin-left: 1;
+    }
+    .cmd_key {
+        text-style: bold;
+    }
+    .cmd_desc {
+        color: #ffffff;
+    }
+    #cmd_footer_hint {
+        width: 100%;
+        text-align: center;
+        margin-top: 2;
+        margin-bottom: 0;
+        text-style: italic;
+    }
+    CommandsModal.-mobile #commands_dialog {
+        width: 100vw;
+        height: 100vh;
+        max-width: 100vw;
+        max-height: 100vh;
+        border: none;
+        padding: 1;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Close"),
+        Binding("ctrl+g", "cancel", "Close"),
+        Binding("q", "cancel", "Close"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll(id="commands_dialog"):
+            yield Label("COMMANDS:", id="cmd_modal_title")
+
+            yield Label("Keyboard:", classes="cmd_section_title")
+            yield Label("[bold]Ctrl+F / Ctrl+B[/] : Move cursor right / left", classes="cmd_row")
+            yield Label("[bold]Ctrl+N / Ctrl+P[/] : Move cursor down / up", classes="cmd_row")
+            yield Label("[bold]Ctrl+A / Ctrl+E[/] : Beginning / end of line", classes="cmd_row")
+            yield Label("[bold]Alt+F / Alt+B[/]   : Move forward / backward one word", classes="cmd_row")
+            yield Label("[bold]Alt+< / Alt+>[/]   : Move to beginning / end of buffer", classes="cmd_row")
+            yield Label("[bold]Ctrl+V / Alt+V[/]  : Page down / page up", classes="cmd_row")
+            yield Label("[bold]Ctrl+Space[/]      : Set mark region for selection", classes="cmd_row")
+            yield Label("[bold]Ctrl+D[/]          : Delete character forward", classes="cmd_row")
+            yield Label("[bold]Ctrl+K[/]          : Kill line forward to clipboard", classes="cmd_row")
+            yield Label("[bold]Ctrl+U[/]          : Kill line backward to clipboard", classes="cmd_row")
+            yield Label("[bold]Alt+D[/]           : Kill word forward to clipboard", classes="cmd_row")
+            yield Label("[bold]Ctrl+W[/]          : Kill selected region / kill word backward", classes="cmd_row")
+            yield Label("[bold]Ctrl+Y[/]          : Yank (paste) clipboard text at cursor", classes="cmd_row")
+            yield Label("[bold]Alt+W[/]           : Copy selected region to clipboard", classes="cmd_row")
+            yield Label("[bold]Ctrl+_ / Ctrl+/[/] : Undo last edit", classes="cmd_row")
+            yield Label("[bold]Ctrl+G / Escape[/] : Clear active mark or selection", classes="cmd_row")
+
+            yield Label("PowerKeys:", classes="cmd_section_title")
+            yield Label("[bold]C-c c[/]            : Open this Commands reference window", classes="cmd_row")
+            yield Label("[bold]C-c m[/]            : Open Cognitive Mind Map Screen", classes="cmd_row")
+            yield Label(r"[bold]C-c \[[/]          : Toggle notes editor panel", classes="cmd_row")
+            yield Label("[bold]C-c e[/]          : Send selected snippet to Emacs buffer", classes="cmd_row")
+            yield Label("[bold]C-c w[/]          : Copy selected code snippet to clipboard", classes="cmd_row")
+            yield Label("[bold]C-c y[/]          : Yank system clipboard into prompt input", classes="cmd_row")
+            yield Label("[bold]C-c t[/]          : Rename current chat topic", classes="cmd_row")
+            yield Label("[bold]C-c b[/]          : Toggle chat history list view", classes="cmd_row")
+            yield Label("[bold]C-c n[/]          : Start a new chat", classes="cmd_row")
+            yield Label("[bold]C-c r[/]          : Save selected code snippet directly to disk", classes="cmd_row")
+            yield Label("[bold]C-c f[/]          : Insert file content from disk as snippet", classes="cmd_row")
+            yield Label("[bold]C-c g[/]          : Scan repository & open Git tree selector", classes="cmd_row")
+            yield Label("[bold]C-c .[/]          : Toggle Fork mode to fork turns", classes="cmd_row")
+            yield Label("[bold]C-c `[/]          : Save SVG screenshot of the current UI", classes="cmd_row")
+
+            yield Label("CommandLine:", classes="cmd_section_title")
+            yield Label("Execute commands directly from the prompt input using the format:", classes="cmd_row")
+            yield Label("  [bold]!/<command>:<argument>[/]", classes="cmd_row")
+            yield Label("  • [bold]![/][bold]/[/] : Command instantiator prefix", classes="cmd_row")
+            yield Label("  • [bold]<command>[/] : The command name", classes="cmd_row")
+            yield Label("  • [bold]:[/] : Argument delimiter", classes="cmd_row")
+            yield Label("  • [bold]<argument>[/] : The parameter value passed to the command", classes="cmd_row")
+
+            yield Label("User Interface:", classes="cmd_section_title")
+            yield Label("[bold]!/ui-theme:<color>[/]", classes="cmd_row")
+            yield Label("  Change the interface color theme.", classes="cmd_row")
+            yield Label("  Available options: [bold]red, blue, green, orange, purple, yellow, pink[/]", classes="cmd_row")
+            yield Label("  Example: [italic]!/ui-theme:blue[/]", classes="cmd_row")
+
+            yield Label("ESC / Ctrl + g to exit", id="cmd_footer_hint")
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+class DirectoryPathInput(Input):
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._last_tab_time: float = 0.0
+
+    def _on_key(self, event: events.Key) -> None:
+        if event.key == "tab":
+            event.prevent_default()
+            event.stop()
+
+            now = time.monotonic()
+            if now - self._last_tab_time < 0.35:
+                self._last_tab_time = 0.0
+                self.screen.focus_next()
+                return
+            else:
+                self._last_tab_time = now
+                self._autocomplete_directory()
+                return
+
+        super()._on_key(event)
+
+    def _autocomplete_directory(self) -> None:
+        raw = self.value.strip()
+        expanded = os.path.expanduser(raw) if raw else os.getcwd()
+
+        parent_raw = os.path.dirname(raw)
+        if raw.endswith(os.sep) or (os.path.isdir(expanded) and not raw.endswith(os.sep)):
+            if os.path.isdir(expanded):
+                search_dir = expanded
+                prefix = ""
+                parent_raw = raw.rstrip(os.sep)
+            else:
+                search_dir = os.path.dirname(expanded) or "."
+                prefix = ""
+        else:
+            search_dir = os.path.dirname(expanded) or "."
+            prefix = os.path.basename(expanded)
+
+        try:
+            entries: list[str] = []
+            for d in os.listdir(search_dir):
+                if d in (".", ".."):
+                    continue
+                if not prefix.startswith(".") and d.startswith("."):
+                    continue
+                full_path = os.path.join(search_dir, d)
+                if os.path.isdir(full_path):
+                    entries.append(d)
+        except Exception:
+            return
+
+        matches = [d for d in entries if d.startswith(prefix)]
+        if not matches:
+            return
+
+        common = os.path.commonprefix(matches)
+        target = matches[0] if len(matches) == 1 else common
+        if not target:
+            return
+
+        if parent_raw:
+            completed = os.path.join(parent_raw, target)
+        else:
+            completed = target
+
+        if len(matches) == 1:
+            completed += os.sep
+
+        if raw.startswith("~") and not completed.startswith("~"):
+            home = os.path.expanduser("~")
+            if completed.startswith(home):
+                completed = "~" + completed[len(home):]
+
+        self.value = completed
+        self.cursor_position = len(self.value)
+
+class FilePathInput(Input):
+    def __init__(self, base_dir_getter=None, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._last_tab_time: float = 0.0
+        self.base_dir_getter = base_dir_getter
+
+    def _on_key(self, event: events.Key) -> None:
+        if event.key == "tab":
+            event.prevent_default()
+            event.stop()
+
+            now = time.monotonic()
+            if now - self._last_tab_time < 0.35:
+                self._last_tab_time = 0.0
+                self.screen.focus_next()
+                return
+            else:
+                self._last_tab_time = now
+                self._autocomplete_path()
+                return
+
+        super()._on_key(event)
+
+    def _autocomplete_path(self) -> None:
+        raw = self.value.strip()
+
+        base_dir = os.getcwd()
+        if self.base_dir_getter:
+            try:
+                b = self.base_dir_getter()
+                if b:
+                    base_dir = os.path.expanduser(b.strip())
+            except Exception:
+                pass
+
+        if raw.startswith("~") or os.path.isabs(raw):
+            expanded = os.path.expanduser(raw)
+        else:
+            expanded = os.path.join(base_dir, raw) if raw else base_dir
+
+        parent_raw = os.path.dirname(raw)
+        if raw.endswith(os.sep) or (os.path.isdir(expanded) and not raw.endswith(os.sep)):
+            if os.path.isdir(expanded):
+                search_dir = expanded
+                prefix = ""
+                parent_raw = raw.rstrip(os.sep)
+            else:
+                search_dir = os.path.dirname(expanded) or base_dir
+                prefix = ""
+        else:
+            search_dir = os.path.dirname(expanded) or base_dir
+            prefix = os.path.basename(expanded)
+
+        try:
+            entries: list[tuple[str, bool]] = []
+            for entry in os.listdir(search_dir):
+                if entry in (".", ".."):
+                    continue
+                if not prefix.startswith(".") and entry.startswith("."):
+                    continue
+                full_path = os.path.join(search_dir, entry)
+                is_dir = os.path.isdir(full_path)
+                entries.append((entry, is_dir))
+        except Exception:
+            return
+
+        matches = [e for e in entries if e[0].startswith(prefix)]
+        if not matches:
+            return
+
+        if len(matches) == 1:
+            name, is_dir = matches[0]
+            suffix = os.sep if is_dir else ""
+            if parent_raw:
+                completed = os.path.join(parent_raw, name) + suffix
+            else:
+                completed = name + suffix
+        else:
+            names = [e[0] for e in matches]
+            common = os.path.commonprefix(names)
+            if not common:
+                return
+            suffix = ""
+            for n, is_d in matches:
+                if n == common and is_d:
+                    suffix = os.sep
+                    break
+            if parent_raw:
+                completed = os.path.join(parent_raw, common) + suffix
+            else:
+                completed = common + suffix
+
+        self.value = completed
+        self.cursor_position = len(self.value)
+
+class ConfirmModal(ResponsiveModalScreen[bool]):
+    DEFAULT_CSS = """
+    ConfirmModal {
+        align: center middle;
+        layer: overlay;
+        background: rgba(0, 0, 0, 0.85);
+    }
+    #confirm_dialog {
+        padding: 1 2;
+        width: 50;
+        max-width: 90vw;
+        height: auto;
+        max-height: 90vh;
+        overflow-y: auto;
+        overflow-x: hidden;
+        background: #000000;
+    }
+    #confirm_dialog Label {
+        margin-bottom: 1;
+        text-style: bold;
+        text-align: center;
+        width: 100%;
+        height: auto;
+        color: #ffffff;
+        text-wrap: wrap;
+    }
+    #confirm_buttons {
+        width: 100%;
+        height: auto;
+        align-horizontal: center;
+    }
+    #confirm_buttons Button {
+        margin: 0 1;
+        background: #000000;
+        color: #ffffff;
+        text-style: none;
+    }
+    ConfirmModal.-mobile #confirm_dialog {
+        width: 100vw;
+        height: 100vh;
+        max-width: 100vw;
+        max-height: 100vh;
+        border: none;
+        padding: 1;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+        Binding("ctrl+g", "cancel", "Cancel"),
+        Binding("y", "confirm", "Yes"),
+        Binding("n", "cancel", "No"),
+    ]
+
+    def __init__(self, message: str = "File already exists. Overwrite?") -> None:
+        super().__init__()
+        self.message = message
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll(id="confirm_dialog"):
+            yield Label(self.message)
+            with Horizontal(id="confirm_buttons"):
+                yield Button("No", id="no_btn")
+                yield Button("Yes", id="yes_btn")
+
+    def on_mount(self) -> None:
+        super().on_mount()
+        self.query_one("#no_btn", Button).focus()
+
+    @on(Button.Pressed, "#yes_btn")
+    def action_confirm(self) -> None:
+        self.dismiss(True)
+
+    @on(Button.Pressed, "#no_btn")
+    def action_cancel(self) -> None:
+        self.dismiss(False)
+
+class ForkModal(ResponsiveModalScreen[str | None]):
+    DEFAULT_CSS = """
+    ForkModal {
+        align: center middle;
+        layer: overlay;
+        background: rgba(0, 0, 0, 0.85);
+    }
+    #fork_dialog {
+        padding: 1 2;
+        width: 66;
+        max-width: 90vw;
+        height: auto;
+        max-height: 90vh;
+        overflow-y: auto;
+        overflow-x: hidden;
+        background: #000000;
+    }
+    #fork_dialog Label {
+        margin-bottom: 1;
+        text-style: bold;
+        color: #ffffff;
+        width: 100%;
+        height: auto;
+        text-wrap: wrap;
+    }
+    #fork_prefix_hint {
+        margin-bottom: 1;
+        width: 100%;
+        height: auto;
+        text-wrap: wrap;
+    }
+    #fork_title_input {
+        margin-bottom: 1;
+        background: #000000;
+        color: #ffffff;
+    }
+    #fork_buttons {
+        width: 100%;
+        height: auto;
+        align-horizontal: right;
+    }
+    #fork_buttons Button {
+        margin-left: 1;
+        background: #000000;
+        color: #ffffff;
+        text-style: none;
+    }
+    ForkModal.-mobile #fork_dialog {
+        width: 100vw;
+        height: 100vh;
+        max-width: 100vw;
+        max-height: 100vh;
+        border: none;
+        padding: 1;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+        Binding("ctrl+g", "cancel", "Cancel"),
+    ]
+
+    def __init__(self, default_title: str = "") -> None:
+        super().__init__()
+        clean_default = default_title
+        if clean_default.startswith("Fork: "):
+            clean_default = clean_default[6:]
+        self.default_title = clean_default
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll(id="fork_dialog"):
+            yield Label("Name forked chat:")
+            yield Label("Prefix 'Fork: ' will be permanently attached to the title.", id="fork_prefix_hint")
+            yield Input(
+                value=self.default_title,
+                placeholder="Enter topic/name...",
+                id="fork_title_input",
+            )
+            with Horizontal(id="fork_buttons"):
+                yield Button("Cancel", id="cancel_btn")
+                yield Button("Fork It", id="fork_btn")
+
+    def on_mount(self) -> None:
+        super().on_mount()
+        self.query_one("#fork_title_input", Input).focus()
+
+    @on(Input.Submitted, "#fork_title_input")
+    def on_submit(self) -> None:
+        self._confirm()
+
+    @on(Button.Pressed, "#fork_btn")
+    def on_fork_pressed(self) -> None:
+        self._confirm()
+
+    @on(Button.Pressed, "#cancel_btn")
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def _confirm(self) -> None:
+        raw = self.query_one("#fork_title_input", Input).value.strip()
+        if not raw:
+            raw = self.default_title or "Untitled"
+        if not raw.startswith("Fork: "):
+            final_title = f"Fork: {raw}"
+        else:
+            final_title = raw
+        self.dismiss(final_title)
+
+class TurnCard(Vertical):
+    can_focus = False
+
+    def __init__(self, index: int, sender: str, text: str, turn_id: str, is_selected: bool = False, **kwargs) -> None:
+        instance_id = f"card_{uuid4().hex[:8]}"
+        super().__init__(classes="turn_card", id=instance_id, **kwargs)
+        self.turn_index = index
+        self.turn_id = turn_id
+        self.sender = sender
+        self.text_content = text
+        self.is_selected = is_selected
+
+    def compose(self) -> ComposeResult:
+        with Horizontal(classes="turn_header"):
+            yield Label(self._get_box_label(), classes="turn_box_label", markup=False)
+        yield Markdown(f"{self.text_content}\n\n---", classes="turn_body")
+
+    def _get_box_label(self) -> str:
+        feed = None
+        if self.is_mounted and hasattr(self.app, "query_one"):
+            try:
+                feed = self.app.query_one("#feed", FeedArea)
+            except Exception:
+                pass
+
+        fork_active = feed.fork_ui_active if feed else False
+
+        if fork_active:
+            box = "[X]" if self.is_selected else "[ ]"
+            return f"{box} {self.sender} (#{self.turn_index + 1})"
+        else:
+            return f"{self.sender} (#{self.turn_index + 1})"
+
+    def update_display(self) -> None:
+        try:
+            lbl = self.query_one(".turn_box_label", Label)
+            lbl.update(self._get_box_label())
+        except Exception:
+            pass
+
+    def update_selected(self, selected: bool) -> None:
+        self.is_selected = selected
+        self.update_display()
+
+    def toggle(self) -> None:
+        feed = self.app.query_one("#feed", FeedArea)
+        new_val = not self.is_selected
+        if new_val:
+            feed._fork_selected_indices.add(self.turn_index)
+        else:
+            feed._fork_selected_indices.discard(self.turn_index)
+        self.update_selected(new_val)
+        self.refresh()
+
+    @on(events.Click)
+    def on_card_click(self, event: events.Click) -> None:
+        feed = self.app.query_one("#feed", FeedArea)
+        if feed.is_locked():
+            event.stop()
+            return
+        if feed.fork_ui_active:
+            curr = event.widget
+            while curr and curr is not self:
+                if "turn_header" in curr.classes or "turn_box_label" in curr.classes:
+                    event.stop()
+                    feed.highlight_card(self.turn_index, scroll=False)
+                    self.toggle()
+                    return
+                curr = curr.parent
+
+class WriteSnippetModal(ResponsiveModalScreen[dict | None]):
+    DEFAULT_CSS = """
+    WriteSnippetModal {
+        align: center middle;
+        layer: overlay;
+        background: rgba(0, 0, 0, 0.85);
+    }
+    #save_dialog {
+        padding: 1 2;
+        width: 72;
+        max-width: 90vw;
+        height: auto;
+        max-height: 90vh;
+        overflow-y: auto;
+        overflow-x: hidden;
+        background: #000000;
+    }
+    #save_dialog Label {
+        margin-top: 1;
+        margin-bottom: 0;
+        text-style: bold;
+        color: #ffffff;
+        width: 100%;
+        height: auto;
+        text-wrap: wrap;
+    }
+    #save_dialog Input {
+        margin-bottom: 1;
+        background: #000000;
+        color: #ffffff;
+    }
+    #dialog_buttons {
+        width: 100%;
+        height: auto;
+        align-horizontal: right;
+        margin-top: 1;
+    }
+    #dialog_buttons Button {
+        margin-left: 1;
+        background: #000000;
+        color: #ffffff;
+        text-style: none;
+    }
+    WriteSnippetModal.-mobile #save_dialog {
+        width: 100vw;
+        height: 100vh;
+        max-width: 100vw;
+        max-height: 100vh;
+        border: none;
+        padding: 1;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+        Binding("ctrl+g", "cancel", "Cancel"),
+    ]
+
+    def __init__(self, snippet_content: str, initial_dir: str) -> None:
+        super().__init__()
+        self.snippet_content = snippet_content
+        self.initial_dir = initial_dir
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll(id="save_dialog"):
+            yield Label("Working Directory (Tab: auto-complete, 2x Tab: navigate):")
+            yield DirectoryPathInput(value=self.initial_dir, id="dir_input")
+            yield Label("Filename to write:")
+            yield Input(placeholder="e.g. main.py, server.go, script.sh", id="filename_input")
+            with Horizontal(id="dialog_buttons"):
+                yield Button("Cancel", id="cancel_btn")
+                yield Button("Write to Disk", id="confirm_btn")
+
+    def on_mount(self) -> None:
+        super().on_mount()
+        self.query_one("#filename_input", Input).focus()
+
+    @on(Input.Submitted, "#dir_input")
+    def on_dir_submitted(self) -> None:
+        self.query_one("#filename_input", Input).focus()
+
+    @on(Input.Submitted, "#filename_input")
+    def on_filename_submitted(self) -> None:
+        self._submit()
+
+    @on(Button.Pressed, "#confirm_btn")
+    def on_confirm_pressed(self) -> None:
+        self._submit()
+
+    @on(Button.Pressed, "#cancel_btn")
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def _submit(self) -> None:
+        working_dir = self.query_one("#dir_input", DirectoryPathInput).value.strip()
+        filename = self.query_one("#filename_input", Input).value.strip()
+
+        if not filename:
+            self.notify("Filename cannot be blank.", severity="error")
+            self.query_one("#filename_input", Input).focus()
+            return
+
+        if not working_dir:
+            working_dir = os.getcwd()
+
+        self.dismiss({
+            "working_dir": working_dir,
+            "filename": filename,
+            "content": self.snippet_content,
+        })
+
+class InsertFileModal(ResponsiveModalScreen[dict | None]):
+    DEFAULT_CSS = """
+    InsertFileModal {
+        align: center middle;
+        layer: overlay;
+        background: rgba(0, 0, 0, 0.85);
+    }
+    #insert_file_dialog {
+        padding: 1 2;
+        width: 76;
+        max-width: 90vw;
+        height: auto;
+        max-height: 90vh;
+        overflow-y: auto;
+        overflow-x: hidden;
+        background: #000000;
+        color: #ffffff;
+    }
+    #insert_file_dialog Label {
+        margin-top: 1;
+        margin-bottom: 0;
+        text-style: bold;
+        color: #ffffff;
+        width: 100%;
+        height: auto;
+        text-wrap: wrap;
+    }
+    #insert_file_dialog Input {
+        margin-bottom: 1;
+        background: #000000;
+        color: #ffffff;
+    }
+    #dialog_buttons {
+        width: 100%;
+        height: auto;
+        align-horizontal: right;
+        margin-top: 1;
+    }
+    #dialog_buttons Button {
+        margin-left: 1;
+        background: #000000;
+        color: #ffffff;
+        text-style: none;
+    }
+    InsertFileModal.-mobile #insert_file_dialog {
+        width: 100vw;
+        height: 100vh;
+        max-width: 100vw;
+        max-height: 100vh;
+        border: none;
+        padding: 1;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+        Binding("ctrl+g", "cancel", "Cancel"),
+    ]
+
+    def __init__(self, initial_dir: str) -> None:
+        super().__init__()
+        self.initial_dir = initial_dir
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll(id="insert_file_dialog"):
+            yield Label("Working Directory (Tab: auto-complete, 2x Tab: navigate):")
+            yield DirectoryPathInput(value=self.initial_dir, id="dir_input")
+            yield Label("File Path (Tab: auto-complete, 2x Tab: navigate):")
+            yield FilePathInput(
+                placeholder="e.g. src/main.py, config.json, README.md",
+                id="file_input",
+                base_dir_getter=self._get_working_dir,
+            )
+            with Horizontal(id="dialog_buttons"):
+                yield Button("Cancel", id="cancel_btn")
+                yield Button("Insert File", id="confirm_btn")
+
+    def _get_working_dir(self) -> str:
+        try:
+            dir_val = self.query_one("#dir_input", DirectoryPathInput).value.strip()
+            if dir_val:
+                return os.path.expanduser(dir_val)
+        except Exception:
+            pass
+        return os.getcwd()
+
+    def on_mount(self) -> None:
+        super().on_mount()
+        self.query_one("#file_input", FilePathInput).focus()
+
+    @on(Input.Submitted, "#dir_input")
+    def on_dir_submitted(self) -> None:
+        self.query_one("#file_input", FilePathInput).focus()
+
+    @on(Input.Submitted, "#file_input")
+    def on_file_submitted(self) -> None:
+        self._submit()
+
+    @on(Button.Pressed, "#confirm_btn")
+    def on_confirm_pressed(self) -> None:
+        self._submit()
+
+    @on(Button.Pressed, "#cancel_btn")
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def _submit(self) -> None:
+        working_dir = self.query_one("#dir_input", DirectoryPathInput).value.strip()
+        file_path_raw = self.query_one("#file_input", FilePathInput).value.strip()
+
+        if not file_path_raw:
+            self.notify("File path cannot be blank.", severity="error")
+            self.query_one("#file_input", FilePathInput).focus()
+            return
+
+        if not working_dir:
+            working_dir = os.getcwd()
+
+        base = Path(os.path.expanduser(working_dir)).resolve()
+        raw_path = Path(os.path.expanduser(file_path_raw))
+        if raw_path.is_absolute():
+            resolved_file = raw_path.resolve()
+        else:
+            resolved_file = (base / raw_path).resolve()
+
+        if not resolved_file.exists():
+            self.notify(f"File not found: {resolved_file}", severity="error")
+            self.query_one("#file_input", FilePathInput).focus()
+            return
+
+        if not resolved_file.is_file():
+            self.notify(f"Target is a directory: {resolved_file}", severity="error")
+            self.query_one("#file_input", FilePathInput).focus()
+            return
+
+        self.dismiss({
+            "working_dir": working_dir,
+            "file_path": str(resolved_file),
+            "rel_path": file_path_raw,
+        })
+
+class GitTreeModal(ResponsiveModalScreen[dict | None]):
+    STACK_BREAKPOINT: int = 96
+
+    DEFAULT_CSS = """
+    GitTreeModal {
+        align: center middle;
+        layer: overlay;
+        background: rgba(0, 0, 0, 0.85);
+    }
+    #git_dialog {
+        padding: 1 2;
+        width: 104;
+        max-width: 95vw;
+        height: auto;
+        max-height: 94vh;
+        overflow-y: auto;
+        overflow-x: hidden;
+        background: #000000;
+    }
+    #git_dialog Label {
+        width: 100%;
+        height: auto;
+        text-wrap: wrap;
+    }
+    #git_repo_row {
+        height: auto;
+        margin-bottom: 1;
+    }
+    #git_repo_row DirectoryPathInput {
+        width: 1fr;
+        background: #000000;
+        color: #ffffff;
+    }
+    #git_repo_row Button {
+        margin-left: 1;
+        background: #000000;
+        color: #ffffff;
+        text-style: none;
+    }
+    #dual_tree_row {
+        height: auto;
+        min-height: 12;
+        margin-bottom: 1;
+    }
+    .tree_pane {
+        width: 1fr;
+        height: auto;
+    }
+    #pane_tracked {
+        margin-right: 1;
+    }
+    .tree_pane Label {
+        text-style: bold;
+        height: auto;
+        margin-bottom: 0;
+        color: #ffffff;
+        width: 100%;
+        text-wrap: wrap;
+    }
+    .tree_pane Tree {
+        height: 13;
+        min-height: 5;
+        background: #000000;
+        color: #ffffff;
+    }
+    #tree_ignored {
+        border: solid #555555;
+    }
+    #tree_options_row {
+        height: auto;
+        margin-bottom: 0;
+        align-vertical: middle;
+    }
+    #tree_options_row RadioSet {
+        layout: horizontal;
+        height: auto;
+        background: transparent;
+        border: none;
+    }
+    #tree_options_row RadioButton {
+        margin-right: 2;
+        color: #ffffff;
+    }
+    #status_label {
+        height: auto;
+        margin-top: 1;
+        margin-bottom: 1;
+        width: 100%;
+        text-wrap: wrap;
+    }
+    #git_buttons {
+        height: auto;
+        width: 100%;
+        align-horizontal: right;
+    }
+    #git_buttons Button {
+        margin-left: 1;
+        background: #000000;
+        color: #ffffff;
+        text-style: none;
+    }
+    GitTreeModal.-stacked #dual_tree_row {
+        layout: vertical;
+        height: auto;
+    }
+    GitTreeModal.-stacked .tree_pane {
+        width: 100%;
+        height: auto;
+    }
+    GitTreeModal.-stacked #pane_tracked {
+        margin-right: 0;
+        margin-bottom: 1;
+    }
+    GitTreeModal.-stacked .tree_pane Tree {
+        height: 9;
+    }
+    GitTreeModal.-mobile #git_dialog {
+        width: 100vw;
+        height: 100vh;
+        max-width: 100vw;
+        max-height: 100vh;
+        border: none;
+        padding: 1;
+    }
+    GitTreeModal.-mobile .tree_pane Tree {
+        height: 8;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+        Binding("ctrl+g", "cancel", "Cancel"),
+    ]
+
+    def __init__(self, initial_dir: str) -> None:
+        super().__init__()
+        self.repo_dir = initial_dir
+        self.tracked_files: list[str] = []
+        self.ignored_files: list[str] = []
+        self.selected_files: set[str] = set()
+
+    def _update_screen_classes(self, width: int | None = None) -> None:
+        super()._update_screen_classes(width)
+        current_w = width if width is not None else (self.size.width or (self.app.size.width if self.app else 100))
+        self.set_class(current_w <= self.STACK_BREAKPOINT, "-stacked")
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll(id="git_dialog"):
+            yield Label("Git Repository Path (Tab: auto-complete, 2x Tab: navigate):")
+            with Horizontal(id="git_repo_row"):
+                yield DirectoryPathInput(value=self.repo_dir, id="git_dir_input")
+                yield Button("Scan Tree", id="scan_btn")
+
+            with Horizontal(id="dual_tree_row"):
+                with Vertical(classes="tree_pane", id="pane_tracked"):
+                    yield Label("Tracked Files:", id="lbl_tracked")
+                    yield Tree("Tracked Files", id="tree_tracked")
+                with Vertical(classes="tree_pane", id="pane_ignored"):
+                    yield Label(".gitignore Ignored Files:", id="lbl_ignored")
+                    yield Tree("Ignored Files", id="tree_ignored")
+
+            yield Label("Tree Structure in Prompt:")
+            with Horizontal(id="tree_options_row"):
+                with RadioSet(id="tree_mode_radios"):
+                    yield RadioButton("Full Tree", value=True, id="radio_full")
+                    yield RadioButton("Selected Files Only", id="radio_selected")
+                    yield RadioButton("None", id="radio_none")
+
+            yield Label("0 files selected. [Space]/Click to toggle file/folder, [a] all in tree", id="status_label")
+
+            with Horizontal(id="git_buttons"):
+                yield Button("Cancel", id="cancel_btn")
+                yield Button("Insert Selected & Tree", id="insert_btn")
+
+    def on_mount(self) -> None:
+        super().on_mount()
+        self.query_one("#tree_tracked", Tree).show_root = False
+        self.query_one("#tree_ignored", Tree).show_root = False
+        self._scan_and_populate()
+        self.query_one("#tree_tracked").focus()
+
+    def _scan_and_populate(self) -> None:
+        raw_dir = self.query_one("#git_dir_input", DirectoryPathInput).value.strip()
+        expanded = os.path.expanduser(raw_dir) if raw_dir else os.getcwd()
+        self.repo_dir = expanded
+
+        if hasattr(self.app, "set_working_dir"):
+            self.app.set_working_dir(self.repo_dir)
+
+        tree_tracked = self.query_one("#tree_tracked", Tree)
+        tree_ignored = self.query_one("#tree_ignored", Tree)
+        tree_tracked.clear()
+        tree_ignored.clear()
+        self.selected_files.clear()
+
+        try:
+            catalog = get_git_files_catalog(self.repo_dir)
+            self.tracked_files = catalog["tracked"]
+            self.ignored_files = catalog["ignored"]
+        except Exception as e:
+            self.notify(f"Git Scan Error: {e}", severity="error")
+            self.tracked_files = []
+            self.ignored_files = []
+            self._update_status()
+            return
+
+        def populate_tree(tree_widget: Tree, file_list: list[str]) -> None:
+            nodes: dict[str, TreeNode] = {"": tree_widget.root}
+            for file_path in file_list:
+                parts = Path(file_path).parts
+                current_path = ""
+                for i, part in enumerate(parts):
+                    parent_path = current_path
+                    current_path = str(Path(current_path) / part) if current_path else part
+                    is_file = i == len(parts) - 1
+
+                    if current_path not in nodes:
+                        parent_node = nodes[parent_path]
+                        if is_file:
+                            label = f"[ ] {part}"
+                            node = parent_node.add_leaf(label, data={"path": file_path, "name": part, "is_file": True})
+                        else:
+                            node = parent_node.add(f"[ ] 📁 {part}", data={"path": current_path, "name": part, "is_file": False})
+                            node.expand()
+                        nodes[current_path] = node
+            tree_widget.root.expand()
+
+        populate_tree(tree_tracked, self.tracked_files)
+        populate_tree(tree_ignored, self.ignored_files)
+
+        self.query_one("#lbl_tracked", Label).update(f"Tracked Files ({len(self.tracked_files)}):")
+        self.query_one("#lbl_ignored", Label).update(f".gitignore Ignored Files ({len(self.ignored_files)}):")
+        self._update_status()
+
+    def _get_tree_of_node(self, node: TreeNode) -> Tree | None:
+        curr = node
+        while curr.parent:
+            curr = curr.parent
+        for t in (self.query_one("#tree_tracked", Tree), self.query_one("#tree_ignored", Tree)):
+            if t.root is curr:
+                return t
+        return None
+
+    def _refresh_tree_labels(self, root_node: TreeNode) -> tuple[int, int]:
+        data = root_node.data or {}
+        if data.get("is_file"):
+            is_sel = data["path"] in self.selected_files
+            part = data.get("name", Path(data["path"]).name)
+            box = "✓" if is_sel else " "
+            root_node.set_label(f"[{box}] {part}")
+            return (1 if is_sel else 0, 1)
+
+        sel_total = 0
+        file_total = 0
+        for child in root_node.children:
+            s, f = self._refresh_tree_labels(child)
+            sel_total += s
+            file_total += f
+
+        if root_node.parent is not None:
+            part = data.get("name", "")
+            if file_total > 0 and sel_total == file_total:
+                root_node.set_label(f"[✓] 📁 {part}")
+            elif sel_total > 0:
+                root_node.set_label(f"[-] 📁 {part}")
+            else:
+                root_node.set_label(f"[ ] 📁 {part}")
+
+        return (sel_total, file_total)
+
+    def _update_status(self) -> None:
+        total = len(self.tracked_files) + len(self.ignored_files)
+        count = len(self.selected_files)
+        lbl = self.query_one("#status_label", Label)
+        lbl.update(f"{count} file(s) selected out of {total}. [Space]/Click to toggle file/folder, [a] all in tree")
+
+    def _toggle_node(self, node: TreeNode) -> None:
+        data = node.data or {}
+
+        if data.get("is_file"):
+            file_path = data["path"]
+            if file_path in self.selected_files:
+                self.selected_files.remove(file_path)
+            else:
+                self.selected_files.add(file_path)
+        else:
+            descendant_files: list[str] = []
+
+            def collect_files(n: TreeNode) -> None:
+                if n.data and n.data.get("is_file"):
+                    descendant_files.append(n.data["path"])
+                for c in n.children:
+                    collect_files(c)
+
+            collect_files(node)
+            if not descendant_files:
+                return
+
+            all_selected = all(p in self.selected_files for p in descendant_files)
+            for p in descendant_files:
+                if all_selected:
+                    self.selected_files.discard(p)
+                else:
+                    self.selected_files.add(p)
+
+        tree = self._get_tree_of_node(node)
+        if tree:
+            self._refresh_tree_labels(tree.root)
+        self._update_status()
+
+    def _toggle_all_in_tree(self, tree_widget: Tree) -> None:
+        contained_files: list[str] = []
+
+        def walk(n: TreeNode):
+            if n.data and n.data.get("is_file"):
+                contained_files.append(n.data["path"])
+            for c in n.children:
+                walk(c)
+
+        walk(tree_widget.root)
+        if not contained_files:
+            return
+
+        all_selected = all(p in self.selected_files for p in contained_files)
+        for file_path in contained_files:
+            if all_selected:
+                self.selected_files.discard(file_path)
+            else:
+                self.selected_files.add(file_path)
+
+        self._refresh_tree_labels(tree_widget.root)
+        self._update_status()
+
+    @on(Tree.NodeSelected)
+    def on_tree_selected(self, event: Tree.NodeSelected) -> None:
+        event.stop()
+        self._toggle_node(event.node)
+
+    @on(Tree.NodeCollapsed)
+    def on_node_collapsed(self, event: Tree.NodeCollapsed) -> None:
+        event.prevent_default()
+        event.stop()
+        event.node.expand()
+
+    @on(Button.Pressed, "#scan_btn")
+    def on_scan_pressed(self) -> None:
+        self._scan_and_populate()
+
+    @on(Input.Submitted, "#git_dir_input")
+    def on_dir_submitted(self) -> None:
+        self._scan_and_populate()
+
+    @on(Button.Pressed, "#insert_btn")
+    def on_confirm_pressed(self) -> None:
+        self._submit()
+
+    @on(Button.Pressed, "#cancel_btn")
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def _on_key(self, event: events.Key) -> None:
+        focused = self.focused
+        if isinstance(focused, Tree):
+            if event.key == "space":
+                event.prevent_default()
+                event.stop()
+                if focused.cursor_node:
+                    self._toggle_node(focused.cursor_node)
+                return
+            elif event.key == "a":
+                event.prevent_default()
+                event.stop()
+                self._toggle_all_in_tree(focused)
+                return
+
+        super()._on_key(event)
+
+    def _submit(self) -> None:
+        radios = self.query_one("#tree_mode_radios", RadioSet)
+
+        tree_mode = "full"
+        if radios.pressed_button:
+            if radios.pressed_button.id == "radio_selected":
+                tree_mode = "selected"
+            elif radios.pressed_button.id == "radio_none":
+                tree_mode = "none"
+
+        self.dismiss({
+            "repo_dir": self.repo_dir,
+            "selected_files": sorted(list(self.selected_files)),
+            "tracked_files": self.tracked_files,
+            "ignored_files": self.ignored_files,
+            "tree_mode": tree_mode,
+        })
+
+class TitlePromptModal(ResponsiveModalScreen[str | None]):
+    DEFAULT_CSS = """
+    TitlePromptModal {
+        align: center middle;
+        layer: overlay;
+        background: rgba(0, 0, 0, 0.85);
+    }
+    #dialog {
+        padding: 1 2;
+        width: 60;
+        max-width: 90vw;
+        height: auto;
+        max-height: 90vh;
+        overflow-y: auto;
+        overflow-x: hidden;
+        background: #000000;
+    }
+    #dialog Label {
+        margin-bottom: 1;
+        text-style: bold;
+        color: #ffffff;
+        width: 100%;
+        height: auto;
+        text-wrap: wrap;
+    }
+    #dialog Input {
+        margin-bottom: 1;
+        background: #000000;
+        color: #ffffff;
+    }
+    #dialog-buttons {
+        width: 100%;
+        height: auto;
+        align-horizontal: right;
+    }
+    #dialog-buttons Button {
+        margin-left: 1;
+        background: #000000;
+        color: #ffffff;
+        text-style: none;
+    }
+    TitlePromptModal.-mobile #dialog {
+        width: 100vw;
+        height: 100vh;
+        max-width: 100vw;
+        max-height: 100vh;
+        border: none;
+        padding: 1;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+        Binding("ctrl+g", "cancel", "Cancel"),
+    ]
+
+    def __init__(self, prompt: str = "Enter chat topic / title:", default_title: str = "") -> None:
+        super().__init__()
+        self.prompt_text = prompt
+        self.default_title = default_title
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll(id="dialog"):
+            yield Label(self.prompt_text)
+            yield Input(
+                placeholder="Leave blank for auto-generated title...",
+                value=self.default_title,
+                id="title_input",
+            )
+            with Horizontal(id="dialog-buttons"):
+                yield Button("Cancel", id="cancel_btn")
+                yield Button("Confirm", id="confirm_btn")
+
+    def on_mount(self) -> None:
+        super().on_mount()
+        self.query_one(Input).focus()
+
+    @on(Input.Submitted, "#title_input")
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self.dismiss(event.value.strip())
+
+    @on(Button.Pressed, "#confirm_btn")
+    def on_confirm_pressed(self) -> None:
+        val = self.query_one(Input).value.strip()
+        self.dismiss(val)
+
+    @on(Button.Pressed, "#cancel_btn")
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+class FrameSelectModal(ResponsiveModalScreen[dict | None]):
+    DEFAULT_CSS = """
+    FrameSelectModal {
+        align: center middle;
+        layer: overlay;
+        background: rgba(0, 0, 0, 0.85);
+    }
+    #frame_dialog {
+        padding: 1 2;
+        width: 70;
+        max-width: 90vw;
+        height: auto;
+        max-height: 90vh;
+        overflow-y: auto;
+        overflow-x: hidden;
+        background: #000000;
+    }
+    #frame_dialog Label {
+        margin-bottom: 1;
+        text-style: bold;
+        color: #ffffff;
+        width: 100%;
+        height: auto;
+        text-wrap: wrap;
+    }
+    #frame_options {
+        height: auto;
+        max-height: 14;
+        margin-bottom: 1;
+        background: #000000;
+        color: #ffffff;
+    }
+    #dialog-buttons {
+        width: 100%;
+        height: auto;
+        align-horizontal: right;
+    }
+    #dialog-buttons Button {
+        margin-left: 1;
+        background: #000000;
+        color: #ffffff;
+        text-style: none;
+    }
+    FrameSelectModal.-mobile #frame_dialog {
+        width: 100vw;
+        height: 100vh;
+        max-width: 100vw;
+        max-height: 100vh;
+        border: none;
+        padding: 1;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+        Binding("ctrl+g", "cancel", "Cancel"),
+    ]
+
+    def __init__(self, frame_data: list[dict], default_file: str = "") -> None:
+        super().__init__()
+        self.frame_data = frame_data
+        self.default_file = default_file
+        self.flat_targets: list[dict] = []
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll(id="frame_dialog"):
+            yield Label("Multiple Emacs frames detected.\nSelect destination window:")
+            yield OptionList(id="frame_options")
+            with Horizontal(id="dialog-buttons"):
+                yield Button("Cancel", id="cancel_btn")
+
+    def on_mount(self) -> None:
+        super().on_mount()
+        opt_list = self.query_one("#frame_options", OptionList)
+        self.flat_targets = []
+        default_index = 0
+
+        for f in self.frame_data:
+            frame_num = f.get("frame_num", 1)
+            windows = f.get("windows", [])
+            summary_files = ", ".join(w["file_name"] for w in windows)
+
+            if len(windows) > 1:
+                header_text = f"Frame {frame_num} (windows: {summary_files})"
+                opt_list.add_option(Option(prompt=f"▼ {header_text}", disabled=True))
+
+                for w in windows:
+                    self.flat_targets.append(w)
+                    idx = len(self.flat_targets) - 1
+                    opt_list.add_option(
+                        Option(prompt=f"   └─ {w['file_name']}  ({w['buf_name']})", id=str(idx))
+                    )
+                    if self.default_file and w["file_name"] == self.default_file:
+                        default_index = idx
+            elif len(windows) == 1:
+                w = windows[0]
+                self.flat_targets.append(w)
+                idx = len(self.flat_targets) - 1
+                opt_list.add_option(
+                    Option(prompt=f"Frame {frame_num}: {w['file_name']}  ({w['buf_name']})", id=str(idx))
+                )
+                if self.default_file and w["file_name"] == self.default_file:
+                    default_index = idx
+
+        if self.flat_targets:
+            opt_list.highlighted = default_index
+        opt_list.focus()
+
+    @on(OptionList.OptionSelected, "#frame_options")
+    def on_selected(self, event: OptionList.OptionSelected) -> None:
+        event.stop()
+        if event.option_id is not None:
+            idx = int(event.option_id)
+            self.dismiss(self.flat_targets[idx])
+
+    @on(Button.Pressed, "#cancel_btn")
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+class EmacsBaseTextArea(TextArea):
+    def on_mount(self) -> None:
+        self.soft_wrap = True
+        self._mark_point: tuple[int, int] | None = None
+
+    def undo(self) -> None:
+        try:
+            if hasattr(self, "history") and self.history._undo_stack:
+                next_batch = self.history._undo_stack[-1]
+                if next_batch:
+                    target_loc = next_batch[0].from_location
+                    self.move_cursor(target_loc, select=False)
+
+            super().undo()
+        except Exception:
+            try:
+                max_lines = max(1, self.document.line_count)
+                safe_row = max(0, min(self.cursor_location[0], max_lines - 1))
+                line_len = len(self.document.get_line(safe_row)) if safe_row < max_lines else 0
+                safe_col = max(0, min(self.cursor_location[1], line_len))
+                self.move_cursor((safe_row, safe_col), select=False)
+                if hasattr(self, "_rewrap_and_refresh_virtual_size"):
+                    self._rewrap_and_refresh_virtual_size()
+            except Exception:
+                pass
+
+    def _sync_selection(self) -> None:
+        if self._mark_point is not None:
+            self.selection = Selection(self._mark_point, self.cursor_location)
+
+    def _clear_mark(self) -> None:
+        self._mark_point = None
+        self.move_cursor(self.cursor_location, select=False)
+
+    def _on_key(self, event: events.Key) -> None:
+        if self.app.intercept_c_c_key(event):
+            return
+
+        if event.key in ("ctrl+space", "ctrl+at", "ctrl+tilde") or (
+            event.character and ord(event.character) == 0
+        ):
+            event.prevent_default(); event.stop()
+            self._mark_point = self.cursor_location
+            self.selection = Selection(self._mark_point, self._mark_point)
+            self.app.notify("Mark set", timeout=1.5)
+            return
+
+        is_selecting = self._mark_point is not None
+
+        if event.key == "ctrl+f":
+            event.prevent_default(); event.stop()
+            self.action_cursor_right(select=is_selecting)
+            self._sync_selection()
+            return
+        elif event.key == "ctrl+b":
+            event.prevent_default(); event.stop()
+            self.action_cursor_left(select=is_selecting)
+            self._sync_selection()
+            return
+        elif event.key == "ctrl+n":
+            event.prevent_default(); event.stop()
+            self.action_cursor_down(select=is_selecting)
+            self._sync_selection()
+            return
+        elif event.key == "ctrl+p":
+            event.prevent_default(); event.stop()
+            self.action_cursor_up(select=is_selecting)
+            self._sync_selection()
+            return
+        elif event.key == "ctrl+a":
+            event.prevent_default(); event.stop()
+            self.action_cursor_line_start(select=is_selecting)
+            self._sync_selection()
+            return
+        elif event.key == "ctrl+e":
+            event.prevent_default(); event.stop()
+            self.action_cursor_line_end(select=is_selecting)
+            self._sync_selection()
+            return
+        elif event.key in ("alt+f", "meta+f"):
+            event.prevent_default(); event.stop()
+            self.action_cursor_word_right(select=is_selecting)
+            self._sync_selection()
+            return
+        elif event.key in ("alt+b", "meta+b"):
+            event.prevent_default(); event.stop()
+            self.action_cursor_word_left(select=is_selecting)
+            self._sync_selection()
+            return
+        elif event.key in ("ctrl+home", "alt+<", "meta+<", "alt+comma"):
+            event.prevent_default(); event.stop()
+            self.move_cursor((0, 0), select=is_selecting)
+            self._sync_selection()
+            return
+        elif event.key in ("ctrl+end", "alt+>", "meta+>", "alt+period"):
+            event.prevent_default(); event.stop()
+            self.move_cursor(self.document.end, select=is_selecting)
+            self._sync_selection()
+            return
+        elif event.key == "ctrl+v":
+            event.prevent_default(); event.stop()
+            self.action_cursor_page_down()
+            self._sync_selection()
+            return
+        elif event.key in ("alt+v", "meta+v"):
+            event.prevent_default(); event.stop()
+            self.action_cursor_page_up()
+            self._sync_selection()
+            return
+        elif event.key == "ctrl+d":
+            event.prevent_default(); event.stop()
+            self.action_delete_right()
+            self._clear_mark()
+            return
+        elif event.key == "ctrl+k":
+            event.prevent_default(); event.stop()
+            self._kill_line_forward()
+            self._clear_mark()
+            return
+        elif event.key == "ctrl+u":
+            event.prevent_default(); event.stop()
+            self._kill_line_backward()
+            self._clear_mark()
+            return
+        elif event.key in ("alt+d", "meta+d"):
+            event.prevent_default(); event.stop()
+            self._kill_word_forward()
+            self._clear_mark()
+            return
+        elif event.key in ("ctrl+w", "alt+backspace", "meta+backspace"):
+            event.prevent_default(); event.stop()
+            if self.selected_text:
+                self.app.copy_to_clipboard(self.selected_text)
+                self.delete(self.selection.start, self.selection.end)
+                self._clear_mark()
+            else:
+                self._kill_word_backward()
+            return
+        elif event.key == "ctrl+y":
+            event.prevent_default(); event.stop()
+            try:
+                paste_text = pyperclip.paste()
+                if paste_text:
+                    if self.selected_text:
+                        self.delete(self.selection.start, self.selection.end)
+                    self.insert(paste_text)
+                    self._clear_mark()
+            except Exception:
+                pass
+            return
+        elif event.key in ("alt+w", "meta+w"):
+            event.prevent_default(); event.stop()
+            if self.selected_text:
+                self.app.copy_to_clipboard(self.selected_text)
+                self.notify("Copied region", timeout=1.5)
+            return
+        elif event.key in ("ctrl+slash", "ctrl+underscore"):
+            event.prevent_default(); event.stop()
+            self.undo()
+            self._clear_mark()
+            return
+
+        if event.is_printable or event.key in ("backspace", "delete"):
+            self._mark_point = None
+
+        super()._on_key(event)
+
+    def _kill_line_forward(self) -> None:
+        row, col = self.cursor_location
+        line = self.document.get_line(row)
+        if col < len(line):
+            killed = line[col:]
+            self.delete((row, col), (row, len(line)))
+        else:
+            if row < self.document.line_count - 1:
+                killed = "\n"
+                self.delete((row, col), (row + 1, 0))
+            else:
+                return
+        self.app.copy_to_clipboard(killed)
+
+    def _kill_line_backward(self) -> None:
+        row, col = self.cursor_location
+        if col > 0:
+            line = self.document.get_line(row)
+            killed = line[:col]
+            self.delete((row, 0), (row, col))
+            self.app.copy_to_clipboard(killed)
+
+    def _kill_word_forward(self) -> None:
+        start = self.cursor_location
+        self.action_cursor_word_right(select=False)
+        end = self.cursor_location
+        if start != end:
+            killed = self.get_text_range(start, end)
+            self.delete(start, end)
+            self.app.copy_to_clipboard(killed)
+
+    def _kill_word_backward(self) -> None:
+        start = self.cursor_location
+        self.action_cursor_word_left(select=False)
+        end = self.cursor_location
+        if start != end:
+            killed = self.get_text_range(end, start)
+            self.delete(end, start)
+            self.app.copy_to_clipboard(killed)
+
+class ParentNoteCard(Vertical):
+    can_focus = True
+
+    def __init__(self, chat_id: str, title: str, notes_text: str, depth: int, is_expanded: bool = False, **kwargs) -> None:
+        super().__init__(classes="parent_note_card", **kwargs)
+        self.chat_id = chat_id
+        self.raw_title = title
+        self.notes_text = notes_text
+        self.depth = depth
+        self.is_expanded = is_expanded
+        self._last_tab_time: float = 0.0
+
+    def compose(self) -> ComposeResult:
+        yield Label(self._get_title_display(), classes="parent_note_title")
+        with Vertical(classes="parent_note_body"):
+            yield Markdown(self.notes_text.strip())
+
+    def on_mount(self) -> None:
+        self.query_one(".parent_note_body", Vertical).styles.display = "block" if self.is_expanded else "none"
+
+    def _get_title_display(self) -> str:
+        arrow = "▼" if self.is_expanded else ">"
+        indent = "   " * self.depth + "└─ " if self.depth > 0 else ""
+        return f"{indent}{self.raw_title}: {arrow}"
+
+    def toggle(self) -> None:
+        self.is_expanded = not self.is_expanded
+        body = self.query_one(".parent_note_body", Vertical)
+        body.styles.display = "block" if self.is_expanded else "none"
+        self.query_one(".parent_note_title", Label).update(self._get_title_display())
+        notes_panel = self.app.query_one("#notes_panel", NotesPanel)
+        notes_panel.record_parent_expanded_state(self.chat_id, self.is_expanded)
+
+    def _on_key(self, event: events.Key) -> None:
+        if self.app.intercept_c_c_key(event):
+            return
+
+        if event.key in ("space", "enter", "return"):
+            event.prevent_default(); event.stop()
+            self.toggle()
+            return
+
+        if event.key in ("shift+tab", "tab"):
+            event.prevent_default(); event.stop()
+            now = time.monotonic()
+            if event.key == "tab" and (now - self._last_tab_time < 0.35):
+                self._last_tab_time = 0.0
+                self.app.cycle_global_focus(direction=1, escape_parents=True)
+            else:
+                self._last_tab_time = now
+                direction = -1 if event.key == "shift+tab" else 1
+                self.app.cycle_global_focus(direction=direction, escape_parents=False)
+            return
+
+        super()._on_key(event)
+
+    @on(events.Click)
+    def on_click(self, event: events.Click) -> None:
+        event.stop()
+        self.focus()
+        self.toggle()
+
+class NotesEditorArea(EmacsBaseTextArea):
+    can_focus = True
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._last_nav_time: float = 0.0
+        self._nav_cooldown: float = 0.022
+        self._suppress_change_sync: bool = False
+
+    def on_mount(self) -> None:
+        super().on_mount()
+        self.show_line_numbers = False
+
+    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        if self._suppress_change_sync or not self.has_focus:
+            return
+        if getattr(self.app, "active_notes_mode", "chat") == "global":
+            self.app.global_notes = self.text
+            self.app.schedule_global_notes_flush()
+        else:
+            self.app.current_chat_notes = self.text
+            self.app.schedule_chat_notes_flush()
+
+    def _on_key(self, event: events.Key) -> None:
+        if self.app.intercept_c_c_key(event):
+            return
+
+        if event.key in ("ctrl+j", "shift+enter", "shift+return"):
+            event.prevent_default(); event.stop()
+            self.insert("\n")
+            return
+
+        if event.key in ("enter", "return"):
+            event.prevent_default(); event.stop()
+            self.app.flush_current_notes()
+            if self.app.active_notes_mode == "chat":
+                self.app._direct_flush_chat_to_disk(self.app.current_chat_id, self.app.current_chat_notes)
+                self.app.save_current_chat()
+            else:
+                self.app._flush_global_notes_to_state()
+            self.app.action_toggle_notes()
+            return
+
+        if event.key in ("escape", "ctrl+g"):
+            event.prevent_default(); event.stop()
+            if self._mark_point is not None or self.selected_text:
+                self._clear_mark()
+                self.app.notify("Quit", timeout=1.0)
+            else:
+                self.app.action_toggle_notes()
+            return
+
+        if event.key in ("tab", "shift+tab"):
+            event.prevent_default(); event.stop()
+            direction = -1 if event.key == "shift+tab" else 1
+            self.app.cycle_global_focus(direction=direction)
+            return
+
+        if getattr(self.app, "active_notes_mode", "chat") == "global":
+            try:
+                history_list = self.app.query_one("#history", HistoryList)
+                if event.key in ("up", "ctrl+p", "k"):
+                    event.prevent_default(); event.stop()
+                    history_list.action_cursor_up()
+                    return
+                elif event.key in ("down", "ctrl+n", "j"):
+                    event.prevent_default(); event.stop()
+                    history_list.action_cursor_down()
+                    return
+                elif event.key in ("pageup",):
+                    event.prevent_default(); event.stop()
+                    history_list.action_cursor_page_up()
+                    return
+                elif event.key in ("pagedown",):
+                    event.prevent_default(); event.stop()
+                    history_list.action_cursor_page_down()
+                    return
+                elif event.key == "home":
+                    event.prevent_default(); event.stop()
+                    history_list.action_first()
+                    return
+                elif event.key == "end":
+                    event.prevent_default(); event.stop()
+                    history_list.action_last()
+                    return
+            except Exception:
+                pass
+
+        feed = self.app.query_one("#feed", FeedArea)
+        now = time.monotonic()
+        if event.key in ("down", "up", "shift+up", "shift+down"):
+            if now - self._last_nav_time < self._nav_cooldown:
+                event.prevent_default(); event.stop()
+                return
+            self._last_nav_time = now
+
+        if event.key in ("shift+up", "shift+down"):
+            event.prevent_default(); event.stop()
+            direction = -1 if event.key == "shift+up" else 1
+            feed.viewport_page_navigate(direction)
+            return
+        elif event.key == "down":
+            event.prevent_default(); event.stop()
+            feed.arrow_navigate(1)
+            return
+        elif event.key == "up":
+            event.prevent_default(); event.stop()
+            feed.arrow_navigate(-1)
+            return
+        elif event.key == "pagedown":
+            event.prevent_default(); event.stop()
+            feed.step_card(1)
+            return
+        elif event.key == "pageup":
+            event.prevent_default(); event.stop()
+            feed.step_card(-1)
+            return
+        elif event.key in ("alt+n", "meta+n"):
+            event.prevent_default(); event.stop()
+            feed.navigate_snippet(1)
+            return
+        elif event.key in ("alt+p", "meta+p"):
+            event.prevent_default(); event.stop()
+            feed.navigate_snippet(-1)
+            return
+        elif event.key == "home":
+            event.prevent_default(); event.stop()
+            feed.jump_to_home()
+            return
+        elif event.key == "end":
+            event.prevent_default(); event.stop()
+            feed.jump_to_end()
+            return
+
+        super()._on_key(event)
+
+class NotesPanel(Vertical):
+    def __init__(self, **kwargs) -> None:
+        super().__init__(id="notes_panel", **kwargs)
+        self._parent_expanded_states: dict[str, bool] = {}
+        self.border_title = " Notes "
+
+    def compose(self) -> ComposeResult:
+        yield NotesEditorArea(id="notes_editor")
+
+    def record_parent_expanded_state(self, chat_id: str, expanded: bool) -> None:
+        self._parent_expanded_states[chat_id] = expanded
+
+    def clear_session_expansion_states(self) -> None:
+        self._parent_expanded_states.clear()
+
+    async def update_notes_content(self, is_history: bool, notes_text: str, parent_lineage: list[dict], chat_id: str = "") -> None:
+        self.border_title = " Global Notes " if is_history else " Notes "
+        editor = self.query_one("#notes_editor", NotesEditorArea)
+
+        editor._suppress_change_sync = True
+        try:
+            editor.load_text(notes_text)
+
+            app = self.app
+            if not is_history and chat_id and chat_id not in app._seen_chats_in_session:
+                app._seen_chats_in_session.add(chat_id)
+                editor.move_cursor(editor.document.end, select=False)
+            else:
+                old_loc = editor.cursor_location
+                max_r = max(0, editor.document.line_count - 1)
+                r = min(old_loc[0], max_r)
+                c = min(old_loc[1], len(editor.document.get_line(r)))
+                editor.move_cursor((r, c), select=False)
+        finally:
+            editor._suppress_change_sync = False
+
+        existing_parents = list(self.query("#notes_parents_container"))
+        if existing_parents:
+            await existing_parents[0].remove()
+
+        valid_parents = [item for item in parent_lineage if (item.get("notes") or "").strip()] if (not is_history and parent_lineage) else []
+
+        if valid_parents:
+            parents_container = Vertical(id="notes_parents_container")
+            await self.mount(parents_container, before=editor)
+
+            cards = []
+            for item in valid_parents:
+                cid = item["id"]
+                is_exp = self._parent_expanded_states.get(cid, False)
+                card = ParentNoteCard(
+                    chat_id=cid,
+                    title=item["title"],
+                    notes_text=item["notes"],
+                    depth=item["depth"],
+                    is_expanded=is_exp,
+                )
+                cards.append(card)
+
+            await parents_container.mount_all(cards)
+
+class SnippetPreview(EmacsBaseTextArea):
+    can_focus = True
+
+    def __init__(self, **kwargs) -> None:
+        kwargs["show_line_numbers"] = True
+        super().__init__(**kwargs)
+        self.active_tag: str = ""
+        self._last_nav_time: float = 0.0
+        self._nav_cooldown: float = 0.022
+
+    def on_mount(self) -> None:
+        super().on_mount()
+        self.show_line_numbers = True
+
+    def show_snippet(
+        self,
+        tag: str,
+        num: int | str,
+        code: str,
+        lang: str = "text",
+        file: str = "",
+        start_line: int | None = None,
+        end_line: int | None = None,
+    ) -> None:
+        self.active_tag = tag
+        self.show_line_numbers = True
+        self.line_number_start = start_line if (start_line and start_line > 0) else 1
+
+        lang_label = lang if lang else "text"
+        file_label = f" {file}" if file else ""
+        line_label = ""
+        if start_line is not None and end_line is not None:
+            line_label = f":{start_line}" if start_line == end_line else f":{start_line}-{end_line}"
+
+        self.border_title = f" Edit Snippet {num}{file_label}{line_label} ({lang_label}) "
+        self.load_text(code)
+        try:
+            self.language = lang if lang else None
+        except Exception:
+            self.language = None
+
+        lines = self.document.line_count if self.document else 1
+        target_height = min(max(lines + 2, 4), 10)
+        if self.styles.height != target_height:
+            self.styles.height = target_height
+        self.styles.display = "block"
+        self.scroll_home(animate=False)
+        self.refresh()
+
+    def hide_preview(self) -> None:
+        self.text = ""
+        self.active_tag = ""
+        self.styles.display = "none"
+
+    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        if self.active_tag:
+            input_box = self.app.query_one("#input", ExpandingInput)
+            if self.active_tag in input_box._snippets:
+                input_box._snippets[self.active_tag]["code"] = self.text.rstrip("\n")
+
+        lines = self.document.line_count if self.document else 1
+        target_height = min(max(lines + 2, 4), 10)
+        if self.styles.height != target_height:
+            self.styles.height = target_height
+
+    def _on_key(self, event: events.Key) -> None:
+        if self.app.intercept_c_c_key(event):
+            return
+
+        if event.key in ("tab", "shift+tab"):
+            event.prevent_default(); event.stop()
+            direction = -1 if event.key == "shift+tab" else 1
+            self.app.cycle_global_focus(direction=direction)
+            return
+
+        feed = self.app.query_one("#feed", FeedArea)
+
+        if event.key == "ctrl+q":
+            event.prevent_default(); event.stop()
+            self.app.action_quit()
+            return
+
+        if self.app.is_history_open():
+            try:
+                history_list = self.app.query_one("#history", HistoryList)
+                if event.key in ("up", "ctrl+p", "k"):
+                    event.prevent_default(); event.stop()
+                    history_list.action_cursor_up()
+                    return
+                elif event.key in ("down", "ctrl+n", "j"):
+                    event.prevent_default(); event.stop()
+                    history_list.action_cursor_down()
+                    return
+                elif event.key in ("pageup",):
+                    event.prevent_default(); event.stop()
+                    history_list.action_cursor_page_up()
+                    return
+                elif event.key in ("pagedown",):
+                    event.prevent_default(); event.stop()
+                    history_list.action_cursor_page_down()
+                    return
+                elif event.key == "home":
+                    event.prevent_default(); event.stop()
+                    history_list.action_first()
+                    return
+                elif event.key == "end":
+                    event.prevent_default(); event.stop()
+                    history_list.action_last()
+                    return
+            except Exception:
+                pass
+
+        now = time.monotonic()
+        if event.key in ("down", "up", "shift+up", "shift+down"):
+            if now - self._last_nav_time < self._nav_cooldown:
+                event.prevent_default(); event.stop()
+                return
+            self._last_nav_time = now
+
+        if event.key in ("shift+up", "shift+down"):
+            event.prevent_default(); event.stop()
+            direction = -1 if event.key == "shift+up" else 1
+            feed.viewport_page_navigate(direction)
+            return
+        elif event.key == "down":
+            event.prevent_default(); event.stop()
+            feed.arrow_navigate(1)
+            return
+        elif event.key == "up":
+            event.prevent_default(); event.stop()
+            feed.arrow_navigate(-1)
+            return
+        elif event.key == "pagedown":
+            event.prevent_default(); event.stop()
+            feed.step_card(1)
+            return
+        elif event.key == "pageup":
+            event.prevent_default(); event.stop()
+            feed.step_card(-1)
+            return
+        elif event.key in ("alt+n", "meta+n"):
+            event.prevent_default(); event.stop()
+            feed.navigate_snippet(1)
+            return
+        elif event.key in ("alt+p", "meta+p"):
+            event.prevent_default(); event.stop()
+            feed.navigate_snippet(-1)
+            return
+        elif event.key == "home":
+            event.prevent_default(); event.stop()
+            feed.jump_to_home()
+            return
+        elif event.key == "end":
+            event.prevent_default(); event.stop()
+            feed.jump_to_end()
+            return
+
+        if event.key in ("shift+enter", "shift+return", "ctrl+j"):
+            event.prevent_default(); event.stop()
+            self.insert("\n")
+            return
+
+        if event.key in ("escape", "ctrl+g"):
+            event.prevent_default(); event.stop()
+            if self.app.is_history_open():
+                self.app.action_toggle_history()
+            elif self._mark_point is not None or self.selected_text:
+                self._clear_mark()
+                self.app.notify("Quit", timeout=1.0)
+            else:
+                self.app.query_one("#input", ExpandingInput).focus()
+            return
+
+        super()._on_key(event)
+
+class ExpandingInput(EmacsBaseTextArea):
+    can_focus = True
+
+    class Submitted(Message):
+        def __init__(self, value: str) -> None:
+            super().__init__()
+            self.value = value
+
+    def on_mount(self) -> None:
+        super().on_mount()
+        self.show_line_numbers = False
+        self._snippets: dict[str, dict] = {}
+        self._snippet_counter: int = 1
+        self._last_nav_time: float = 0.0
+        self._nav_cooldown: float = 0.022
+        self.call_after_refresh(self._update_layout)
+
+    def register_and_insert_snippet(
+        self,
+        code: str,
+        lang: str = "",
+        file: str = "",
+        start_line: int | None = None,
+        end_line: int | None = None,
+    ) -> tuple[str, int]:
+        current_num = self._snippet_counter
+        tag = f"{{&snippet{current_num}}}"
+        clean_code = code.rstrip("\n")
+
+        self._snippets[tag] = {
+            "code": clean_code,
+            "lang": (lang or "").strip(),
+            "number": str(current_num),
+            "file": (file or "").strip(),
+            "start_line": start_line,
+            "end_line": end_line,
+        }
+        self._snippet_counter += 1
+
+        self.insert(f" {tag} ")
+        self._clear_mark()
+
+        row, col = self.cursor_location
+        if col > 0:
+            self.move_cursor((row, col - 1), select=False)
+
+        self.call_after_refresh(self._update_layout)
+        self.call_after_refresh(self._sync_snippet_preview)
+        return tag, current_num
+
+    def reset_snippets(self) -> None:
+        self._snippets.clear()
+        self._snippet_counter = 1
+
+    def _get_snippet_at_cursor(self) -> tuple[str, dict] | None:
+        try:
+            row, col = self.cursor_location
+            line = self.document.get_line(row)
+        except Exception:
+            return None
+
+        for match in re.finditer(r"\{&snippet\d+\}", line):
+            if match.start() <= col <= match.end():
+                tag = match.group(0)
+                if tag in self._snippets:
+                    return tag, self._snippets[tag]
+        return None
+
+    def _sync_snippet_preview(self) -> None:
+        try:
+            preview_box = self.app.query_one("#snippet_preview", SnippetPreview)
+        except Exception:
+            return
+
+        if preview_box.has_focus:
+            return
+
+        found = self._get_snippet_at_cursor()
+        if found:
+            tag, data = found
+            if preview_box.active_tag != tag or preview_box.styles.display == "none":
+                preview_box.show_snippet(
+                    tag=tag,
+                    num=data.get("number", ""),
+                    code=data.get("code", ""),
+                    lang=data.get("lang", ""),
+                    file=data.get("file", ""),
+                    start_line=data.get("start_line"),
+                    end_line=data.get("end_line"),
+                )
+        else:
+            if preview_box.styles.display != "none":
+                preview_box.hide_preview()
+
+    @on(TextArea.SelectionChanged)
+    def _on_selection_changed(self, event: TextArea.SelectionChanged) -> None:
+        self._sync_snippet_preview()
+
+    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        self.call_after_refresh(self._update_layout)
+        self._sync_snippet_preview()
+
+    def _on_key(self, event: events.Key) -> None:
+        if self.app.intercept_c_c_key(event):
+            return
+
+        feed = self.app.query_one("#feed", FeedArea)
+        fork_active = feed.fork_ui_active
+
+        if event.key in ("tab", "shift+tab"):
+            event.prevent_default(); event.stop()
+            direction = -1 if event.key == "shift+tab" else 1
+            self.app.cycle_global_focus(direction=direction)
+            return
+
+        if event.key == "ctrl+q":
+            event.prevent_default(); event.stop()
+            self.app.action_quit()
+            return
+
+        if self.app.is_history_open():
+            try:
+                history_list = self.app.query_one("#history", HistoryList)
+                if event.key in ("up", "ctrl+p", "k"):
+                    event.prevent_default(); event.stop()
+                    history_list.action_cursor_up()
+                    return
+                elif event.key in ("down", "ctrl+n", "j"):
+                    event.prevent_default(); event.stop()
+                    history_list.action_cursor_down()
+                    return
+                elif event.key in ("pageup",):
+                    event.prevent_default(); event.stop()
+                    history_list.action_cursor_page_up()
+                    return
+                elif event.key in ("pagedown",):
+                    event.prevent_default(); event.stop()
+                    history_list.action_cursor_page_down()
+                    return
+                elif event.key == "home":
+                    event.prevent_default(); event.stop()
+                    history_list.action_first()
+                    return
+                elif event.key == "end":
+                    event.prevent_default(); event.stop()
+                    history_list.action_last()
+                    return
+            except Exception:
+                pass
+
+        now = time.monotonic()
+        if event.key in ("down", "up", "shift+up", "shift+down"):
+            if now - self._last_nav_time < self._nav_cooldown:
+                event.prevent_default(); event.stop()
+                return
+            self._last_nav_time = now
+
+        if event.key in ("shift+up", "shift+down"):
+            event.prevent_default(); event.stop()
+            direction = -1 if event.key == "shift+up" else 1
+            feed.viewport_page_navigate(direction)
+            return
+        elif event.key == "down":
+            event.prevent_default(); event.stop()
+            feed.arrow_navigate(1)
+            return
+        elif event.key == "up":
+            event.prevent_default(); event.stop()
+            feed.arrow_navigate(-1)
+            return
+        elif event.key == "pagedown":
+            event.prevent_default(); event.stop()
+            feed.step_card(1)
+            return
+        elif event.key == "pageup":
+            event.prevent_default(); event.stop()
+            feed.step_card(-1)
+            return
+        elif event.key in ("alt+n", "meta+n"):
+            event.prevent_default(); event.stop()
+            feed.navigate_snippet(1)
+            return
+        elif event.key in ("alt+p", "meta+p"):
+            event.prevent_default(); event.stop()
+            feed.navigate_snippet(-1)
+            return
+        elif event.key == "home":
+            event.prevent_default(); event.stop()
+            feed.jump_to_home()
+            return
+        elif event.key == "end":
+            event.prevent_default(); event.stop()
+            feed.jump_to_end()
+            return
+
+        if fork_active:
+            if event.key in ("escape", "ctrl+g"):
+                event.prevent_default(); event.stop()
+                feed.toggle_fork_ui()
+                self.app.update_feed_nav_banner()
+                self.app.notify("Exited fork mode")
+                return
+
+            if event.key == "space":
+                event.prevent_default(); event.stop()
+                feed.toggle_current_card_selection()
+                return
+
+            if event.key == "a":
+                event.prevent_default(); event.stop()
+                feed.toggle_all_fork_checkboxes()
+                return
+
+            if event.key in ("enter", "return"):
+                event.prevent_default(); event.stop()
+                self.app.action_confirm_fork()
+                return
+
+            event.prevent_default(); event.stop()
+            return
+
+        if event.key in ("shift+enter", "shift+return", "ctrl+j", "alt+enter", "meta+enter"):
+            event.prevent_default(); event.stop()
+            self.action_newline()
+            return
+        elif event.key in ("enter", "return"):
+            event.prevent_default(); event.stop()
+            self.action_submit()
+            return
+
+        if event.key in ("ctrl+g", "escape"):
+            event.prevent_default(); event.stop()
+            if self.app.is_history_open():
+                self.app.action_toggle_history()
+            elif self._mark_point is not None or self.selected_text:
+                self._clear_mark()
+                self.app.notify("Quit", timeout=1.0)
+            return
+
+        super()._on_key(event)
+
+    def _update_layout(self) -> None:
+        lines = 1
+        if hasattr(self, "wrapped_document") and self.wrapped_document:
+            lines = self.wrapped_document.height
+        elif hasattr(self, "document") and self.document:
+            lines = self.document.line_count
+
+        target_height = min(max(lines, 1), 6) + 2
+        if self.styles.height != target_height:
+            self.styles.height = target_height
+
+        self.scroll_cursor_visible()
+
+    def action_newline(self) -> None:
+        self.insert("\n")
+        self.scroll_cursor_visible()
+
+    def action_submit(self) -> None:
+        raw_text = self.text.strip()
+        if not raw_text:
+            return
+
+        if raw_text.startswith("!/"):
+            self.app.execute_command(raw_text)
+            self.clear()
+            self.reset_snippets()
+            self._clear_mark()
+            self.call_after_refresh(self._update_layout)
+            self.app.query_one("#snippet_preview", SnippetPreview).hide_preview()
+            return
+
+        def replacer(match):
+            token = match.group(0).replace(" ", "")
+            if token in self._snippets:
+                item = self._snippets[token]
+                lang = item["lang"]
+                num = item["number"]
+                code = item["code"]
+                file = item.get("file", "")
+                start_l = item.get("start_line")
+                end_l = item.get("end_line")
+
+                file_part = ""
+                if file:
+                    line_part = ""
+                    if start_l is not None and end_l is not None:
+                        if start_l == end_l:
+                            line_part = f" (Line {start_l})"
+                        else:
+                            line_part = f" (Lines {start_l}-{end_l})"
+                    file_part = f" - `{file}`{line_part}"
+
+                lang_part = f" - `{lang}`" if lang else ""
+                title = f"#### (Snippet {num}){file_part}{lang_part}"
+                ticks = chr(96) * 3
+                return f"\n\n{title}\n{ticks}{lang}\n{code}\n{ticks}\n\n"
+            return match.group(0)
+
+        resolved_text = re.sub(r"\{\s*&snippet\d+\s*\}", replacer, raw_text)
+        resolved_text = re.sub(r"\n{3,}", "\n\n", resolved_text).strip()
+
+        self.post_message(self.Submitted(resolved_text))
+        self.clear()
+        self.reset_snippets()
+        self._clear_mark()
+        self.call_after_refresh(self._update_layout)
+
+        self.app.query_one("#snippet_preview", SnippetPreview).hide_preview()
+
+# ---------------------------------------------------------------------------
+# Dedicated Mind Map Screen (Bilateral Cognition & Steering Console)
+# ---------------------------------------------------------------------------
+
+class MindMapScreen(Screen):
+    BINDINGS = [
+        Binding("escape", "back_to_chat", "Back to Chat"),
+        Binding("ctrl+g", "back_to_chat", "Back to Chat"),
+        Binding("q", "back_to_chat", "Back to Chat"),
+    ]
+
+    DEFAULT_CSS = """
+    MindMapScreen {
+        layout: vertical;
+        background: #000000;
+        layers: base toasts overlay;
+    }
+    #mind_split {
+        height: 1fr;
+        width: 100%;
+        layout: horizontal;
+        background: #000000;
+    }
+    MindMapScreen.-mobile #mind_split {
+        layout: vertical;
+    }
+    #mind_states_column {
+        width: 60%;
+        height: 100%;
+        background: #000000;
+        layout: vertical;
+    }
+    MindMapScreen.-mobile #mind_states_column {
+        width: 100%;
+        height: 50%;
+        border-right: none !important;
+        border-bottom: solid red;
+    }
+    #gemini_mind_card {
+        height: 50%;
+        width: 100%;
+        padding: 1;
+        overflow-y: auto;
+        background: #000000;
+    }
+    #user_mind_card {
+        height: 50%;
+        width: 100%;
+        padding: 1;
+        overflow-y: auto;
+        background: #000000;
+    }
+    #mind_tree_column {
+        width: 40%;
+        height: 100%;
+        padding: 1;
+        overflow-y: auto;
+        background: #000000;
+    }
+    MindMapScreen.-mobile #mind_tree_column {
+        width: 100%;
+        height: 50%;
+    }
+    .mind_header {
+        text-style: bold;
+        width: 100%;
+        margin-bottom: 1;
+    }
+    #mind_input_bar {
+        height: auto;
+        min-height: 3;
+        width: 100%;
+        padding: 0 1 1 1;
+        background: #000000;
+    }
+    #mind_input {
+        width: 100%;
+        background: #000000;
+        color: #ffffff;
+    }
+    """
+
+    def _update_screen_classes(self, width: int | None = None) -> None:
+        w = width if width is not None else (self.size.width or (self.app.size.width if self.app else 100))
+        self.set_class(w <= MOBILE_BREAKPOINT, "-mobile")
+
+    def on_mount(self) -> None:
+        if hasattr(self.app, "active_palette_name"):
+            self.add_class(f"theme-{self.app.active_palette_name}")
+        self._update_screen_classes()
+        self.refresh_display()
+        self.query_one("#mind_input", Input).focus()
+
+    def on_resize(self, event: events.Resize) -> None:
+        self._update_screen_classes(event.size.width)
+
+    def refresh_display(self) -> None:
+        app: ChatApp = self.app  # type: ignore
+        try:
+            gemini_md = self.query_one("#gemini_mind_text", Markdown)
+            user_md = self.query_one("#user_mind_text", Markdown)
+            tree_md = self.query_one("#mind_tree_text", Markdown)
+
+            gemini_md.update(app.current_gemini_state or "*No conclusive direction recorded yet.*")
+            user_md.update(app.current_user_state or "*Awaiting initial conversational alignment.*")
+
+            tree_body = f"```text\n{app.current_tree_content}\n```" if app.current_tree_content else "*Tree not initialized.*"
+            tree_md.update(tree_body)
+
+            gemini_md.refresh(layout=True)
+            user_md.refresh(layout=True)
+            tree_md.refresh(layout=True)
+        except Exception:
+            pass
+
+    def compose(self) -> ComposeResult:
+        with Horizontal(id="mind_split"):
+            with Vertical(id="mind_states_column"):
+                with Vertical(id="gemini_mind_card"):
+                    yield Label("── GEMINI MIND STATE (Conclusive Direction) ──", classes="mind_header")
+                    yield Markdown(id="gemini_mind_text")
+                with Vertical(id="user_mind_card"):
+                    yield Label("── USER MIND STATE (Inferred Intent) ──", classes="mind_header")
+                    yield Markdown(id="user_mind_text")
+            with VerticalScroll(id="mind_tree_column"):
+                yield Label("── WORKSPACE & CHAT TOPOLOGY ──", classes="mind_header")
+                yield Markdown(id="mind_tree_text")
+
+        with Vertical(id="mind_input_bar"):
+            yield Input(placeholder="Steer Mind State: e.g. Focus purely on socket IPC, drop the database refactor...", id="mind_input")
+
+    @on(Input.Submitted, "#mind_input")
+    def on_steer_submitted(self, event: Input.Submitted) -> None:
+        raw = event.value.strip()
+        if not raw:
+            return
+        self.query_one("#mind_input", Input).value = ""
+        self.app.steer_mind_state(raw)
+        self.notify("Cognitive steering sent to Gemini...", timeout=2.5)
+
+    def action_back_to_chat(self) -> None:
+        self.app.pop_screen()
+
+# ---------------------------------------------------------------------------
+# Feed View & Target Snapping Engine
+# ---------------------------------------------------------------------------
+
+class FeedArea(VerticalScroll):
+    can_focus = False
+    auto_scroll = False
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.can_focus = False
+        self.active_turn_index: int = 0
+
+        self.fork_ui_active: bool = False
+        self._fork_selected_indices: set[int] = set()
+
+        self._all_messages: list[dict] = []
+        self._win_start: int = 0
+        self._win_end: int = 0
+
+        self._header_map: dict[int, tuple[int, str]] = {}
+        self._last_wall_step_time: float = 0.0
+
+    def compose(self) -> ComposeResult:
+        yield Vertical(id="turns_container")
+
+    def get_tier_config(self) -> int:
+        return DEFAULT_WINDOW_CAPACITY
+
+    def is_locked(self) -> bool:
+        return self.app.lock.is_locked
+
+    def scroll_to_widget(self, widget: Widget, *args, **kwargs) -> None:
+        pass
+
+    def clear(self) -> None:
+        self.fork_ui_active = False
+        self.remove_class("fork-ui-active")
+        self._fork_selected_indices.clear()
+        self._header_map.clear()
+        if hasattr(self.app, "hide_status"):
+            self.app.hide_status()
+
+        self.set_messages([])
+
+    def _sync_header_map(self) -> None:
+        self._header_map.clear()
+        container = self.query_one("#turns_container", Vertical)
+        for child in container.children:
+            if isinstance(child, TurnCard) and getattr(child, "virtual_region", None):
+                self._header_map[int(child.virtual_region.y)] = (child.turn_index, child.turn_id)
+
+    def _get_center_raycast_target(self, current_y: int | None = None) -> tuple[int, str, int] | None:
+        if not self._header_map or not self._all_messages:
+            return None
+
+        y = int(self.scroll_y) if current_y is None else int(current_y)
+        view_h = self.container_size.height or 24
+
+        if CENTER_SCREEN_MODE:
+            center_y = y + (view_h // 2)
+            return cast_ray_from_center(center_y, self._header_map)
+        else:
+            for line_y in sorted(self._header_map.keys()):
+                if line_y >= y:
+                    t_idx, t_id = self._header_map[line_y]
+                    return t_idx, t_id, 0
+            closest_line = min(self._header_map.keys(), key=lambda ly: abs(ly - y))
+            t_idx, t_id = self._header_map[closest_line]
+            return t_idx, t_id, 0
+
+    def _execute_1d_raycast(self, current_y: int | None = None) -> None:
+        if self.is_locked() or not self._header_map or not self._all_messages:
+            return
+
+        target = self._get_center_raycast_target(current_y)
+        if not target:
+            return
+        t_idx, t_id, delta = target
+
+        prev_target = self.active_turn_index
+        self.active_turn_index = t_idx
+
+        if hasattr(self.app, "current_chat_last_index"):
+            self.app.current_chat_last_index = t_idx
+            if CENTER_SCREEN_MODE:
+                sign = f"+{delta}" if delta > 0 else str(delta)
+                self.app.current_chat_center_marker = f"{t_id}:{sign}" if delta != 0 else f"{t_id}:0"
+            else:
+                self.app.current_chat_center_marker = t_id
+
+        if self.active_turn_index != prev_target and not self.is_locked():
+            self.highlight_card(self.active_turn_index, scroll=False)
+
+    def request_wall_shift(self, anchor_turn_idx: int, discrete_dock: bool = False, moving_up: bool = False) -> None:
+        now = time.monotonic()
+        if now - self._last_wall_step_time < 0.15 or self.is_locked():
+            return
+        self._last_wall_step_time = now
+
+        self.app.lock.acquire("dom_load")
+        self.app.show_loader_banner()
+        self._sync_runway_to_target(anchor_turn_idx, discrete_dock=discrete_dock, moving_up=moving_up)
+
+    @work(exclusive=True)
+    async def _sync_runway_to_target(
+        self,
+        target_idx: int,
+        prev_idx: int | None = None,
+        discrete_dock: bool = False,
+        moving_up: bool = False,
+    ) -> None:
+        try:
+            total = len(self._all_messages)
+            if total <= DEFAULT_WINDOW_CAPACITY:
+                if discrete_dock:
+                    target_card = self._get_target_widget(target_idx)
+                    if target_card:
+                        self._scroll_to_turn_widget(target_card, center=False)
+                return
+
+            if moving_up:
+                preferred_above = 5
+                preferred_below = 4
+            else:
+                preferred_above = 4
+                preferred_below = 5
+
+            cards_above = min(target_idx, preferred_above)
+            cards_below = min(total - 1 - target_idx, preferred_below)
+            rem = DEFAULT_WINDOW_CAPACITY - (1 + cards_above + cards_below)
+            if target_idx - cards_above == 0:
+                cards_below = min(total - 1 - target_idx, cards_below + rem)
+            elif target_idx + cards_below == total - 1:
+                cards_above = min(target_idx, cards_above + rem)
+
+            ideal_start = max(0, target_idx - cards_above)
+            ideal_end = min(total, target_idx + cards_below + 1)
+
+            if self._win_start == ideal_start and self._win_end == ideal_end:
+                if discrete_dock:
+                    target_card = self._get_target_widget(target_idx)
+                    if target_card:
+                        self._scroll_to_turn_widget(target_card, center=False)
+                return
+
+            anchor_card = self._get_target_widget(self.active_turn_index)
+            signed_delta = 0
+            view_h = self.container_size.height or 24
+            if anchor_card and anchor_card.virtual_region:
+                center_y = int(self.scroll_y) + (view_h // 2)
+                signed_delta = center_y - int(anchor_card.virtual_region.y)
+
+            container = self.query_one("#turns_container", Vertical)
+            await container.remove_children()
+
+            new_cards = [
+                card for idx in range(ideal_start, ideal_end)
+                if (card := self._create_turn_widget(idx)) is not None
+            ]
+            if new_cards:
+                await container.mount_all(new_cards)
+
+            self._win_start = ideal_start
+            self._win_end = ideal_end
+
+            settle_event = asyncio.Event()
+
+            def _on_runway_settle() -> None:
+                try:
+                    self._sync_header_map()
+                    if discrete_dock:
+                        target_card = self._get_target_widget(target_idx)
+                        if target_card:
+                            self.highlight_card(target_idx, scroll=False)
+                            self._scroll_to_turn_widget(target_card, center=False)
+                    else:
+                        ref_card = self._get_target_widget(self.active_turn_index)
+                        if ref_card and ref_card.virtual_region:
+                            new_header_y = int(ref_card.virtual_region.y)
+                            new_center_y = new_header_y + signed_delta
+                            target_scroll_y = max(0, new_center_y - (view_h // 2))
+                            max_scroll = getattr(self, "max_scroll_y", max(0, self.virtual_size.height - view_h))
+                            self.scroll_y = min(max_scroll, target_scroll_y)
+                        self.highlight_card(self.active_turn_index, scroll=False)
+                finally:
+                    settle_event.set()
+
+            self.call_after_refresh(_on_runway_settle)
+            try:
+                await asyncio.wait_for(settle_event.wait(), timeout=0.6)
+            except asyncio.TimeoutError:
+                self._sync_header_map()
+
+        finally:
+            self.app.hide_loader_banner()
+            self.app.lock.release("dom_load")
+
+    def _create_turn_widget(self, idx: int) -> TurnCard | None:
+        if not (0 <= idx < len(self._all_messages)):
+            return None
+
+        turn = self._all_messages[idx]
+        turn_id = turn.get("turn_id")
+        if not turn_id:
+            turn_id = f"turn_{uuid4().hex[:8]}"
+            turn["turn_id"] = turn_id
+
+        container = self.query_one("#turns_container", Vertical)
+        for child in container.children:
+            if isinstance(child, TurnCard) and child.turn_index == idx:
+                return None
+
+        sender = CURRENT_USER if turn["role"] == "user" else "gemini"
+        is_sel = idx in self._fork_selected_indices
+
+        card = TurnCard(
+            index=idx,
+            sender=sender,
+            text=turn["text"],
+            turn_id=turn_id,
+            is_selected=is_sel,
+        )
+
+        if idx == self.active_turn_index:
+            card.add_class("card-active")
+
+        return card
+
+    def set_messages(self, messages: list[dict], initial_target_marker: str | int | None = None) -> None:
+        self.fork_ui_active = False
+        self.remove_class("fork-ui-active")
+        self._fork_selected_indices.clear()
+        if hasattr(self.app, "hide_status"):
+            self.app.hide_status()
+
+        self._run_target_mutation("reset_chat", new_messages=messages, target_marker=initial_target_marker)
+
+    def _get_target_widget(self, idx: int) -> TurnCard | None:
+        container = self.query_one("#turns_container", Vertical)
+        for child in container.children:
+            if isinstance(child, TurnCard) and child.turn_index == idx:
+                return child
+        return None
+
+    def _get_target_widget_by_id(self, turn_id: str) -> TurnCard | None:
+        if not turn_id:
+            return None
+        container = self.query_one("#turns_container", Vertical)
+        for child in container.children:
+            if isinstance(child, TurnCard) and child.turn_id == turn_id:
+                return child
+        return None
+
+    def _scroll_to_turn_widget(
+        self,
+        target_w: TurnCard,
+        center: bool = False,
+        line_offset: int | None = None,
+    ) -> None:
+        view_h = self.container_size.height or 24
+        header_y = int(target_w.virtual_region.y)
+        max_scroll = getattr(self, "max_scroll_y", max(0, self.virtual_size.height - view_h))
+
+        if not center:
+            self.scroll_y = max(0, min(max_scroll, header_y))
+            return
+
+        offset = line_offset if line_offset is not None else 0
+        target_y = (header_y + offset) - (view_h // 2)
+        self.scroll_y = max(0, min(max_scroll, target_y))
+
+    def on_mouse_scroll_down(self, event: events.MouseScrollDown) -> None:
+        if self.is_locked():
+            event.stop()
+            return
+        self.app.trigger_nav_indicator("scroll_down")
+
+        max_scroll = getattr(self, "max_scroll_y", max(0, self.virtual_size.height - self.container_size.height))
+        if (self.active_turn_index >= (self._win_end - 1) or self.scroll_y >= max_scroll) and self._win_end < len(self._all_messages):
+            self.request_wall_shift(self.active_turn_index, discrete_dock=False, moving_up=False)
+            return
+
+        self.scroll_down(animate=False)
+        self._execute_1d_raycast()
+
+    def on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
+        if self.is_locked():
+            event.stop()
+            return
+        self.app.trigger_nav_indicator("scroll_up")
+
+        if (self.active_turn_index <= self._win_start or self.scroll_y <= 0) and self._win_start > 0:
+            self.request_wall_shift(self.active_turn_index, discrete_dock=False, moving_up=True)
+            return
+
+        self.scroll_up(animate=False)
+        self._execute_1d_raycast()
+
+    @work(exclusive=True)
+    async def _run_target_mutation(
+        self,
+        action: str,
+        new_messages: list[dict] | None = None,
+        target_index: int | None = None,
+        target_marker: str | int | None = None,
+    ) -> None:
+        self.app.lock.acquire("dom_load")
+        self.app.show_loader_banner()
+        container = self.query_one("#turns_container", Vertical)
+        capacity = self.get_tier_config()
+
+        try:
+            if action == "reset_chat":
+                self._all_messages = list(new_messages or [])
+                total = len(self._all_messages)
+
+                await container.remove_children()
+
+                if total == 0:
+                    self._win_start = 0
+                    self._win_end = 0
+                    self.active_turn_index = 0
+                    self._header_map.clear()
+                    self.scroll_y = 0
+                    return
+
+                if target_marker == "end":
+                    self._win_start = max(0, total - capacity)
+                    self._win_end = total
+                    widgets_to_mount = [
+                        w for idx in range(self._win_start, self._win_end)
+                        if (w := self._create_turn_widget(idx)) is not None
+                    ]
+                    if widgets_to_mount:
+                        await container.mount_all(widgets_to_mount)
+
+                    settle_event = asyncio.Event()
+
+                    def _on_end_reset_settle() -> None:
+                        try:
+                            self._sync_header_map()
+                            self.active_turn_index = total - 1
+                            self.highlight_card(total - 1, scroll=False)
+                            target_w = self._get_target_widget(total - 1)
+                            if target_w:
+                                self._scroll_to_turn_widget(target_w, center=False)
+                            else:
+                                self.scroll_end(animate=False)
+                        finally:
+                            settle_event.set()
+
+                    self.call_after_refresh(_on_end_reset_settle)
+                    try:
+                        await asyncio.wait_for(settle_event.wait(), timeout=0.6)
+                    except asyncio.TimeoutError:
+                        pass
+                    return
+
+                req_idx = 0
+                line_offset: int | None = None
+
+                if target_marker is not None:
+                    marker_str = str(target_marker).strip()
+                    if ":" in marker_str:
+                        tid, offset_str = marker_str.split(":", 1)
+                        if CENTER_SCREEN_MODE:
+                            try:
+                                line_offset = int(offset_str)
+                            except Exception:
+                                line_offset = None
+                        else:
+                            line_offset = None
+                    else:
+                        tid = marker_str
+
+                    matched_idx = next((i for i, m in enumerate(self._all_messages) if m.get("turn_id") == tid), None)
+                    if matched_idx is not None:
+                        req_idx = matched_idx
+                    else:
+                        try:
+                            req_idx = max(0, min(total - 1, int(target_marker)))
+                        except Exception:
+                            req_idx = max(0, total - 1)
+                elif target_index is not None and 0 <= target_index < total:
+                    req_idx = target_index
+                else:
+                    req_idx = max(0, total - 1)
+
+                cards_above = min(req_idx, 4)
+                cards_below = min(total - 1 - req_idx, 5)
+                rem = capacity - (1 + cards_above + cards_below)
+                if req_idx - cards_above == 0:
+                    cards_below = min(total - 1 - req_idx, cards_below + rem)
+                elif req_idx + cards_below == total - 1:
+                    cards_above = min(req_idx, cards_above + rem)
+
+                self._win_start = max(0, req_idx - cards_above)
+                self._win_end = min(total, req_idx + cards_below + 1)
+
+                widgets_to_mount = [
+                    w for idx in range(self._win_start, self._win_end)
+                    if (w := self._create_turn_widget(idx)) is not None
+                ]
+                if widgets_to_mount:
+                    await container.mount_all(widgets_to_mount)
+
+                settle_event = asyncio.Event()
+
+                def _on_initial_settle() -> None:
+                    try:
+                        self._sync_header_map()
+                        self.active_turn_index = req_idx
+                        target_w = self._get_target_widget(req_idx)
+                        if target_w:
+                            should_center = CENTER_SCREEN_MODE and (line_offset is not None)
+                            self._scroll_to_turn_widget(
+                                target_w,
+                                center=should_center,
+                                line_offset=line_offset,
+                            )
+                        else:
+                            self.scroll_end(animate=False)
+                        self.highlight_card(req_idx, scroll=False)
+                    finally:
+                        settle_event.set()
+
+                self.call_after_refresh(_on_initial_settle)
+                try:
+                    await asyncio.wait_for(settle_event.wait(), timeout=0.6)
+                except asyncio.TimeoutError:
+                    pass
+
+            elif action == "jump_home":
+                total = len(self._all_messages)
+                if total == 0:
+                    self.scroll_home(animate=False)
+                    return
+
+                self._win_start = 0
+                self._win_end = min(capacity, total)
+
+                await container.remove_children()
+                home_widgets = [
+                    w for idx in range(self._win_start, self._win_end)
+                    if (w := self._create_turn_widget(idx)) is not None
+                ]
+                if home_widgets:
+                    await container.mount_all(home_widgets)
+
+                self.active_turn_index = 0
+                settle_event = asyncio.Event()
+
+                def _on_home_settle() -> None:
+                    try:
+                        self._sync_header_map()
+                        self.scroll_y = 0
+                        self.highlight_card(0, scroll=False)
+                    finally:
+                        settle_event.set()
+
+                self.call_after_refresh(_on_home_settle)
+                try:
+                    await asyncio.wait_for(settle_event.wait(), timeout=0.6)
+                except asyncio.TimeoutError:
+                    pass
+
+            elif action == "jump_end":
+                total = len(self._all_messages)
+                if total == 0:
+                    self.scroll_end(animate=False)
+                    return
+
+                self._win_start = max(0, total - capacity)
+                self._win_end = total
+
+                await container.remove_children()
+                end_widgets = [
+                    w for idx in range(self._win_start, self._win_end)
+                    if (w := self._create_turn_widget(idx)) is not None
+                ]
+                if end_widgets:
+                    await container.mount_all(end_widgets)
+
+                self.active_turn_index = total - 1
+                settle_event = asyncio.Event()
+
+                def _on_end_settle() -> None:
+                    try:
+                        self._sync_header_map()
+                        self.highlight_card(self.active_turn_index, scroll=False)
+                        target_w = self._get_target_widget(self.active_turn_index)
+                        if target_w:
+                            self._scroll_to_turn_widget(target_w, center=False)
+                        else:
+                            self.scroll_end(animate=False)
+                    finally:
+                        settle_event.set()
+
+                self.call_after_refresh(_on_end_settle)
+                try:
+                    await asyncio.wait_for(settle_event.wait(), timeout=0.6)
+                except asyncio.TimeoutError:
+                    pass
+
+        finally:
+            self.app.hide_loader_banner()
+            self.app.lock.release("dom_load")
+
+    def step_card(self, delta: int) -> None:
+        total = len(self._all_messages)
+        if not total or self.is_locked():
+            return
+
+        target_idx = max(0, min(total - 1, self.active_turn_index + delta))
+        if target_idx == self.active_turn_index:
+            return
+
+        if delta > 0 and target_idx >= self._win_end and self._win_end < total:
+            self.request_wall_shift(target_idx, discrete_dock=True, moving_up=False)
+            return
+        elif delta < 0 and target_idx < self._win_start and self._win_start > 0:
+            self.request_wall_shift(target_idx, discrete_dock=True, moving_up=True)
+            return
+
+        existing_card = self._get_target_widget(target_idx)
+        max_scroll = getattr(self, "max_scroll_y", max(0, self.virtual_size.height - self.container_size.height))
+
+        if (delta > 0 and self.scroll_y >= max_scroll) or (delta < 0 and self.scroll_y <= 0):
+            self.active_turn_index = target_idx
+            if hasattr(self.app, "current_chat_last_index"):
+                self.app.current_chat_last_index = target_idx
+                self.app.current_chat_center_marker = self._all_messages[target_idx].get("turn_id", "")
+            self.highlight_card(target_idx, scroll=False)
+            return
+
+        if isinstance(existing_card, TurnCard):
+            self.active_turn_index = target_idx
+            if hasattr(self.app, "current_chat_last_index"):
+                self.app.current_chat_last_index = target_idx
+                self.app.current_chat_center_marker = self._all_messages[target_idx].get("turn_id", "")
+            self.highlight_card(target_idx, scroll=False)
+            self._scroll_to_turn_widget(existing_card, center=False)
+
+    def viewport_page_navigate(self, direction: int) -> None:
+        if self.is_locked():
+            return
+
+        if direction < 0:
+            self.app.trigger_nav_indicator("page_up")
+        else:
+            self.app.trigger_nav_indicator("page_down")
+
+        page_step = max(self.container_size.height - 3, 5)
+        max_scroll = getattr(self, "max_scroll_y", max(0, self.virtual_size.height - self.container_size.height))
+
+        if direction < 0:
+            if (self.active_turn_index <= self._win_start or self.scroll_y <= 0) and self._win_start > 0:
+                self.request_wall_shift(self.active_turn_index, discrete_dock=False, moving_up=True)
+                return
+            target_y = max(0, self.scroll_y - page_step)
+            self.scroll_to(y=target_y, animate=False)
+        else:
+            if (self.active_turn_index >= (self._win_end - 1) or self.scroll_y >= max_scroll) and self._win_end < len(self._all_messages):
+                self.request_wall_shift(self.active_turn_index, discrete_dock=False, moving_up=False)
+                return
+            target_y = min(max_scroll, self.scroll_y + page_step)
+            self.scroll_to(y=target_y, animate=False)
+
+        self._execute_1d_raycast(target_y)
+
+    def arrow_navigate(self, direction: int) -> None:
+        if self.is_locked() or not self._all_messages:
+            return
+
+        if direction < 0:
+            self.app.trigger_nav_indicator("scroll_up")
+        else:
+            self.app.trigger_nav_indicator("scroll_down")
+
+        line_step = 2
+        max_scroll = getattr(self, "max_scroll_y", max(0, self.virtual_size.height - self.container_size.height))
+        total = len(self._all_messages)
+
+        center_target = self._get_center_raycast_target()
+        raycast_idx = center_target[0] if center_target else self.active_turn_index
+
+        if direction > 0:
+            if (self.active_turn_index >= (self._win_end - 1) or self.scroll_y >= max_scroll) and self._win_end < total:
+                self.request_wall_shift(self.active_turn_index, discrete_dock=False, moving_up=False)
+                return
+
+            if self.active_turn_index < raycast_idx:
+                new_idx = self.active_turn_index + 1
+                self.active_turn_index = new_idx
+                turn_id = self._all_messages[new_idx].get("turn_id", f"turn_{new_idx}")
+                if hasattr(self.app, "current_chat_last_index"):
+                    self.app.current_chat_last_index = new_idx
+                    self.app.current_chat_center_marker = turn_id
+                self.highlight_card(new_idx, scroll=False)
+                return
+
+            if self.scroll_y >= max_scroll:
+                if self.active_turn_index < total - 1:
+                    new_idx = self.active_turn_index + 1
+                    self.active_turn_index = new_idx
+                    turn_id = self._all_messages[new_idx].get("turn_id", f"turn_{new_idx}")
+                    if hasattr(self.app, "current_chat_last_index"):
+                        self.app.current_chat_last_index = new_idx
+                        self.app.current_chat_center_marker = turn_id
+                    self.highlight_card(new_idx, scroll=False)
+                return
+
+            target_y = min(max_scroll, self.scroll_y + line_step)
+            self.scroll_y = target_y
+            self._execute_1d_raycast(target_y)
+
+        else:
+            if (self.active_turn_index <= self._win_start or self.scroll_y <= 0) and self._win_start > 0:
+                self.request_wall_shift(self.active_turn_index, discrete_dock=False, moving_up=True)
+                return
+
+            if self.active_turn_index > raycast_idx:
+                new_idx = self.active_turn_index - 1
+                self.active_turn_index = new_idx
+                turn_id = self._all_messages[new_idx].get("turn_id", f"turn_{new_idx}")
+                if hasattr(self.app, "current_chat_last_index"):
+                    self.app.current_chat_last_index = new_idx
+                    self.app.current_chat_center_marker = turn_id
+                self.highlight_card(new_idx, scroll=False)
+                return
+
+            if self.scroll_y <= 0:
+                if self.active_turn_index > 0:
+                    new_idx = self.active_turn_index - 1
+                    self.active_turn_index = new_idx
+                    turn_id = self._all_messages[new_idx].get("turn_id", f"turn_{new_idx}")
+                    if hasattr(self.app, "current_chat_last_index"):
+                        self.app.current_chat_last_index = new_idx
+                        self.app.current_chat_center_marker = turn_id
+                    self.highlight_card(new_idx, scroll=False)
+                return
+
+            target_y = max(0, self.scroll_y - line_step)
+            self.scroll_y = target_y
+            self._execute_1d_raycast(target_y)
+
+    def jump_to_home(self) -> None:
+        if self.is_locked():
+            return
+        self.highlight_card(0, scroll=False)
+        self._run_target_mutation("jump_home")
+
+    def jump_to_end(self) -> None:
+        if self.is_locked():
+            return
+        last_idx = max(0, len(self._all_messages) - 1)
+        self.highlight_card(last_idx, scroll=False)
+        self._run_target_mutation("jump_end")
+
+    async def append_message(self, sender: str, text: str, jump_to_start: bool = False) -> None:
+        new_idx = len(self._all_messages)
+        turn_data = {
+            "turn_id": f"turn_{uuid4().hex[:8]}",
+            "role": "user" if sender == CURRENT_USER else "model",
+            "text": text,
+        }
+        self._all_messages.append(turn_data)
+
+        container = self.query_one("#turns_container", Vertical)
+        capacity = self.get_tier_config()
+
+        if self._win_end == new_idx:
+            new_widget = self._create_turn_widget(new_idx)
+            if new_widget is not None:
+                await container.mount(new_widget)
+                self._win_end += 1
+
+                while (self._win_end - self._win_start) > capacity and len(container.children) > 0:
+                    top_child = container.children[0]
+                    await top_child.remove()
+                    self._win_start += 1
+
+                self.active_turn_index = new_idx
+
+                def _on_append_settle() -> None:
+                    self._sync_header_map()
+                    if jump_to_start:
+                        self._scroll_to_turn_widget(new_widget, center=False)
+                    else:
+                        self.scroll_end(animate=False)
+
+                self.call_after_refresh(_on_append_settle)
+        else:
+            self.jump_to_end()
+
+    def _extract_code_from_fence(self, fence: MarkdownFence) -> str:
+        if hasattr(fence, "text") and fence.text:
+            return fence.text
+        if hasattr(fence, "code") and fence.code:
+            return fence.code
+        if hasattr(fence, "renderable") and isinstance(fence.renderable, Syntax):
+            return fence.renderable.code
+        for child in fence.walk_children():
+            if hasattr(child, "renderable") and isinstance(child.renderable, Syntax):
+                return child.renderable.code
+        return str(getattr(fence, "renderable", ""))
+
+    def _get_visible_fences(self) -> list[MarkdownFence]:
+        feed_reg = self.region
+        if not feed_reg or feed_reg.height <= 0:
+            return []
+
+        feed_top = feed_reg.y
+        feed_bottom = feed_reg.y + feed_reg.height
+
+        visible: list[MarkdownFence] = []
+        for fence in self.query(MarkdownFence):
+            reg = fence.region
+            if not reg or reg.height <= 0:
+                continue
+
+            f_top = reg.y
+            f_bottom = reg.y + reg.height
+
+            if f_top < feed_bottom and f_bottom > feed_top:
+                visible.append(fence)
+
+        return visible
+
+    def navigate_snippet(self, delta: int) -> None:
+        visible = self._get_visible_fences()
+        if not visible:
+            self.app.notify("No selectable snippet on screen", timeout=1.5)
+            return
+
+        total_visible = len(visible)
+
+        curr_idx = -1
+        for idx, fence in enumerate(visible):
+            if "active-snippet" in fence.classes:
+                curr_idx = idx
+                break
+
+        if curr_idx == -1:
+            target_idx = 0 if delta > 0 else (total_visible - 1)
+        else:
+            target_idx = (curr_idx + delta) % total_visible
+
+        for fence in self.query(MarkdownFence):
+            if "active-snippet" in fence.classes:
+                fence.remove_class("active-snippet")
+                fence.refresh()
+
+        chosen = visible[target_idx]
+        chosen.add_class("active-snippet")
+        chosen.refresh()
+
+    def select_snippet_by_widget(self, target_fence: MarkdownFence) -> None:
+        for fence in self.query(MarkdownFence):
+            if fence is target_fence:
+                fence.add_class("active-snippet")
+                fence.refresh()
+            elif "active-snippet" in fence.classes:
+                fence.remove_class("active-snippet")
+                fence.refresh()
+
+    def get_active_snippet(self) -> str | None:
+        for fence in self.query(MarkdownFence):
+            if "active-snippet" in fence.classes:
+                return self._extract_code_from_fence(fence)
+        return None
+
+    def toggle_fork_ui(self) -> None:
+        self.fork_ui_active = not self.fork_ui_active
+        if self.fork_ui_active:
+            self.add_class("fork-ui-active")
+        else:
+            self.remove_class("fork-ui-active")
+        self._refresh_all_fork_card_checkboxes()
+
+    def highlight_card(self, turn_idx: int, scroll: bool = True) -> None:
+        prev_idx = self.active_turn_index
+        self.active_turn_index = turn_idx
+        container = self.query_one("#turns_container", Vertical)
+
+        for card in container.query(TurnCard):
+            if card.turn_index == turn_idx:
+                card.add_class("card-active")
+                card.update_display()
+                if scroll:
+                    self._scroll_to_turn_widget(card, center=False)
+            else:
+                card.remove_class("card-active")
+                if card.turn_index == prev_idx:
+                    card.update_display()
+
+    def toggle_current_card_selection(self) -> None:
+        target_card = self._get_target_widget(self.active_turn_index)
+        if isinstance(target_card, TurnCard):
+            target_card.toggle()
+
+    def toggle_all_fork_checkboxes(self) -> None:
+        total = len(self._all_messages)
+        if not total:
+            return
+
+        all_selected = (len(self._fork_selected_indices) == total)
+        if all_selected:
+            self._fork_selected_indices.clear()
+        else:
+            self._fork_selected_indices = set(range(total))
+
+        self._refresh_all_fork_card_checkboxes()
+        state_msg = "Selected all turns" if not all_selected else "Deselected all turns"
+        self.app.notify(state_msg, timeout=2.0)
+
+    def _refresh_all_fork_card_checkboxes(self) -> None:
+        container = self.query_one("#turns_container", Vertical)
+        for card in container.query(TurnCard):
+            card.update_selected(card.turn_index in self._fork_selected_indices)
+
+    def get_selected_fork_indices(self) -> list[int]:
+        return sorted(list(self._fork_selected_indices))
+
+    @on(events.Click)
+    def _on_feed_click(self, event: events.Click) -> None:
+        if self.is_locked() or self.fork_ui_active:
+            return
+
+        curr = event.widget
+        while curr and curr is not self:
+            if isinstance(curr, MarkdownFence):
+                self.select_snippet_by_widget(curr)
+                event.stop()
+                return
+            curr = curr.parent
+
+class HistoryList(OptionList):
+    async def _on_key(self, event: events.Key) -> None:
+        if self.app.intercept_c_c_key(event):
+            return
+
+        if event.key in ("tab", "shift+tab"):
+            event.prevent_default(); event.stop()
+            direction = -1 if event.key == "shift+tab" else 1
+            self.app.cycle_global_focus(direction=direction)
+            return
+
+        if event.key in ("escape", "ctrl+g", "q"):
+            event.prevent_default(); event.stop()
+            self.app.action_toggle_history()
+        elif event.key in ("delete", "backspace", "d", "x"):
+            event.prevent_default(); event.stop()
+            await self.app.delete_highlighted_chat()
+        elif event.key in ("r",):
+            event.prevent_default(); event.stop()
+            self.app.rename_highlighted_chat()
+        elif event.key in ("k", "ctrl+p", "up"):
+            event.prevent_default(); event.stop()
+            self.action_cursor_up()
+        elif event.key in ("j", "ctrl+n", "down"):
+            event.prevent_default(); event.stop()
+            self.action_cursor_down()
+        else:
+            super()._on_key(event)
+
+# ---------------------------------------------------------------------------
+# Main Chat Application
+# ---------------------------------------------------------------------------
+
+class ChatApp(App):
+    ENABLE_COMMAND_PALETTE = False
+    COMMAND_PALETTE_BINDING = None
+    COMMANDS = set()
+
+    def action_command_palette(self) -> None:
+        pass
+
+    CSS = f"""
+    Screen {{
+        layout: vertical;
+        layers: base toasts overlay;
+        background: #000000;
+    }}
+    ToastRack {{
+        dock: top;
+        align: right top;
+        layer: toasts;
+        background: transparent;
+    }}
+    ModalScreen ToastRack {{
+        display: none;
+    }}
+    Toast {{
+        background: #141414;
+        color: #ffffff;
+        border: solid red;
+    }}
+    #feed_loader_banner {{
+        width: 100%;
+        height: 1;
+        background: #8b0000;
+        color: #ffffff;
+        content-align: center middle;
+        text-align: center;
+        text-style: bold;
+        display: none;
+    }}
+    #main_container {{
+        height: 1fr;
+        width: 100%;
+        layout: vertical;
+        background: #000000;
+    }}
+    #middle_split {{
+        height: 1fr;
+        width: 100%;
+        layout: horizontal;
+        background: #000000;
+    }}
+    Screen.-mobile #middle_split {{
+        layout: vertical;
+    }}
+    #feed {{
+        height: 100%;
+        width: 1fr;
+        border: round red;
+        overflow-y: auto;
+        overflow-x: hidden;
+        scrollbar-size-vertical: 0;
+        scrollbar-size-horizontal: 0;
+        scrollbar-gutter: auto;
+        padding: 0 1;
+        background: #000000;
+    }}
+    #history {{
+        height: 100%;
+        width: 1fr;
+        border: solid red;
+        background: #000000;
+        color: #ffffff;
+        display: none;
+    }}
+    #notes_panel {{
+        height: 100%;
+        width: 40%;
+        border: round red;
+        background: #000000;
+        color: #ffffff;
+        display: none;
+        padding: 0;
+    }}
+    Screen.-notes-open #feed,
+    Screen.-notes-open #history {{
+        width: 60%;
+    }}
+    Screen.-mobile #feed,
+    Screen.-mobile #history {{
+        width: 100%;
+        height: 1fr;
+    }}
+    Screen.-mobile #notes_panel {{
+        width: 100%;
+        height: 1fr;
+    }}
+    Screen.-mobile.-notes-open #feed,
+    Screen.-mobile.-notes-open #history {{
+        width: 100%;
+        height: 1fr;
+    }}
+    Screen.-mobile.-notes-open #notes_panel {{
+        width: 100%;
+        height: 1fr;
+    }}
+    #notes_parents_container {{
+        width: 100%;
+        height: auto;
+        background: #000000;
+        margin: 0 0 1 0;
+        padding: 0;
+        border: none;
+    }}
+    .parent_note_card {{
+        width: 100%;
+        height: auto;
+        margin: 0;
+        padding: 0;
+        border: none;
+        background: #000000;
+    }}
+    .parent_note_card .parent_note_title {{
+        width: 100%;
+        padding: 0 1;
+        text-style: bold;
+        background: #141414;
+        color: red;
+    }}
+    .parent_note_card .parent_note_body {{
+        width: 100%;
+        height: auto;
+        padding: 0 1;
+        margin: 0;
+        display: none;
+        background: #080808;
+    }}
+    .parent_note_card .parent_note_body Markdown {{
+        margin: 0;
+        padding: 0;
+    }}
+    .parent_note_card .parent_note_body MarkdownParagraph {{
+        margin-bottom: 0;
+        padding-bottom: 0;
+    }}
+    #notes_editor {{
+        width: 100%;
+        height: 1fr;
+        border: none;
+        padding: 0 1;
+        background: #000000;
+        color: #ffffff;
+        scrollbar-size-vertical: 0;
+        scrollbar-size-horizontal: 0;
+        scrollbar-gutter: auto;
+    }}
+    #notes_editor:focus {{
+        border: none;
+        background: #000000;
+    }}
+
+    #feed #turns_container {{
+        width: 100%;
+        max-width: 100%;
+        height: auto;
+        background: #000000;
+    }}
+    .turn_card {{
+        width: 100%;
+        max-width: 100%;
+        height: auto;
+        margin-bottom: 1;
+        padding: 0;
+        background: #000000;
+        border: none;
+    }}
+    .turn_card .turn_header {{
+        width: 100%;
+        height: 1;
+        padding: 0 1;
+        margin-bottom: 1;
+        background: #141414;
+    }}
+    .turn_card.card-active .turn_header {{
+        background: #2a0808;
+    }}
+    .turn_box_label {{
+        width: 100%;
+        text-style: bold;
+        color: #ffffff;
+    }}
+    .turn_card.card-active .turn_box_label {{
+        color: red;
+    }}
+    .turn_card .turn_body {{
+        width: 100%;
+        max-width: 100%;
+        height: auto;
+        background: #000000;
+        color: #ffffff;
+    }}
+    MarkdownHorizontalRule {{
+        border-bottom: solid red;
+        color: red;
+        margin: 1 0;
+    }}
+    #feed_status {{
+        width: 100%;
+        height: 2;
+        padding: 0 1;
+        color: red;
+        text-style: bold;
+        background: #141414;
+        border-bottom: solid red;
+        display: none;
+    }}
+    #feed_nav_banner {{
+        width: 100%;
+        height: auto;
+        min-height: 1;
+        background: #141414;
+        color: #ffffff;
+        text-style: bold;
+        text-align: center;
+        text-wrap: nowrap;
+        padding: 0;
+    }}
+    #feed_nav_banner.fork-active {{
+        background: #8b0000;
+        color: #ffffff;
+        text-style: bold;
+        text-align: center;
+        text-wrap: nowrap;
+    }}
+    #feed MarkdownBlock,
+    #feed MarkdownParagraph,
+    #feed MarkdownTable {{
+        width: 100%;
+        max-width: 100%;
+        overflow-x: hidden;
+        color: #ffffff;
+    }}
+    #feed MarkdownFence {{
+        width: 100%;
+        max-width: 100%;
+        height: auto;
+        overflow-x: hidden;
+        margin: 1 0;
+        border: solid transparent;
+        background: #0a0a0a;
+    }}
+    #feed MarkdownFence.active-snippet {{
+        border: solid red !important;
+        background: #141414 !important;
+    }}
+    #feed MarkdownFence > * {{
+        width: 100%;
+        max-width: 100%;
+    }}
+    #snippet_preview {{
+        width: 100%;
+        max-height: 10;
+        border: round red;
+        background: #000000;
+        color: #ffffff;
+        display: none;
+        margin-bottom: 0;
+    }}
+    #input {{
+        border: solid red;
+        background: #000000;
+        color: #ffffff;
+        scrollbar-size-vertical: 0;
+        scrollbar-size-horizontal: 0;
+        scrollbar-gutter: auto;
+    }}
+    #input:focus {{
+        border: solid red;
+        background: #000000;
+    }}
+    TextArea > .text-area--cursor-line {{
+        background: #141414;
+    }}
+    Button {{
+        background: #000000;
+        color: #ffffff;
+        border: solid red;
+        text-style: none;
+    }}
+    Button:hover {{
+        background: #141414;
+        color: red;
+        text-style: none;
+    }}
+    Button:focus {{
+        border: double red;
+        text-style: none;
+    }}
+
+    #custom_footer {{
+        height: 1;
+        width: 100%;
+        background: #000000;
+        padding: 0 1;
+        align-vertical: middle;
+    }}
+    #custom_footer Static {{
+        height: 1;
+        width: auto;
+        background: transparent;
+    }}
+    #footer_quit:hover, #footer_commands:hover {{
+        background: #141414;
+    }}
+    #footer_sep {{
+        margin: 0 1;
+    }}
+
+    {generate_theme_css_rules()}
+    """
+
+    BINDINGS = [
+        Binding("ctrl+c", "c_c_prefix_stub", "^c Commands", show=False),
+        Binding("ctrl+q", "quit", "^q Quit", show=False),
+    ]
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.client = genai.Client()
+        self.lock = AppLockController(self)
+
+        self.active_palette_name: str = DEFAULT_PALETTE
+        self.current_chat_id: str = ""
+        self.current_chat_title: str = ""
+        self.current_chat_parent_id: str | None = None
+        self.current_chat_working_dir: str | None = None
+        self.current_chat_last_index: int = 0
+        self.current_chat_center_marker: str = ""
+        self.current_chat_notes: str = ""
+        self.global_notes: str = ""
+
+        # Cognitive Mind State & Topology Tracking
+        self.is_legacy_chat: bool = False
+        self.current_gemini_state: str = ""
+        self.current_user_state: str = ""
+        self.current_tree_state: list[str | int] = []
+        self.current_tree_content: str = ""
+        self.saved_prompt_draft: str = ""
+
+        self.notes_open: bool = False
+        self.active_notes_mode: str = "chat"
+        self._last_focused_input_id: str = "input"
+        self._last_non_notes_input_id: str = "input"
+        self._seen_chats_in_session: set[str] = set()
+
+        self._chat_notes_flush_timer: Timer | None = None
+        self._global_notes_flush_timer: Timer | None = None
+
+        self.history: list[dict] = []
+        self._server: asyncio.AbstractServer | None = None
+
+        self._prefix_c_c: bool = False
+        self._c_c_timer: Timer | None = None
+
+        self._request_phase: str = "idle"
+        self._request_start_time: float = 0.0
+        self._spinner_idx: int = 0
+        self._status_timer: Timer | None = None
+
+        self._nav_indicator_action: str | None = None
+        self._nav_indicator_timer: Timer | None = None
+
+        self._commands_registry: dict[str, Callable[[str], None]] = {
+            "ui-theme": self._cmd_ui_theme,
+        }
+
+    def schedule_chat_notes_flush(self) -> None:
+        if self._chat_notes_flush_timer:
+            self._chat_notes_flush_timer.stop()
+        self._chat_notes_flush_timer = self.set_timer(0.4, self._do_chat_notes_flush)
+
+    def _do_chat_notes_flush(self) -> None:
+        self._chat_notes_flush_timer = None
+        if self.current_chat_id and self.active_notes_mode == "chat":
+            self._direct_flush_chat_to_disk(self.current_chat_id, self.current_chat_notes)
+
+    def schedule_global_notes_flush(self) -> None:
+        if self._global_notes_flush_timer:
+            self._global_notes_flush_timer.stop()
+        self._global_notes_flush_timer = self.set_timer(0.4, self._do_global_notes_flush)
+
+    def _do_global_notes_flush(self) -> None:
+        self._global_notes_flush_timer = None
+        if self.active_notes_mode == "global":
+            self._save_to_state("global_notes", self.global_notes or "")
+
+    def clear_toasts(self) -> None:
+        try:
+            seen_toasts = set()
+            stack = getattr(self, "screen_stack", None) or getattr(self, "_screen_stack", [])
+            for screen in list(stack):
+                if hasattr(screen, "query"):
+                    for toast in list(screen.query("Toast")):
+                        if toast not in seen_toasts:
+                            seen_toasts.add(toast)
+                            try:
+                                toast.dismiss()
+                            except Exception:
+                                pass
+        except Exception:
+            pass
+
+    def push_screen(self, screen: Screen[ModalResultType] | str, callback: Callable[[ModalResultType], None] | None = None, wait_for_dismiss: bool = False):
+        self.clear_toasts()
+        return super().push_screen(screen, callback=callback, wait_for_dismiss=wait_for_dismiss)
+
+    @property
+    def accent_color(self) -> str:
+        return THEMES.get(self.active_palette_name, THEMES[DEFAULT_PALETTE])["accent"]
+
+    def set_theme(self, palette_name: str, notify_user: bool = True) -> bool:
+        theme_clean = palette_name.strip().lower()
+        if theme_clean not in THEMES:
+            return False
+
+        self.active_palette_name = theme_clean
+        self._save_to_state("ui_theme", theme_clean)
+
+        if self.screen:
+            for t in THEMES:
+                self.screen.remove_class(f"theme-{t}")
+            self.screen.add_class(f"theme-{theme_clean}")
+
+        self.update_feed_nav_banner()
+        self._update_footer_markup()
+
+        if notify_user:
+            self.notify(f"Theme set to '{theme_clean}'", timeout=2.5)
+        return True
+
+    def _read_theme_from_state(self) -> str:
+        if STATE_FILE.exists():
+            try:
+                data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+                stored = data.get("ui_theme")
+                if stored in THEMES:
+                    return stored
+            except Exception:
+                pass
+        return DEFAULT_PALETTE
+
+    def _read_global_notes_from_state(self) -> str:
+        if STATE_FILE.exists():
+            try:
+                data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+                return data.get("global_notes", "") or ""
+            except Exception:
+                pass
+        return ""
+
+    def _save_to_state(self, key: str, value: str) -> None:
+        try:
+            state: dict = {}
+            if STATE_FILE.exists():
+                try:
+                    state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+                except Exception:
+                    state = {}
+            state[key] = value
+            STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
+            STATE_FILE.chmod(0o600)
+        except Exception:
+            pass
+
+    def _flush_global_notes_to_state(self) -> None:
+        self.flush_current_notes()
+        self._save_to_state("global_notes", self.global_notes or "")
+
+    def _update_footer_markup(self) -> None:
+        try:
+            c = self.accent_color
+            self.query_one("#footer_quit", Static).update(f"[bold {c}]^q:[/] [white]quit[/]")
+            self.query_one("#footer_sep", Static).update(f"[{c}]|[/]")
+            self.query_one("#footer_commands", Static).update(f"[bold {c}]^c + c:[/] [white]commands[/]")
+        except Exception:
+            pass
+
+    def is_history_open(self) -> bool:
+        return self.active_notes_mode == "global"
+
+    def flush_current_notes(self) -> None:
+        try:
+            editors = list(self.query("#notes_editor"))
+            if editors and editors[0].has_focus:
+                text_val = editors[0].text
+                if self.active_notes_mode == "global":
+                    self.global_notes = text_val
+                else:
+                    self.current_chat_notes = text_val
+        except Exception:
+            pass
+
+    def execute_command(self, raw_input: str) -> bool:
+        cmd_text = raw_input.strip()
+        if not cmd_text.startswith("!/"):
+            return False
+
+        body = cmd_text[2:].strip()
+        if not body:
+            self.notify("Empty command specified.", severity="error")
+            return True
+
+        if ":" in body:
+            program, arg = body.split(":", 1)
+            program = program.strip().lower()
+            arg = arg.strip()
+        else:
+            program = body.lower()
+            arg = ""
+
+        handler = self._commands_registry.get(program)
+        if handler:
+            handler(arg)
+        else:
+            valid_cmds = ", ".join(self._commands_registry.keys())
+            self.notify(f"Unknown command '{program}'. Available: {valid_cmds}", severity="error")
+
+        return True
+
+    def _cmd_ui_theme(self, arg: str) -> None:
+        if not arg:
+            valid_themes = ", ".join(THEMES.keys())
+            self.notify(f"Usage: !/ui-theme:<color>. Options: {valid_themes}", severity="warning")
+            return
+
+        success = self.set_theme(arg)
+        if not success:
+            valid_themes = ", ".join(THEMES.keys())
+            self.notify(f"Invalid theme '{arg}'. Choose from: {valid_themes}", severity="error")
+
+    def trigger_nav_indicator(self, action: str) -> None:
+        self._nav_indicator_action = action
+        self.update_feed_nav_banner()
+
+        if self._nav_indicator_timer:
+            self._nav_indicator_timer.stop()
+
+        self._nav_indicator_timer = self.set_timer(0.20, self._clear_nav_indicator)
+
+    def _clear_nav_indicator(self) -> None:
+        self._nav_indicator_action = None
+        self._nav_indicator_timer = None
+        self.update_feed_nav_banner()
+
+    def copy_to_clipboard(self, text: str) -> None:
+        try:
+            pyperclip.copy(text)
+        except Exception:
+            super().copy_to_clipboard(text)
+
+    def set_c_c_prefix(self) -> None:
+        if self._c_c_timer:
+            self._c_c_timer.stop()
+            self._c_c_timer = None
+        self._prefix_c_c = True
+        self._c_c_timer = self.set_timer(3.5, self._expire_c_c_prefix)
+
+    def _expire_c_c_prefix(self) -> None:
+        self._prefix_c_c = False
+        self._c_c_timer = None
+
+    def intercept_c_c_key(self, event: events.Key) -> bool:
+        if event.key == "ctrl+c":
+            if self._prefix_c_c:
+                event.prevent_default()
+                event.stop()
+                self.handle_c_c_prefix(event)
+                return True
+            event.prevent_default()
+            event.stop()
+            self.set_c_c_prefix()
+            return True
+
+        if self._prefix_c_c:
+            event.prevent_default()
+            event.stop()
+            self.handle_c_c_prefix(event)
+            return True
+
+        return False
+
+    def handle_c_c_prefix(self, event: events.Key) -> bool:
+        if not self._prefix_c_c:
+            return False
+
+        if self._c_c_timer:
+            self._c_c_timer.stop()
+            self._c_c_timer = None
+
+        self._prefix_c_c = False
+        self.clear_toasts()
+
+        key = event.key.lower()
+        char = (event.character or "").lower()
+
+        if key in ("ctrl+g", "escape"):
+            return True
+
+        if key in ("ctrl+c", "c") or char == "c":
+            self.action_open_commands_modal()
+            return True
+        elif key in ("ctrl+m", "m") or char == "m":
+            self.action_open_mind_map()
+            return True
+        elif key in ("bracketleft", "left_bracket", "bracket_left", "[") or char == "[":
+            self.action_toggle_notes()
+            return True
+        elif key in ("ctrl+e", "e") or char == "e":
+            self.action_send_to_emacs()
+            return True
+        elif key in ("ctrl+w", "w") or char == "w":
+            self.action_copy_active_snippet()
+            return True
+        elif key in ("ctrl+y", "y") or char == "y":
+            self.action_yank_to_input()
+            return True
+        elif key in ("ctrl+t", "t") or char == "t":
+            self.action_rename_chat()
+            return True
+        elif key in ("ctrl+n", "n") or char == "n":
+            self.action_new_chat()
+            return True
+        elif key in ("ctrl+b", "b") or char == "b":
+            self.action_toggle_history()
+            return True
+        elif key in ("ctrl+r", "r") or char == "r":
+            self.action_save_snippet_to_disk()
+            return True
+        elif key in ("ctrl+f", "f") or char == "f":
+            self.action_insert_file_from_disk()
+            return True
+        elif key in ("ctrl+g", "g") or char == "g":
+            self.action_open_git_tree()
+            return True
+        elif key in ("period", "full_stop", ".") or char == ".":
+            self.action_fork_chat()
+            return True
+        elif key in ("grave", "backtick", "`") or char == "`":
+            self.action_take_svg_screenshot()
+            return True
+
+        self.notify(f"C-c {key} is undefined", timeout=2.0)
+        return False
+
+    def action_c_c_prefix_stub(self) -> None:
+        self.set_c_c_prefix()
+
+    def action_open_commands_modal(self) -> None:
+        self.push_screen(CommandsModal())
+
+    def action_open_mind_map(self) -> None:
+        if isinstance(self.screen, MindMapScreen):
+            self.pop_screen()
+            return
+
+        if self.notes_open:
+            self.action_toggle_notes()
+
+        try:
+            preview = self.query_one("#snippet_preview", SnippetPreview)
+            preview.hide_preview()
+        except Exception:
+            pass
+
+        try:
+            input_box = self.query_one("#input", ExpandingInput)
+            self.saved_prompt_draft = input_box.text
+            input_box.clear()
+        except Exception:
+            self.saved_prompt_draft = ""
+
+        def on_mind_map_closed(_) -> None:
+            try:
+                inp = self.query_one("#input", ExpandingInput)
+                if self.saved_prompt_draft:
+                    inp.text = self.saved_prompt_draft
+                    inp.move_cursor(inp.document.end, select=False)
+                    self.saved_prompt_draft = ""
+                inp.focus()
+            except Exception:
+                pass
+
+        self.push_screen(MindMapScreen(), callback=on_mind_map_closed)
+
+    def action_take_svg_screenshot(self) -> None:
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        target_file = SCREENSHOTS_DIR / f"screenshot_{timestamp}.svg"
+        try:
+            self.save_screenshot(str(target_file))
+            self.notify(f"Screenshot saved: {target_file.name}", timeout=3.5)
+        except Exception as e:
+            self.notify(f"Screenshot error: {e}", severity="error")
+
+    def _render_flow_nav_banner(self, items: list[str], sep_markup: str, sep_plain: str, available_w: int) -> str:
+        lines: list[str] = []
+
+        def clean_markup(s: str) -> str:
+            return re.sub(r"\[[^\]]*\]", "", s)
+
+        sep_cells = cell_len(sep_plain)
+        curr_line_markup: list[str] = []
+        curr_len = 0
+
+        for item in items:
+            item_plain = clean_markup(item)
+            item_cells = cell_len(item_plain)
+
+            is_start_of_line = (curr_len == 0)
+
+            if is_start_of_line:
+                needed = item_cells
+            else:
+                needed = sep_cells + 2 + item_cells
+
+            if curr_len + needed <= available_w:
+                if is_start_of_line:
+                    curr_line_markup.append(item)
+                    curr_len = item_cells
+                else:
+                    curr_line_markup.append(f"{sep_markup} {item}")
+                    curr_len += sep_cells + 2 + item_cells
+            else:
+                if not is_start_of_line:
+                    lines.append(" ".join(curr_line_markup))
+                    curr_line_markup = [item]
+                    curr_len = item_cells
+                else:
+                    curr_line_markup.append(item)
+                    lines.append(" ".join(curr_line_markup))
+                    curr_line_markup = []
+                    curr_len = 0
+
+        if curr_line_markup:
+            lines.append(" ".join(curr_line_markup))
+
+        return "\n".join(lines)
+
+    def update_feed_nav_banner(self) -> None:
+        try:
+            banner = self.query_one("#feed_nav_banner", Static)
+            feed = self.query_one("#feed", FeedArea)
+
+            avail_w = self.size.width - 2 if self.size and self.size.width > 2 else 78
+            accent = self.accent_color
+
+            if feed.fork_ui_active:
+                banner.add_class("fork-active")
+                sep_markup = "[bold black]|[/]"
+                sep_plain = "|"
+                items = [
+                    "Space: Toggle [X]",
+                    "a: Select All",
+                    "Enter: Confirm Fork",
+                    "Esc / C-c .: Cancel",
+                ]
+                content = self._render_flow_nav_banner(items, sep_markup, sep_plain, avail_w)
+            else:
+                banner.remove_class("fork-active")
+                sep_markup = f"[not bold {accent}]|[/]"
+                sep_plain = "|"
+
+                up_scroll = f"[bold {accent}]↑[/]" if self._nav_indicator_action == "scroll_up" else "↑"
+                dn_scroll = f"[bold {accent}]↓[/]" if self._nav_indicator_action == "scroll_down" else "↓"
+                up_page = f"[bold {accent}]↑[/]" if self._nav_indicator_action == "page_up" else "↑"
+                dn_page = f"[bold {accent}]↓[/]" if self._nav_indicator_action == "page_down" else "↓"
+
+                items = [
+                    f"{up_scroll}/{dn_scroll}: Scroll",
+                    f"Shift+{up_page}/{dn_page}: Viewport",
+                    "PgUp/PgDn: Cards",
+                    "Home/End: Edge",
+                    "M-n/M-p: Snippets",
+                    "C-c m: Mind",
+                    "C-c .: Fork",
+                ]
+                content = self._render_flow_nav_banner(items, sep_markup, sep_plain, avail_w)
+
+            banner.update(content)
+        except Exception:
+            pass
+
+    def on_resize(self, event: events.Resize) -> None:
+        is_mobile = event.size.width <= MOBILE_BREAKPOINT
+        if self.screen:
+            self.screen.set_class(is_mobile, "-mobile")
+        self.call_after_refresh(self.update_feed_nav_banner)
+
+    def on_app_focus(self) -> None:
+        try:
+            target = self.query_one(f"#{self._last_focused_input_id}")
+            if target and target.is_mounted and target.can_focus:
+                target.focus()
+        except Exception:
+            pass
+
+    def on_descendant_focus(self, event: events.DescendantFocus) -> None:
+        w = event.widget
+        wid = getattr(w, "id", None)
+        if wid in ("input", "snippet_preview", "history"):
+            self._last_non_notes_input_id = wid
+        if wid in ("input", "notes_editor", "snippet_preview", "history"):
+            self._last_focused_input_id = wid
+
+    def on_key(self, event: events.Key) -> None:
+        key_name = event.key.lower()
+
+        if self.lock.is_locked:
+            if key_name in GATED_NAV_KEYS:
+                event.prevent_default()
+                event.stop()
+                return
+
+        if self.intercept_c_c_key(event):
+            return
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="main_container"):
+            yield Static("▲ Loading messages...", id="feed_loader_banner")
+            with Horizontal(id="middle_split"):
+                yield FeedArea(id="feed")
+                yield HistoryList(id="history")
+                yield NotesPanel()
+            yield Static("", id="feed_status")
+            yield Static("", id="feed_nav_banner")
+            yield SnippetPreview(id="snippet_preview")
+            yield ExpandingInput(id="input")
+        with Horizontal(id="custom_footer"):
+            yield Static("[bold red]^q:[/] [white]quit[/]", id="footer_quit")
+            yield Static("[red]|[/]", id="footer_sep")
+            yield Static("[bold red]^c + c:[/] [white]commands[/]", id="footer_commands")
+
+    @on(events.Click, "#footer_quit")
+    def on_footer_quit_click(self) -> None:
+        self.action_quit()
+
+    @on(events.Click, "#footer_commands")
+    def on_footer_commands_click(self) -> None:
+        self.action_open_commands_modal()
+
+    async def on_mount(self) -> None:
+        saved_theme = self._read_theme_from_state()
+        self.set_theme(saved_theme, notify_user=False)
+
+        self.global_notes = self._read_global_notes_from_state()
+
+        if self.size and self.size.width <= MOBILE_BREAKPOINT and self.screen:
+            self.screen.add_class("-mobile")
+
+        await self.start_socket_server()
+        self.call_after_refresh(self._initial_startup_load)
+
+    async def _initial_startup_load(self) -> None:
+        last_active_id = self._read_active_chat_from_state()
+        if last_active_id and (self._get_legacy_chat_file(last_active_id).exists() or self._get_chat_dir(last_active_id).exists()):
+            await self.load_chat(last_active_id)
+        else:
+            files = self._get_all_chat_entries()
+            if files:
+                first_id = files[0]["id"]
+                await self.load_chat(first_id)
+            else:
+                self._start_new_chat(title="")
+
+        self.update_feed_nav_banner()
+        self._update_footer_markup()
+        self.query_one("#input").focus()
+
+    def show_loader_banner(self) -> None:
+        try:
+            banner = self.query_one("#feed_loader_banner", Static)
+            banner.update("▲ Loading messages...")
+            banner.styles.display = "block"
+            banner.refresh(layout=True)
+        except Exception:
+            pass
+
+    def hide_loader_banner(self) -> None:
+        try:
+            banner = self.query_one("#feed_loader_banner", Static)
+            banner.styles.display = "none"
+        except Exception:
+            pass
+
+    def set_status_text(self, text: str) -> None:
+        try:
+            status_lbl = self.query_one("#feed_status", Static)
+            status_lbl.update(text)
+            status_lbl.styles.display = "block"
+        except Exception:
+            pass
+
+    def hide_status(self) -> None:
+        try:
+            status_lbl = self.query_one("#feed_status", Static)
+            status_lbl.update("")
+            status_lbl.styles.display = "none"
+        except Exception:
+            pass
+
+    def _start_status_ticker(self) -> None:
+        if self._status_timer:
+            self._status_timer.stop()
+        self._request_start_time = time.monotonic()
+        self._spinner_idx = 0
+        self._tick_status()
+        self._status_timer = self.set_interval(0.1, self._tick_status)
+
+    def _stop_status_ticker(self) -> None:
+        if self._status_timer:
+            self._status_timer.stop()
+            self._status_timer = None
+        self._request_phase = "idle"
+
+    def _tick_status(self) -> None:
+        if self._request_phase == "idle":
+            return
+
+        elapsed = time.monotonic() - self._request_start_time
+        frame = SPINNER_FRAMES[self._spinner_idx % len(SPINNER_FRAMES)]
+        self._spinner_idx += 1
+
+        if self._request_phase == "connecting":
+            status_text = f"{frame} Connecting / Sending request... ({elapsed:.1f}s)"
+        elif self._request_phase == "waiting":
+            status_text = f"{frame} Waiting on Gemini response... ({elapsed:.1f}s)"
+        elif self._request_phase == "probing":
+            status_text = f"{frame} AI Mind Expanding (Seeking context & tools)... ({elapsed:.1f}s)"
+        else:
+            status_text = f"{frame} Working... ({elapsed:.1f}s)"
+
+        self.set_status_text(status_text)
+
+    @on(RequestPhaseUpdate)
+    def on_request_phase_update(self, event: RequestPhaseUpdate) -> None:
+        self._request_phase = event.phase
+        self._tick_status()
+
+    @on(MindMapRecalibrated)
+    def on_mind_map_recalibrated(self, event: MindMapRecalibrated) -> None:
+        self.current_gemini_state = event.gemini_state
+        self.current_user_state = event.user_state
+        self.current_tree_content = event.tree_content
+        self.current_tree_state = event.tree_state
+        self.save_current_chat()
+
+        # Update MindMapScreen if it is anywhere in the screen stack
+        for sc in self.screen_stack:
+            if isinstance(sc, MindMapScreen):
+                sc.refresh_display()
+
+    @on(RequestFinished)
+    async def on_request_finished(self, event: RequestFinished) -> None:
+        self._stop_status_ticker()
+
+        feed = self.query_one("#feed", FeedArea)
+        await feed.append_message("gemini", event.full_text, jump_to_start=True)
+
+        new_turn_id = f"turn_{uuid4().hex[:8]}"
+        self.history.append({"turn_id": new_turn_id, "role": "model", "text": event.full_text})
+        self.current_chat_last_index = max(0, len(self.history) - 1)
+        self.current_chat_center_marker = new_turn_id
+        self.save_current_chat()
+
+        self.set_status_text(f"✓ Response complete ({event.words} words in {event.elapsed:.1f}s)")
+        self.set_timer(1.2, self.hide_status)
+
+        self.query_one("#input", ExpandingInput).focus()
+
+    @on(RequestFailed)
+    def on_request_failed(self, event: RequestFailed) -> None:
+        self._stop_status_ticker()
+        self.set_status_text(f"✗ Error: {event.error_message}")
+        self.notify(f"API Error: {event.error_message}", severity="error")
+        self.set_timer(5.0, self.hide_status)
+        self.query_one("#input", ExpandingInput).focus()
+
+    def _read_active_chat_from_state(self) -> str | None:
+        if STATE_FILE.exists():
+            try:
+                data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+                return data.get("active_chat")
+            except Exception:
+                pass
+        return None
+
+    def get_effective_working_dir(self) -> str:
+        if self.current_chat_working_dir:
+            return self.current_chat_working_dir
+        return os.getcwd()
+
+    def set_working_dir(self, directory: str) -> None:
+        expanded = os.path.expanduser(directory.strip())
+        self.current_chat_working_dir = expanded
+        self.save_current_chat()
+
+    async def start_socket_server(self) -> None:
+        if SOCKET_PATH.exists():
+            SOCKET_PATH.unlink()
+
+        try:
+            self._server = await asyncio.start_unix_server(
+                self._handle_socket_client,
+                path=str(SOCKET_PATH),
+            )
+            SOCKET_PATH.chmod(0o600)
+        except Exception as e:
+            self.notify(f"Socket server error: {e}", severity="error")
+
+    async def _handle_socket_client(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        data = await reader.read()
+        if data:
+            try:
+                payload = json.loads(data.decode("utf-8"))
+                if payload.get("action") == "insert":
+                    self.post_message(RemoteInsert(
+                        text=payload.get("text", ""),
+                        lang=payload.get("lang", ""),
+                        file=payload.get("file", ""),
+                        start_line=payload.get("start_line"),
+                        end_line=payload.get("end_line"),
+                    ))
+            except Exception:
+                pass
+        writer.close()
+        await writer.wait_closed()
+
+    @on(RemoteInsert)
+    def on_remote_insert(self, event: RemoteInsert) -> None:
+        input_widget = self.query_one("#input", ExpandingInput)
+        preview_widget = self.query_one("#snippet_preview", SnippetPreview)
+
+        input_widget.focus()
+        tag, num = input_widget.register_and_insert_snippet(
+            code=event.text,
+            lang=event.lang,
+            file=event.file,
+            start_line=event.start_line,
+            end_line=event.end_line,
+        )
+
+        preview_widget.show_snippet(
+            tag=tag,
+            num=num,
+            code=event.text,
+            lang=event.lang,
+            file=event.file,
+            start_line=event.start_line,
+            end_line=event.end_line,
+        )
+
+        loc = f" ({event.file}:{event.start_line}-{event.end_line})" if event.file else ""
+        self.notify(f"Inserted {tag}{loc} at cursor")
+
+    # -----------------------------------------------------------------------
+    # Dual Storage Engine (Legacy Flat Files vs. Sharded Directories)
+    # -----------------------------------------------------------------------
+
+    def _get_legacy_chat_file(self, chat_id: str) -> Path:
+        return CHATS_DIR / f"{chat_id}.json"
+
+    def _get_chat_dir(self, chat_id: str) -> Path:
+        return CHATS_DIR / chat_id
+
+    def _get_all_chat_entries(self) -> list[dict]:
+        entries: list[dict] = []
+
+        # 1. New Sharded Directories
+        for p in CHATS_DIR.iterdir():
+            if p.is_dir() and not p.name.startswith("."):
+                meta_file = p / "meta.json"
+                if meta_file.exists():
+                    try:
+                        m_data = json.loads(meta_file.read_text(encoding="utf-8"))
+                        entries.append({
+                            "id": m_data.get("id", p.name),
+                            "title": m_data.get("title", p.name),
+                            "parent_id": m_data.get("parent_id"),
+                            "updated_at": m_data.get("updated_at", meta_file.stat().st_mtime),
+                            "is_legacy": False,
+                            "path": p,
+                        })
+                    except Exception:
+                        pass
+
+        # 2. Legacy Flat JSON Files
+        for f in CHATS_DIR.glob("*.json"):
+            try:
+                data = json.loads(f.read_text(encoding="utf-8"))
+                cid = data.get("id", f.stem)
+                entries.append({
+                    "id": cid,
+                    "title": data.get("title", cid),
+                    "parent_id": data.get("parent_id"),
+                    "updated_at": data.get("updated_at", f.stat().st_mtime),
+                    "is_legacy": True,
+                    "path": f,
+                })
+            except Exception:
+                pass
+
+        entries.sort(key=lambda d: d.get("updated_at", 0), reverse=True)
+        return entries
+
+    def _direct_flush_chat_to_disk(self, chat_id: str, notes_text: str) -> None:
+        if not chat_id:
+            return
+
+        chat_dir = self._get_chat_dir(chat_id)
+        if chat_dir.is_dir():
+            meta_path = chat_dir / "meta.json"
+            if meta_path.exists():
+                try:
+                    data = json.loads(meta_path.read_text(encoding="utf-8"))
+                    data["notes"] = notes_text or ""
+                    data["updated_at"] = time.time()
+                    meta_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+                except Exception:
+                    pass
+            return
+
+        legacy_path = self._get_legacy_chat_file(chat_id)
+        if legacy_path.exists():
+            try:
+                data = json.loads(legacy_path.read_text(encoding="utf-8"))
+                data["notes"] = notes_text or ""
+                data["updated_at"] = time.time()
+                legacy_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            except Exception:
+                pass
+
+    def action_quit(self) -> None:
+        self.flush_current_notes()
+        if self.current_chat_id and self.active_notes_mode == "chat":
+            self._direct_flush_chat_to_disk(self.current_chat_id, self.current_chat_notes)
+            self.save_current_chat()
+        self._flush_global_notes_to_state()
+        self.exit()
+
+    def on_unmount(self) -> None:
+        self._stop_status_ticker()
+        if self._c_c_timer:
+            self._c_c_timer.stop()
+            self._c_c_timer = None
+
+        if self._nav_indicator_timer:
+            self._nav_indicator_timer.stop()
+            self._nav_indicator_timer = None
+
+        self.flush_current_notes()
+        if self.current_chat_id and self.active_notes_mode == "chat":
+            self._direct_flush_chat_to_disk(self.current_chat_id, self.current_chat_notes)
+            self.save_current_chat()
+
+        self._flush_global_notes_to_state()
+
+        if self._server:
+            self._server.close()
+        if SOCKET_PATH.exists():
+            SOCKET_PATH.unlink(missing_ok=True)
+
+    def _get_ancestor_lineage(self, parent_id: str | None) -> list[dict]:
+        ancestors: list[dict] = []
+        visited = set()
+        curr_id = parent_id
+
+        while curr_id and curr_id not in visited:
+            visited.add(curr_id)
+
+            p_dir = self._get_chat_dir(curr_id)
+            p_file = self._get_legacy_chat_file(curr_id)
+
+            p_data = {}
+            if p_dir.is_dir() and (p_dir / "meta.json").exists():
+                try:
+                    p_data = json.loads((p_dir / "meta.json").read_text(encoding="utf-8"))
+                except Exception:
+                    break
+            elif p_file.exists():
+                try:
+                    p_data = json.loads(p_file.read_text(encoding="utf-8"))
+                except Exception:
+                    break
+            else:
+                break
+
+            notes_val = str(p_data.get("notes", "") or "").strip()
+            if notes_val:
+                ancestors.append({
+                    "id": curr_id,
+                    "title": p_data.get("title", curr_id),
+                    "notes": notes_val,
+                    "parent_id": p_data.get("parent_id"),
+                })
+            curr_id = p_data.get("parent_id")
+
+        ancestors.reverse()
+        for idx, anc in enumerate(ancestors):
+            anc["depth"] = idx
+
+        return ancestors
+
+    def sync_notes_ui(self) -> None:
+        is_history = (self.active_notes_mode == "global")
+        try:
+            notes_panel = self.query_one("#notes_panel", NotesPanel)
+        except Exception:
+            return
+
+        if is_history:
+            text = self.global_notes or ""
+            lineage: list[dict] = []
+            cid = ""
+        else:
+            text = self.current_chat_notes or ""
+            lineage = self._get_ancestor_lineage(self.current_chat_parent_id)
+            cid = self.current_chat_id
+
+        self.call_after_refresh(lambda: notes_panel.update_notes_content(is_history, text, lineage, chat_id=cid))
+
+    def action_toggle_notes(self) -> None:
+        if self.lock.is_locked or isinstance(self.screen, MindMapScreen):
+            return
+        self._toggle_notes_lockstep()
+
+    @work(exclusive=True)
+    async def _toggle_notes_lockstep(self) -> None:
+        self.lock.acquire("dom_load")
+        self.show_loader_banner()
+
+        feed = self.query_one("#feed", FeedArea)
+        notes_panel = self.query_one("#notes_panel", NotesPanel)
+
+        target_snap = feed._get_center_raycast_target()
+        opening = not self.notes_open
+        self.notes_open = opening
+
+        try:
+            if opening:
+                notes_panel.styles.display = "block"
+                if self.screen:
+                    self.screen.add_class("-notes-open")
+                self.sync_notes_ui()
+            else:
+                self.flush_current_notes()
+                if self.active_notes_mode == "global":
+                    self._flush_global_notes_to_state()
+                else:
+                    self._direct_flush_chat_to_disk(self.current_chat_id, self.current_chat_notes)
+                    self.save_current_chat()
+
+                notes_panel.styles.display = "none"
+                if self.screen:
+                    self.screen.remove_class("-notes-open")
+
+            settle_event = asyncio.Event()
+
+            def _on_notes_toggle_settle() -> None:
+                try:
+                    feed._sync_header_map()
+                    if target_snap:
+                        t_idx, t_id, delta = target_snap
+                        card = feed._get_target_widget(t_idx) or feed._get_target_widget_by_id(t_id)
+                        if card:
+                            feed._scroll_to_turn_widget(card, center=CENTER_SCREEN_MODE, line_offset=delta)
+
+                    if opening:
+                        try:
+                            self.query_one("#notes_editor", NotesEditorArea).focus()
+                        except Exception:
+                            pass
+                    else:
+                        target_id = self._last_non_notes_input_id
+                        if target_id == "snippet_preview":
+                            try:
+                                preview = self.query_one("#snippet_preview", SnippetPreview)
+                                if preview.styles.display != "none":
+                                    preview.focus()
+                                else:
+                                    self.query_one("#input", ExpandingInput).focus()
+                            except Exception:
+                                self.query_one("#input", ExpandingInput).focus()
+                        elif target_id == "history" and self.is_history_open():
+                            try:
+                                self.query_one("#history", HistoryList).focus()
+                            except Exception:
+                                self.query_one("#input", ExpandingInput).focus()
+                        else:
+                            try:
+                                self.query_one("#input", ExpandingInput).focus()
+                            except Exception:
+                                pass
+                finally:
+                    settle_event.set()
+
+            self.call_after_refresh(_on_notes_toggle_settle)
+            try:
+                await asyncio.wait_for(settle_event.wait(), timeout=0.6)
+            except asyncio.TimeoutError:
+                feed._sync_header_map()
+
+        finally:
+            self.hide_loader_banner()
+            self.lock.release("dom_load")
+
+    def cycle_global_focus(self, direction: int = 1, escape_parents: bool = False) -> None:
+        ring: list[Widget] = []
+
+        try:
+            input_widget = self.query_one("#input", ExpandingInput)
+            snippet_widget = self.query_one("#snippet_preview", SnippetPreview)
+            notes_panel = self.query_one("#notes_panel", NotesPanel)
+            history_widget = self.query_one("#history", HistoryList)
+        except Exception:
+            return
+
+        ring.append(input_widget)
+
+        if self.notes_open:
+            notes_editor = self.query_one("#notes_editor", NotesEditorArea)
+            ring.append(notes_editor)
+
+            if not escape_parents:
+                parent_cards = list(notes_panel.query(ParentNoteCard))
+                ring.extend(parent_cards)
+
+        if self.is_history_open() and history_widget.styles.display != "none":
+            ring.append(history_widget)
+
+        if snippet_widget.styles.display != "none":
+            ring.append(snippet_widget)
+
+        if len(ring) <= 1:
+            if ring:
+                ring[0].focus()
+            return
+
+        current_focused = self.focused
+        curr_idx = -1
+        for idx, w in enumerate(ring):
+            if w is current_focused:
+                curr_idx = idx
+                break
+
+        if curr_idx == -1:
+            next_idx = 0 if direction > 0 else (len(ring) - 1)
+        else:
+            if escape_parents and isinstance(current_focused, ParentNoteCard):
+                if self.is_history_open() and history_widget.styles.display != "none":
+                    history_widget.focus()
+                elif snippet_widget.styles.display != "none":
+                    snippet_widget.focus()
+                else:
+                    input_widget.focus()
+                return
+
+            next_idx = (curr_idx + direction) % len(ring)
+
+        target = ring[next_idx]
+        target.focus()
+
+    def refresh_history_list(self) -> None:
+        history_widget = self.query_one("#history", HistoryList)
+        history_widget.clear_options()
+
+        entries = self._get_all_chat_entries()
+        chats_by_id = {e["id"]: e for e in entries}
+
+        children_map: dict[str, list[dict]] = {}
+        roots: list[dict] = []
+        for cid, data in chats_by_id.items():
+            parent_id = data.get("parent_id")
+            if parent_id and parent_id in chats_by_id and parent_id != cid:
+                children_map.setdefault(parent_id, []).append(data)
+            else:
+                roots.append(data)
+
+        roots.sort(key=lambda d: d.get("updated_at", 0), reverse=True)
+        for pid in children_map:
+            children_map[pid].sort(key=lambda d: d.get("updated_at", 0), reverse=False)
+
+        def add_chat_node(chat_data: dict, depth: int, index_label: str) -> None:
+            cid = chat_data["id"]
+            title = chat_data.get("title", cid)
+            active = " (Active)" if cid == self.current_chat_id else ""
+            if depth == 0:
+                prompt = f"{index_label}. {title}{active}"
+            else:
+                indent = "   " * depth + "└─ "
+                prompt = f"{indent}{title}{active}"
+            history_widget.add_option(Option(prompt=prompt, id=cid))
+
+            for child in children_map.get(cid, []):
+                add_chat_node(child, depth + 1, "")
+
+        root_counter = 1
+        for root in roots:
+            add_chat_node(root, depth=0, index_label=str(root_counter))
+            root_counter += 1
+
+    async def load_chat(self, chat_id: str) -> None:
+        self._stop_status_ticker()
+        self.hide_status()
+
+        if self.current_chat_id and self.current_chat_id != chat_id:
+            if self.active_notes_mode == "chat":
+                self.flush_current_notes()
+                self._direct_flush_chat_to_disk(self.current_chat_id, self.current_chat_notes)
+                self.save_current_chat()
+
+        self.current_chat_id = chat_id
+        self._save_to_state("active_chat", chat_id)
+
+        legacy_file = self._get_legacy_chat_file(chat_id)
+        chat_dir = self._get_chat_dir(chat_id)
+
+        saved_marker: str = ""
+        saved_turn_idx: int | None = None
+
+        if legacy_file.exists():
+            # Legacy Single JSON File Mode
+            self.is_legacy_chat = True
+            data = json.loads(legacy_file.read_text(encoding="utf-8"))
+            raw_messages = data.get("messages", [])
+            self.history = []
+            for m in raw_messages:
+                m_copy = dict(m)
+                if "turn_id" not in m_copy or not m_copy["turn_id"]:
+                    m_copy["turn_id"] = f"turn_{uuid4().hex[:8]}"
+                self.history.append(m_copy)
+
+            self.current_chat_title = data.get("title", "")
+            self.current_chat_working_dir = data.get("working_dir")
+            self.current_chat_parent_id = data.get("parent_id")
+            self.current_chat_notes = data.get("notes", "") or ""
+            saved_marker = data.get("center_marker", "")
+            saved_turn_idx = data.get("last_turn_index")
+
+            # Fallbacks for legacy Mind Map
+            self.current_gemini_state = "Legacy active session."
+            self.current_user_state = "Continuing legacy chat."
+            self.current_tree_state = []
+            self.current_tree_content = "└── *[Legacy Session Active]*"
+
+        elif chat_dir.is_dir() and (chat_dir / "meta.json").exists():
+            # Modern Sharded Directory Mode
+            self.is_legacy_chat = False
+            meta_path = chat_dir / "meta.json"
+            meta_data = json.loads(meta_path.read_text(encoding="utf-8"))
+
+            self.current_chat_title = meta_data.get("title", "")
+            self.current_chat_working_dir = meta_data.get("working_dir")
+            self.current_chat_parent_id = meta_data.get("parent_id")
+            self.current_chat_notes = meta_data.get("notes", "") or ""
+
+            viewport = meta_data.get("viewport", {})
+            saved_marker = viewport.get("center_marker", "")
+            saved_turn_idx = viewport.get("last_turn_index")
+
+            mind_map = meta_data.get("mind_map", {})
+            self.current_gemini_state = mind_map.get("gemini_state", "")
+            self.current_user_state = mind_map.get("user_state", "")
+            self.current_tree_state = mind_map.get("tree_state", [])
+            self.current_tree_content = mind_map.get("tree_content", "")
+
+            # Load message segments in order
+            self.history = []
+            segment_files = sorted(chat_dir.glob("segment_*.json"), key=lambda f: int(f.stem.split("_")[1]))
+            for sf in segment_files:
+                try:
+                    seg_turns = json.loads(sf.read_text(encoding="utf-8"))
+                    self.history.extend(seg_turns)
+                except Exception:
+                    pass
+        else:
+            self.is_legacy_chat = False
+            self.history = []
+            self.current_chat_title = ""
+            self.current_chat_working_dir = None
+            self.current_chat_parent_id = None
+            self.current_chat_notes = ""
+            self.current_chat_last_index = 0
+            self.current_chat_center_marker = ""
+            self.current_gemini_state = ""
+            self.current_user_state = ""
+            self.current_tree_state = []
+            self.current_tree_content = ""
+
+        if saved_marker:
+            self.current_chat_center_marker = saved_marker
+        elif saved_turn_idx is not None and self.history:
+            self.current_chat_last_index = max(0, min(len(self.history) - 1, saved_turn_idx))
+            self.current_chat_center_marker = self.history[self.current_chat_last_index].get("turn_id", "")
+        else:
+            self.current_chat_last_index = max(0, len(self.history) - 1)
+            self.current_chat_center_marker = self.history[-1].get("turn_id", "") if self.history else ""
+
+        feed = self.query_one("#feed", FeedArea)
+        if feed.styles.display == "none":
+            feed.styles.display = "block"
+
+        display_title = self.current_chat_title or "Untitled Chat"
+        feed.border_title = f" {display_title} "
+
+        marker_target = self.current_chat_center_marker or self.current_chat_last_index
+        feed.set_messages(self.history, initial_target_marker=marker_target)
+
+        notes_panel = self.query_one("#notes_panel", NotesPanel)
+        notes_panel.clear_session_expansion_states()
+        self.sync_notes_ui()
+
+        input_widget = self.query_one("#input", ExpandingInput)
+        input_widget.reset_snippets()
+        self.query_one("#snippet_preview", SnippetPreview).hide_preview()
+        self.update_feed_nav_banner()
+
+    def save_current_chat(self) -> None:
+        if not self.current_chat_id:
+            return
+
+        if self.active_notes_mode == "chat":
+            self.flush_current_notes()
+
+        title = self.current_chat_title.strip()
+        if not title and self.history:
+            title = self.history[0]["text"][:28].replace("\n", " ")
+        if not title:
+            title = "New Chat"
+        self.current_chat_title = title
+
+        try:
+            feed = self.query_one("#feed", FeedArea)
+            feed.border_title = f" {title} "
+        except Exception:
+            pass
+
+        for m in self.history:
+            if "turn_id" not in m or not m["turn_id"]:
+                m["turn_id"] = f"turn_{uuid4().hex[:8]}"
+
+        final_marker = self.current_chat_center_marker
+        if final_marker.endswith(":+0") or final_marker.endswith(":-0"):
+            final_marker = final_marker.split(":")[0] + ":0"
+        elif not CENTER_SCREEN_MODE and ":" in final_marker:
+            final_marker = final_marker.split(":")[0]
+
+        if self.is_legacy_chat:
+            # Save strictly to legacy flat JSON file
+            path = self._get_legacy_chat_file(self.current_chat_id)
+            existing_data = {}
+            if path.exists():
+                try:
+                    existing_data = json.loads(path.read_text(encoding="utf-8"))
+                except Exception:
+                    existing_data = {}
+
+            data = {
+                **existing_data,
+                "id": self.current_chat_id,
+                "title": self.current_chat_title,
+                "parent_id": self.current_chat_parent_id,
+                "updated_at": time.time(),
+                "working_dir": self.current_chat_working_dir,
+                "last_turn_index": self.current_chat_last_index,
+                "center_marker": final_marker,
+                "notes": self.current_chat_notes or "",
+                "messages": self.history,
+            }
+            path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        else:
+            # Save to Sharded Directory
+            chat_dir = self._get_chat_dir(self.current_chat_id)
+            chat_dir.mkdir(parents=True, exist_ok=True)
+
+            total_turns = len(self.history)
+            seg_count = max(1, (total_turns + TURNS_PER_SEGMENT - 1) // TURNS_PER_SEGMENT) if total_turns > 0 else 1
+            active_seg = max(0, seg_count - 1)
+
+            meta_data = {
+                "id": self.current_chat_id,
+                "title": self.current_chat_title,
+                "parent_id": self.current_chat_parent_id,
+                "updated_at": time.time(),
+                "working_dir": self.current_chat_working_dir,
+                "notes": self.current_chat_notes or "",
+                "viewport": {
+                    "last_turn_index": self.current_chat_last_index,
+                    "center_marker": final_marker,
+                },
+                "storage": {
+                    "total_turns": total_turns,
+                    "segment_count": seg_count,
+                    "active_segment": active_seg,
+                    "max_segment_size": TURNS_PER_SEGMENT,
+                },
+                "mind_map": {
+                    "gemini_state": self.current_gemini_state,
+                    "user_state": self.current_user_state,
+                    "tree_state": self.current_tree_state,
+                    "tree_content": self.current_tree_content,
+                },
+            }
+            (chat_dir / "meta.json").write_text(json.dumps(meta_data, indent=2), encoding="utf-8")
+
+            # Write segments of 200 turns
+            for s_idx in range(seg_count):
+                start = s_idx * TURNS_PER_SEGMENT
+                end = start + TURNS_PER_SEGMENT
+                seg_slice = self.history[start:end]
+                seg_file = chat_dir / f"segment_{s_idx}.json"
+                seg_file.write_text(json.dumps(seg_slice, indent=2), encoding="utf-8")
+
+        self._save_to_state("active_chat", self.current_chat_id)
+
+    async def delete_highlighted_chat(self) -> None:
+        history_widget = self.query_one("#history", HistoryList)
+        if history_widget.highlighted is None or history_widget.option_count == 0:
+            return
+
+        option = history_widget.get_option_at_index(history_widget.highlighted)
+        target_id = str(option.id)
+
+        legacy_target = self._get_legacy_chat_file(target_id)
+        if legacy_target.exists():
+            legacy_target.unlink()
+
+        dir_target = self._get_chat_dir(target_id)
+        if dir_target.is_dir():
+            for child in dir_target.iterdir():
+                child.unlink()
+            dir_target.rmdir()
+
+        current_idx = history_widget.highlighted
+
+        if self.current_chat_id == target_id:
+            self.current_chat_id = ""
+            self.history = []
+            self.current_chat_notes = ""
+
+            feed = self.query_one("#feed", FeedArea)
+            all_entries = self._get_all_chat_entries()
+            if all_entries:
+                await self.load_chat(all_entries[0]["id"])
+            else:
+                self._start_new_chat(title="")
+
+            feed.styles.display = "none"
+            history_widget.styles.display = "block"
+            history_widget.focus()
+
+        self.refresh_history_list()
+        if history_widget.option_count > 0:
+            history_widget.highlighted = min(current_idx, history_widget.option_count - 1)
+        self.notify("Chat deleted.")
+
+    def rename_highlighted_chat(self) -> None:
+        history_widget = self.query_one("#history", HistoryList)
+        if history_widget.highlighted is None or history_widget.option_count == 0:
+            return
+
+        option = history_widget.get_option_at_index(history_widget.highlighted)
+        target_id = str(option.id)
+
+        legacy_target = self._get_legacy_chat_file(target_id)
+        dir_target = self._get_chat_dir(target_id)
+
+        current_title = ""
+        if legacy_target.exists():
+            data = json.loads(legacy_target.read_text(encoding="utf-8"))
+            current_title = data.get("title", "")
+        elif dir_target.is_dir() and (dir_target / "meta.json").exists():
+            data = json.loads((dir_target / "meta.json").read_text(encoding="utf-8"))
+            current_title = data.get("title", "")
+
+        def on_rename(new_title: str | None) -> None:
+            if new_title is not None and new_title.strip():
+                clean_title = new_title.strip()
+                if legacy_target.exists():
+                    d = json.loads(legacy_target.read_text(encoding="utf-8"))
+                    d["title"] = clean_title
+                    d["updated_at"] = time.time()
+                    legacy_target.write_text(json.dumps(d, indent=2))
+                elif dir_target.is_dir() and (dir_target / "meta.json").exists():
+                    d = json.loads((dir_target / "meta.json").read_text(encoding="utf-8"))
+                    d["title"] = clean_title
+                    d["updated_at"] = time.time()
+                    (dir_target / "meta.json").write_text(json.dumps(d, indent=2))
+
+                if target_id == self.current_chat_id:
+                    self.current_chat_title = clean_title
+                    try:
+                        self.query_one("#feed", FeedArea).border_title = f" {self.current_chat_title} "
+                    except Exception:
+                        pass
+                self.refresh_history_list()
+                self.notify("Chat renamed.")
+
+        self.push_screen(
+            TitlePromptModal(prompt="Edit chat title:", default_title=current_title),
+            callback=on_rename,
+        )
+
+    def action_rename_chat(self) -> None:
+        def on_renamed(new_title: str | None) -> None:
+            if new_title is not None and new_title.strip():
+                self.current_chat_title = new_title.strip()
+                self.save_current_chat()
+                try:
+                    self.query_one("#feed", FeedArea).border_title = f" {self.current_chat_title} "
+                except Exception:
+                    pass
+                self.notify(f"Renamed chat to: {self.current_chat_title}")
+
+        self.push_screen(
+            TitlePromptModal(
+                prompt="Edit chat title:",
+                default_title=self.current_chat_title,
+            ),
+            callback=on_renamed,
+        )
+
+    def action_fork_chat(self) -> None:
+        feed = self.query_one("#feed", FeedArea)
+
+        if not feed.fork_ui_active:
+            feed.toggle_fork_ui()
+            self.update_feed_nav_banner()
+            self.notify("Fork selection active: Space toggles, 'a' selects all, Enter confirms, Esc / C-c .: Cancel.", timeout=3.5)
+            return
+
+        feed.toggle_fork_ui()
+        self.update_feed_nav_banner()
+        self.notify("Exited fork mode")
+
+    def action_confirm_fork(self) -> None:
+        feed = self.query_one("#feed", FeedArea)
+        if not feed.fork_ui_active:
+            return
+
+        selected_indices = feed.get_selected_fork_indices()
+        if not selected_indices:
+            self.notify("Please select at least one response to fork.", severity="warning")
+            return
+
+        def on_fork_named(fork_title: str | None) -> None:
+            if not fork_title:
+                self.notify("Fork cancelled.")
+                feed.toggle_fork_ui()
+                self.update_feed_nav_banner()
+                return
+            self._execute_chat_fork(selected_indices, fork_title)
+
+        self.push_screen(
+            ForkModal(default_title=self.current_chat_title),
+            callback=on_fork_named,
+        )
+
+    def _execute_chat_fork(self, selected_indices: list[int], fork_title: str) -> None:
+        feed = self.query_one("#feed", FeedArea)
+        feed.toggle_fork_ui()
+        self.update_feed_nav_banner()
+
+        selected_turns = [copy.deepcopy(self.history[i]) for i in selected_indices]
+        if not selected_turns:
+            return
+
+        if selected_turns[0]["role"] == "user":
+            text = selected_turns[0]["text"]
+            while text.startswith(FORK_HEADER_TEXT):
+                text = text[len(FORK_HEADER_TEXT):].lstrip("\n")
+            selected_turns[0]["text"] = f"{FORK_HEADER_TEXT}\n\n{text}"
+        else:
+            selected_turns.insert(0, {
+                "turn_id": f"turn_{uuid4().hex[:8]}",
+                "role": "user",
+                "text": FORK_HEADER_TEXT
+            })
+
+        for turn in selected_turns:
+            turn["turn_id"] = f"turn_{uuid4().hex[:8]}"
+
+        self.flush_current_notes()
+        self._direct_flush_chat_to_disk(self.current_chat_id, self.current_chat_notes)
+        self.save_current_chat()
+
+        parent_chat_id = self.current_chat_id
+        parent_working_dir = self.current_chat_working_dir
+        new_chat_id = uuid4().hex[:8]
+
+        self.is_legacy_chat = False
+        self.current_chat_id = new_chat_id
+        self.current_chat_title = fork_title
+        self.current_chat_parent_id = parent_chat_id
+        self.current_chat_working_dir = parent_working_dir
+        self.current_chat_last_index = 0
+        self.current_chat_center_marker = selected_turns[0].get("turn_id", "")
+        self.current_chat_notes = ""
+        self.history = selected_turns
+
+        self.save_current_chat()
+        self._render_forked_chat(selected_turns)
+
+    def _render_forked_chat(self, turns: list[dict]) -> None:
+        feed = self.query_one("#feed", FeedArea)
+        first_marker = turns[0].get("turn_id", 0) if turns else 0
+        feed.set_messages(turns, initial_target_marker=first_marker)
+        input_widget = self.query_one("#input", ExpandingInput)
+        input_widget.reset_snippets()
+        self.query_one("#snippet_preview", SnippetPreview).hide_preview()
+
+        display_title = self.current_chat_title or "Untitled Chat"
+        feed.border_title = f" {display_title} "
+
+        notes_panel = self.query_one("#notes_panel", NotesPanel)
+        notes_panel.clear_session_expansion_states()
+        self.sync_notes_ui()
+
+        input_widget.focus()
+        self.update_feed_nav_banner()
+        self.refresh_history_list()
+        self.notify(f"Fork created: '{self.current_chat_title}' (Awaiting response)", timeout=4.0)
+
+    def action_toggle_history(self) -> None:
+        if isinstance(self.screen, MindMapScreen):
+            return
+
+        feed = self.query_one("#feed", FeedArea)
+        history_widget = self.query_one("#history", HistoryList)
+        input_widget = self.query_one("#input", ExpandingInput)
+
+        self.flush_current_notes()
+
+        if self.active_notes_mode == "chat":
+            if self.current_chat_id and feed._all_messages and feed.styles.display != "none":
+                self._direct_flush_chat_to_disk(self.current_chat_id, self.current_chat_notes)
+                self.save_current_chat()
+
+            self.active_notes_mode = "global"
+            self.refresh_history_list()
+            self.hide_status()
+            feed.styles.display = "none"
+            history_widget.styles.display = "block"
+
+            if history_widget.option_count > 0:
+                current_idx = 0
+                for idx in range(history_widget.option_count):
+                    opt = history_widget.get_option_at_index(idx)
+                    if opt.id == self.current_chat_id:
+                        current_idx = idx
+                        break
+                history_widget.highlighted = current_idx
+
+            self.sync_notes_ui()
+            history_widget.focus()
+        else:
+            self._flush_global_notes_to_state()
+            self.active_notes_mode = "chat"
+
+            history_widget.styles.display = "none"
+            feed.styles.display = "block"
+            feed.refresh(layout=True)
+
+            display_title = self.current_chat_title or "Untitled Chat"
+            feed.border_title = f" {display_title} "
+
+            self.sync_notes_ui()
+
+            marker = self.current_chat_center_marker
+            target_w = None
+            line_offset = None
+
+            if marker == "end":
+                feed.call_after_refresh(lambda: feed.scroll_end(animate=False))
+            else:
+                if ":" in marker:
+                    tid, offset_str = marker.split(":", 1)
+                    if CENTER_SCREEN_MODE:
+                        try:
+                            line_offset = int(offset_str)
+                        except Exception:
+                            line_offset = None
+                    else:
+                        line_offset = None
+                    target_w = feed._get_target_widget_by_id(tid)
+                elif marker:
+                    target_w = feed._get_target_widget_by_id(marker)
+
+                if not target_w:
+                    target_w = feed._get_target_widget(self.current_chat_last_index)
+
+                if target_w:
+                    feed.call_after_refresh(
+                        lambda: feed._scroll_to_turn_widget(
+                            target_w,
+                            center=CENTER_SCREEN_MODE and (line_offset is not None),
+                            line_offset=line_offset,
+                        )
+                    )
+            input_widget.focus()
+
+    def action_new_chat(self) -> None:
+        def on_title_chosen(chosen_title: str | None) -> None:
+            if chosen_title is None:
+                return
+            self._start_new_chat(title=chosen_title)
+
+        self.push_screen(
+            TitlePromptModal(prompt="Enter topic for new chat:"),
+            callback=on_title_chosen,
+        )
+
+    def _start_new_chat(self, title: str) -> None:
+        self._stop_status_ticker()
+        self.hide_status()
+
+        self.flush_current_notes()
+        if self.current_chat_id and self.active_notes_mode == "chat":
+            self._direct_flush_chat_to_disk(self.current_chat_id, self.current_chat_notes)
+            self.save_current_chat()
+
+        self.is_legacy_chat = False
+        self.active_notes_mode = "chat"
+        self.query_one("#history").styles.display = "none"
+        self.query_one("#feed").styles.display = "block"
+
+        self.current_chat_id = uuid4().hex[:8]
+        self.current_chat_title = title
+        self.current_chat_parent_id = None
+        self.current_chat_working_dir = None
+        self.current_chat_last_index = 0
+        self.current_chat_center_marker = ""
+        self.current_chat_notes = ""
+        self.current_gemini_state = ""
+        self.current_user_state = ""
+        self.current_tree_state = []
+        self.current_tree_content = ""
+        self.history = []
+
+        feed = self.query_one("#feed", FeedArea)
+        feed.clear()
+        feed.border_title = f" {title or 'New Chat'} "
+
+        notes_panel = self.query_one("#notes_panel", NotesPanel)
+        notes_panel.clear_session_expansion_states()
+        self.sync_notes_ui()
+
+        input_widget = self.query_one("#input", ExpandingInput)
+        input_widget.reset_snippets()
+        self.query_one("#snippet_preview", SnippetPreview).hide_preview()
+        input_widget.focus()
+        self.update_feed_nav_banner()
+        self.save_current_chat()
+
+    def action_save_snippet_to_disk(self) -> None:
+        feed = self.query_one("#feed", FeedArea)
+        content = feed.get_active_snippet()
+
+        if not content:
+            self.notify("No snippet selected to write.", severity="warning")
+            return
+
+        initial_dir = self.get_effective_working_dir()
+
+        def on_save_modal_result(result: dict | None) -> None:
+            if not result:
+                return
+
+            working_dir = result["working_dir"]
+            filename = result["filename"]
+            code = result["content"]
+
+            base = Path(os.path.expanduser(str(working_dir).strip())).resolve()
+            fn_path = Path(os.path.expanduser(filename.strip()))
+            if fn_path.is_absolute():
+                target = fn_path.resolve()
+            else:
+                target = (base / fn_path).resolve()
+
+            def do_write() -> None:
+                try:
+                    written_path = write_code_to_disk(working_dir, filename, code)
+                    self.set_working_dir(working_dir)
+                    self.notify(f"Saved: {written_path}", timeout=3.5)
+                except Exception as e:
+                    self.notify(f"Failed to write file: {e}", severity="error")
+
+            if target.exists():
+                def on_overwrite_confirmed(confirmed: bool | None) -> None:
+                    if confirmed:
+                        do_write()
+                    else:
+                        self.notify("Save cancelled.", timeout=2.0)
+
+                self.push_screen(
+                    ConfirmModal(message=f"'{target.name}' already exists.\nOverwrite?"),
+                    callback=on_overwrite_confirmed,
+                )
+            else:
+                do_write()
+
+        self.push_screen(
+            WriteSnippetModal(
+                snippet_content=content,
+                initial_dir=initial_dir,
+            ),
+            callback=on_save_modal_result,
+        )
+
+    def action_insert_file_from_disk(self) -> None:
+        initial_dir = self.get_effective_working_dir()
+
+        def on_file_result(result: dict | None) -> None:
+            if not result:
+                return
+
+            working_dir = result["working_dir"]
+            file_path_str = result["file_path"]
+            rel_path = result["rel_path"]
+
+            self.set_working_dir(working_dir)
+
+            target_file = Path(file_path_str)
+            try:
+                code_content = target_file.read_text(encoding="utf-8", errors="replace")
+            except Exception as e:
+                self.notify(f"Failed to read file: {e}", severity="error")
+                return
+
+            lines = code_content.count("\n") + 1
+            lang = detect_language(target_file)
+
+            display_path = rel_path
+            try:
+                base = Path(os.path.expanduser(working_dir)).resolve()
+                display_path = str(target_file.relative_to(base))
+            except Exception:
+                pass
+
+            input_widget = self.query_one("#input", ExpandingInput)
+            preview_widget = self.query_one("#snippet_preview", SnippetPreview)
+
+            input_widget.focus()
+            tag, num = input_widget.register_and_insert_snippet(
+                code=code_content,
+                lang=lang,
+                file=display_path,
+                start_line=1,
+                end_line=lines,
+            )
+
+            preview_widget.show_snippet(
+                tag=tag,
+                num=num,
+                code=code_content,
+                lang=lang,
+                file=display_path,
+                start_line=1,
+                end_line=lines,
+            )
+
+            self.notify(f"Inserted {tag} ({display_path})")
+
+        self.push_screen(
+            InsertFileModal(initial_dir=initial_dir),
+            callback=on_file_result,
+        )
+
+    def action_open_git_tree(self) -> None:
+        initial_dir = self.get_effective_working_dir()
+
+        def on_git_tree_result(result: dict | None) -> None:
+            if not result:
+                return
+
+            repo_dir = result["repo_dir"]
+            selected_files: list[str] = result["selected_files"]
+            tracked_files: list[str] = result["tracked_files"]
+            ignored_files: list[str] = result["ignored_files"]
+            tree_mode: str = result["tree_mode"]
+
+            self.set_working_dir(repo_dir)
+
+            input_widget = self.query_one("#input", ExpandingInput)
+            preview_widget = self.query_one("#snippet_preview", SnippetPreview)
+
+            sections: list[str] = []
+            root_label = Path(repo_dir).name or repo_dir
+            ignored_set = set(ignored_files)
+
+            if tree_mode == "full":
+                all_files = tracked_files + [f for f in selected_files if f in ignored_set]
+                if all_files:
+                    ascii_tree = build_ascii_tree(all_files, root_name=root_label, ignored_set=ignored_set)
+                    sections.append(f"Repository Tree (`{root_label}`):\n```text\n{ascii_tree}\n```")
+            elif tree_mode == "selected" and selected_files:
+                ascii_tree = build_ascii_tree(selected_files, root_name=root_label, ignored_set=ignored_set)
+                sections.append(f"Selected Files Tree (`{root_label}`):\n```text\n{ascii_tree}\n```")
+
+            last_tag = ""
+            last_num = 1
+            last_code = ""
+            last_lang = ""
+            last_file = ""
+
+            for rel_path in selected_files:
+                abs_path = Path(repo_dir) / rel_path
+                try:
+                    code_content = abs_path.read_text(encoding="utf-8", errors="replace")
+                except Exception as e:
+                    code_content = f"// Error reading file: {e}"
+
+                lang = detect_language(rel_path)
+                lines = code_content.count("\n") + 1
+
+                tag, num = input_widget.register_and_insert_snippet(
+                    code=code_content,
+                    lang=lang,
+                    file=rel_path,
+                    start_line=1,
+                    end_line=lines,
+                )
+                last_tag = tag
+                last_num = num
+                last_code = code_content
+                last_lang = lang
+                last_file = rel_path
+
+            if sections:
+                current_text = input_widget.text
+                input_widget.text = "\n\n".join(sections) + ("\n\n" + current_text if current_text else "")
+
+            if last_tag:
+                preview_widget.show_snippet(
+                    tag=last_tag,
+                    num=last_num,
+                    code=last_code,
+                    lang=last_lang,
+                    file=last_file,
+                    start_line=1,
+                    end_line=last_code.count("\n") + 1,
+                )
+
+            input_widget.focus()
+            self.notify(f"Inserted tree & {len(selected_files)} file(s).")
+
+        self.push_screen(
+            GitTreeModal(initial_dir=initial_dir),
+            callback=on_git_tree_result,
+        )
+
+    def _get_emacs_frames(self) -> list[dict]:
+        try:
+            res = subprocess.run(
+                ["emacsclient", "--eval", "(gemini-list-open-frames)"],
+                capture_output=True,
+                text=True,
+                timeout=1,
+            )
+            if res.returncode == 0:
+                raw_json = res.stdout.strip()
+                parsed = json.loads(raw_json)
+                while isinstance(parsed, str):
+                    parsed = json.loads(parsed)
+                if isinstance(parsed, list):
+                    return parsed
+        except Exception:
+            pass
+        return []
+
+    def _send_to_emacs_buffer(self, code_text: str, target_buf: str | None = None) -> bool:
+        temp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".txt", mode="w", delete=False, encoding="utf-8") as tmp:
+                tmp.write(code_text)
+                tmp.flush()
+                temp_path = tmp.name
+
+            escaped_tmp = json.dumps(temp_path)
+            if target_buf:
+                escaped_buf = json.dumps(target_buf)
+                elisp = f'(gemini-insert-file-into-window {escaped_buf} {escaped_tmp})'
+            else:
+                elisp = f'(with-current-buffer (window-buffer (selected-window)) (insert-file-contents {escaped_tmp}))'
+
+            res = subprocess.run(
+                ["emacsclient", "--eval", elisp],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            return res.returncode == 0
+        except Exception:
+            return False
+        finally:
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.unlink(temp_path)
+                except Exception:
+                    pass
+
+    def action_send_to_emacs(self) -> None:
+        feed = self.query_one("#feed", FeedArea)
+        text_to_send = feed.get_active_snippet()
+        if not text_to_send:
+            self.notify("No snippet to send to Emacs.", severity="warning")
+            return
+
+        frames = self._get_emacs_frames()
+        if len(frames) <= 1:
+            success = self._send_to_emacs_buffer(text_to_send)
+            if success:
+                self.notify("Snippet sent to Emacs client")
+            else:
+                self.notify("Failed to connect to Emacs server", severity="error")
+            return
+
+        def on_window_chosen(chosen: dict | None) -> None:
+            if chosen:
+                buf = chosen.get("buf_name")
+                success = self._send_to_emacs_buffer(text_to_send, target_buf=buf)
+                if success:
+                    self.notify(f"Snippet sent to Emacs client ({chosen.get('file_name')})")
+                else:
+                    self.notify("Failed to send to Emacs window", severity="error")
+
+        self.push_screen(FrameSelectModal(frames), callback=on_window_chosen)
+
+    def action_copy_active_snippet(self) -> None:
+        feed = self.query_one("#feed", FeedArea)
+        text_to_send = feed.get_active_snippet()
+        if not text_to_send:
+            self.notify("No snippet selected to copy.", severity="warning")
+            return
+
+        self.copy_to_clipboard(text_to_send)
+        self.notify("Copied to system clipboard")
+
+    def action_yank_to_input(self) -> None:
+        try:
+            paste_text = pyperclip.paste()
+            if not paste_text:
+                self.notify("Clipboard is empty.", severity="warning")
+                return
+
+            input_widget = self.query_one("#input", ExpandingInput)
+            input_widget.focus()
+            if input_widget.selected_text:
+                input_widget.delete(input_widget.selection.start, input_widget.selection.end)
+            input_widget.insert(paste_text)
+            input_widget._clear_mark()
+            self.notify("Pasted clipboard to prompt input")
+        except Exception as e:
+            self.notify(f"Clipboard paste error: {e}", severity="error")
+
+    @on(OptionList.OptionSelected, "#history")
+    async def on_history_selected(self, event: OptionList.OptionSelected) -> None:
+        if event.option_id:
+            chat_id = str(event.option_id)
+            self.flush_current_notes()
+            self._flush_global_notes_to_state()
+            self.active_notes_mode = "chat"
+
+            self.query_one("#history").styles.display = "none"
+            self.query_one("#feed").styles.display = "block"
+            await self.load_chat(chat_id)
+            self.query_one("#input").focus()
+
+    async def append_to_feed(self, sender: str, text: str, jump_to_start: bool = False) -> None:
+        feed = self.query_one("#feed", FeedArea)
+        await feed.append_message(sender, text, jump_to_start=jump_to_start)
+
+    async def on_expanding_input_submitted(self, event: ExpandingInput.Submitted) -> None:
+        user_msg = event.value
+
+        await self.append_to_feed(CURRENT_USER, user_msg, jump_to_start=False)
+
+        new_turn_id = f"turn_{uuid4().hex[:8]}"
+        self.history.append({"turn_id": new_turn_id, "role": "user", "text": user_msg})
+        self.current_chat_last_index = max(0, len(self.history) - 1)
+        self.current_chat_center_marker = new_turn_id
+        self.save_current_chat()
+
+        self.ask_gemini()
+
+    # -----------------------------------------------------------------------
+    # Cognitive Expansion & Collision Engine
+    # -----------------------------------------------------------------------
+
+    def steer_mind_state(self, steer_prompt: str) -> None:
+        self.ask_gemini(is_mind_steer=True, steer_instruction=steer_prompt)
+
+    @work(exclusive=True, thread=True)
+    def ask_gemini(self, is_mind_steer: bool = False, steer_instruction: str = "") -> None:
+        chat_id_snapshot = self.current_chat_id
+        working_dir_snapshot = self.get_effective_working_dir()
+
+        def _begin_request():
+            self._request_phase = "connecting"
+            self._start_status_ticker()
+
+        self.app.call_from_thread(_begin_request)
+        start_time = time.monotonic()
+
+        # 1. Define Local Function Calling Tools for Gemini Expansion
+        def scan_workspace_tree(include_ignored: bool = True) -> str:
+            """Scans the working directory git tree, returning tracked and .gitignore files."""
+            try:
+                cat = get_git_files_catalog(working_dir_snapshot)
+                files = cat["tracked"] + (cat["ignored"] if include_ignored else [])
+                root_lbl = Path(working_dir_snapshot).name or "workspace"
+                return build_ascii_tree(files, root_name=root_lbl, ignored_set=set(cat["ignored"]))
+            except Exception as e:
+                return f"Error scanning tree: {e}"
+
+        def expand_mind(turn_numbers: list[int] = [], file_paths: list[str] = []) -> dict:
+            """Fetches up to 50 items (historical chat turns and local files/dependencies)."""
+            self.app.call_from_thread(self.post_message, RequestPhaseUpdate("probing"))
+            total_req = len(turn_numbers) + len(file_paths)
+            if total_req > 50:
+                return {"error": "Maximum 50 items can be expanded at one time."}
+
+            results: dict = {"turns": {}, "files": {}}
+
+            # Read requested turns from memory/history
+            for t_num in turn_numbers:
+                idx = t_num - 1
+                if 0 <= idx < len(self.history):
+                    t_item = self.history[idx]
+                    results["turns"][f"T{t_num}"] = {
+                        "sender": t_item["role"],
+                        "content": t_item["text"],
+                    }
+
+            # Read requested files from disk
+            base = Path(working_dir_snapshot)
+            for fp in file_paths:
+                p = (base / fp).resolve()
+                if p.exists() and p.is_file():
+                    try:
+                        results["files"][fp] = p.read_text(encoding="utf-8", errors="replace")
+                    except Exception as fe:
+                        results["files"][fp] = f"Error reading file: {fe}"
+                else:
+                    results["files"][fp] = "File not found."
+
+            return results
+
+        available_tools = {
+            "scan_workspace_tree": scan_workspace_tree,
+            "expand_mind": expand_mind,
+        }
+
+        # 2. Build Wire Payload (User Mind State: Last 10 Turns with truncated snippets)
+        if is_mind_steer:
+            recent_turns = self.history[-10:] if len(self.history) >= 10 else list(self.history)
+            steer_block = {
+                "turn_id": f"steer_{uuid4().hex[:8]}",
+                "role": "user",
+                "text": (
+                    f"## SYSTEM COGNITIVE RECALIBRATION REQUEST\n"
+                    f"The user has submitted an explicit steering course-correction:\n"
+                    f"\"{steer_instruction}\"\n\n"
+                    f"Re-evaluate the project trajectory. Update your GEMINI MIND STATE, "
+                    f"the USER MIND STATE, the tree_state anchor list, and the visual tree."
+                ),
+            }
+            recent_turns.append(steer_block)
+        else:
+            recent_turns = self.history[-10:] if len(self.history) >= 10 else list(self.history)
+
+        payload = []
+        for t in recent_turns:
+            wire_text = truncate_wire_snippets(t["text"], max_lines=MAX_SNIPPET_LINES_ON_WIRE)
+            if payload and payload[-1]["role"] == t["role"]:
+                payload[-1]["parts"][0]["text"] += "\n\n" + wire_text
+            else:
+                payload.append({"role": t["role"], "parts": [{"text": wire_text}]})
+
+        if payload and payload[0]["role"] != "user":
+            payload.insert(0, {"role": "user", "parts": [{"text": FORK_HEADER_TEXT}]})
+
+        # 3. System Instruction Packaging (Injecting Mind State & 4 Anchors)
+        tree_state_str = ", ".join(str(x) for x in self.current_tree_state) if self.current_tree_state else "None"
+        system_instruction = (
+            f"You are Gemini running inside a bilateral terminal console.\n"
+            f"Working directory: {working_dir_snapshot}\n"
+            f"Total conversation turns on record: {len(self.history)}\n\n"
+            f"### CURRENT COGNITIVE MIND MAP (PERSISTENT ANCHORS)\n"
+            f"• GEMINI MIND STATE: {self.current_gemini_state or 'None'}\n"
+            f"• USER MIND STATE: {self.current_user_state or 'None'}\n"
+            f"• TREE ANCHOR STATE: [{tree_state_str}]\n\n"
+            f"### VISUAL RELATION TREE:\n"
+            f"```text\n{self.current_tree_content or '└── *[Session Start]*'}\n```\n\n"
+            f"### EXPANSION CAPABILITIES\n"
+            f"You only have the recent 10 turns in active memory with truncated code fences.\n"
+            f"You have two tools available to think with:\n"
+            f"1. `scan_workspace_tree(include_ignored=True)`: Survey directory structure and dependencies.\n"
+            f"2. `expand_mind(turn_numbers=[...], file_paths=[...])`: Pull up to 50 items (turns or files) into your thought engine.\n\n"
+            f"### REQUIRED METADATA FOOTER\n"
+            f"At the very end of your response, always output this exact JSON block fenced in ```json:mind_map:\n"
+            f"```json:mind_map\n"
+            f"{{\n"
+            f'  "gemini_state": "<Summary of technical direction and active sub-tasks>",\n'
+            f'  "user_state": "<Summary of inferred user intent and immediate constraints>",\n'
+            f'  "tree_state": ["T...", "F:..."],\n'
+            f'  "tree_content": "<ASCII tree showing where current conversation and files connect>"\n'
+            f"}}\n"
+            f"```\n"
+            f"If this is a recalibration request, confirm the course correction in your response."
+        )
+
+        try:
+            self.app.call_from_thread(self.post_message, RequestPhaseUpdate("waiting"))
+
+            # Build the SDK-compliant Content history list
+            sdk_history: list[types.Content] = []
+            for h in payload[:-1] if len(payload) > 1 else []:
+                sdk_history.append(
+                    types.Content(
+                        role=h["role"],
+                        parts=[types.Part.from_text(text=p["text"]) for p in h["parts"]],
+                    )
+                )
+
+            # Start Chat Session with history pre-loaded properly
+            chat_session = self.client.chats.create(
+                model=DEFAULT_MODEL,
+                history=sdk_history,
+                config=types.GenerateContentConfig(
+                    system_instruction=system_instruction,
+                    tools=[scan_workspace_tree, expand_mind],
+                    temperature=0.2,
+                ),
+            )
+
+            # Send the latest turn
+            first_user_content = payload[-1]["parts"][0]["text"] if payload else ""
+            response = chat_session.send_message(first_user_content)
+
+            # Tool Loop (Handling Autonomous Mind Expansions)
+            while response.candidates and response.candidates[0].content.parts:
+                part = response.candidates[0].content.parts[0]
+                if part.function_call:
+                    fn_name = part.function_call.name
+                    fn_args = dict(part.function_call.args) if part.function_call.args else {}
+
+                    self.app.call_from_thread(self.post_message, RequestPhaseUpdate("probing"))
+
+                    # Execute local tool
+                    if fn_name in available_tools:
+                        try:
+                            fn_result = available_tools[fn_name](**fn_args)
+                        except Exception as tool_err:
+                            fn_result = {"error": str(tool_err)}
+                    else:
+                        fn_result = {"error": f"Tool '{fn_name}' not recognized."}
+
+                    # Feed tool response back into the active thought process
+                    response = chat_session.send_message(
+                        types.Part.from_function_response(
+                            name=fn_name,
+                            response={"result": fn_result},
+                        )
+                    )
+                else:
+                    break
+
+            if self.current_chat_id != chat_id_snapshot:
+                return
+
+            raw_reply = response.text or ""
+
+            # 4. Parse Cognitive Mind Map Footer
+            gemini_state = self.current_gemini_state
+            user_state = self.current_user_state
+            tree_content = self.current_tree_content
+            tree_state = self.current_tree_state
+
+            mind_block_pattern = re.compile(r"```json:mind_map\s*([\s\S]*?)\s*```")
+            match = mind_block_pattern.search(raw_reply)
+
+            clean_reply = raw_reply
+            if match:
+                json_str = match.group(1).strip()
+                clean_reply = mind_block_pattern.sub("", raw_reply).rstrip()
+                try:
+                    meta_dict = json.loads(json_str)
+                    gemini_state = meta_dict.get("gemini_state", gemini_state)
+                    user_state = meta_dict.get("user_state", user_state)
+                    tree_content = meta_dict.get("tree_content", tree_content)
+                    tree_state = meta_dict.get("tree_state", tree_state)
+
+                    self.app.call_from_thread(
+                        self.post_message,
+                        MindMapRecalibrated(
+                            gemini_state=gemini_state,
+                            user_state=user_state,
+                            tree_content=tree_content,
+                            tree_state=tree_state,
+                        )
+                    )
+                except Exception:
+                    pass
+
+            elapsed = max(time.monotonic() - start_time, 0.1)
+            total_words = len(clean_reply.split())
+
+            # 5. Dispatch completion to UI
+            if is_mind_steer:
+                def _finalize_steer():
+                    self._stop_status_ticker()
+                    self.hide_status()
+                    self.notify("Cognitive alignment complete. Mind map updated.", timeout=3.5)
+                    # Re-refresh active screen if user is still on MindMapScreen
+                    if isinstance(self.screen, MindMapScreen):
+                        self.screen.refresh_display()
+
+                self.app.call_from_thread(_finalize_steer)
+            else:
+                self.app.call_from_thread(
+                    self.post_message, RequestFinished(clean_reply, elapsed, total_words)
+                )
+        except Exception as e:
+            if self.current_chat_id != chat_id_snapshot:
+                return
+            def _handle_err():
+                self._stop_status_ticker()
+                self.hide_status()
+                self.post_message(RequestFailed(str(e)))
+            self.app.call_from_thread(_handle_err)
+
+if __name__ == "__main__":
+    ChatApp().run()

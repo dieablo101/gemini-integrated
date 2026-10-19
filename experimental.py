@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tempfile
 import time
 from typing import Callable, TypeVar
@@ -4464,6 +4465,8 @@ class ChatApp(App):
 
         self._commands_registry: dict[str, Callable[[str], None]] = {
             "ui-theme": self._cmd_ui_theme,
+            "reboot": lambda _: self.action_reboot(),
+            "restart": lambda _: self.action_reboot(),
         }
 
     def schedule_chat_notes_flush(self) -> None:
@@ -5231,6 +5234,39 @@ class ChatApp(App):
                 legacy_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
             except Exception:
                 pass
+
+    def action_reboot(self) -> None:
+        """Flushes notes, saves active chat, stops terminal mode, and execs the application process."""
+        try:
+            self.flush_current_notes()
+            if self.current_chat_id and self.active_notes_mode == "chat":
+                self._direct_flush_chat_to_disk(self.current_chat_id, self.current_chat_notes)
+                self.save_current_chat()
+            self._flush_global_notes_to_state()
+            if self.current_chat_id:
+                self._save_to_state("active_chat", self.current_chat_id)
+        except Exception:
+            pass
+
+        try:
+            if hasattr(self, "_driver") and self._driver is not None:
+                self._driver.stop_application_mode()
+        except Exception:
+            pass
+
+        try:
+            if self._server:
+                self._server.close()
+            if SOCKET_PATH.exists():
+                SOCKET_PATH.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+        try:
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+        except Exception:
+            subprocess.Popen([sys.executable] + sys.argv)
+            sys.exit(0)
 
     def action_quit(self) -> None:
         self.flush_current_notes()
@@ -6484,11 +6520,24 @@ class ChatApp(App):
 
             return results
 
+        def reboot_console(delay_seconds: float = 1.5) -> dict:
+            """Reboots/restarts the bilateral terminal console in place, preserving chat and terminal session."""
+            delay = max(0.5, float(delay_seconds))
+            def _schedule_reboot():
+                self.notify(f"Rebooting application in {delay:.1f}s...", timeout=delay)
+                self.set_timer(delay, self.action_reboot)
+            self.app.call_from_thread(_schedule_reboot)
+            return {
+                "status": "scheduled",
+                "message": f"Console reboot scheduled in {delay:.1f} seconds. Active turn and state will be committed before restart."
+            }
+
         available_tools = {
             "scan_workspace_tree": scan_workspace_tree,
             "expand_mind": expand_mind,
             "write_file": write_file,
             "execute_shell": execute_shell,
+            "reboot_console": reboot_console,
         }
 
         # 2. Build Wire Payload (User Mind State: Last 10 Turns with truncated snippets)
@@ -6541,7 +6590,8 @@ class ChatApp(App):
             f"1. `scan_workspace_tree(include_ignored=True)`: Survey directory structure and dependencies.\n"
             f"2. `expand_mind(turn_numbers=[...], file_paths=[...])`: Pull up to 50 items (turns or files) into thought memory.\n"
             f"3. `write_file(path='...', content='...')`: Write or overwrite a file directly on disk.\n"
-            f"4. `execute_shell(command='...', timeout_seconds=60)`: Run shell commands (e.g. tests, linters, python scripts).\n\n"
+            f"4. `execute_shell(command='...', timeout_seconds=60)`: Run shell commands (e.g. tests, linters, python scripts).\n"
+            f"5. `reboot_console(delay_seconds=1.5)`: Restarts the console application cleanly in place when requested by the user.\n\n"
             f"### REQUIRED METADATA FOOTER\n"
             f"At the very end of your response, always output this exact JSON block fenced in json:mind_map\n"
             f"{{\n"
@@ -6573,7 +6623,7 @@ class ChatApp(App):
                 history=sdk_history,
                 config=types.GenerateContentConfig(
                     system_instruction=system_instruction,
-                    tools=[scan_workspace_tree, expand_mind, write_file, execute_shell],
+                    tools=[scan_workspace_tree, expand_mind, write_file, execute_shell, reboot_console],
                     temperature=0.2,
                 ),
             )

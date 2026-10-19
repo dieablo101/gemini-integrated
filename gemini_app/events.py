@@ -30,11 +30,12 @@ class RemoteInsert(Message):
 
 
 class RequestPhaseUpdate(Message):
-    """Fired when Gemini generation changes phase (e.g. connecting, waiting, probing)."""
+    """Fired when Gemini generation changes phase (e.g. connecting, waiting, probing, writing, reading, executing)."""
 
-    def __init__(self, phase: str) -> None:
+    def __init__(self, phase: str, details: str = "") -> None:
         super().__init__()
         self.phase = phase
+        self.details = details
 
 
 class RequestFinished(Message):

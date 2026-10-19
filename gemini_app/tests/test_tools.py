@@ -181,6 +181,28 @@ class TestTools(unittest.TestCase):
         r_res2 = dict2["reboot_console"](delay_seconds=1.0, status_report="Console Ready")
         self.assertEqual(r_res2["report"], "Console Ready")
 
+    def test_tool_registry_detailed_phase_callback(self):
+        phase_records = []
+
+        def on_phase_detailed(phase: str, details: str = ""):
+            phase_records.append((phase, details))
+
+        registry = ToolRegistry(
+            working_dir=self.work_dir,
+            history=[],
+            phase_callback=on_phase_detailed,
+            memory_index=self.memory_index,
+        )
+        _, tools_dict = registry.get_tool_callables()
+
+        # Call write_file
+        tools_dict["write_file"](path="sample.py", content="# code")
+        self.assertTrue(any(p[0] == "writing" and "sample.py" in p[1] for p in phase_records))
+
+        # Call execute_shell
+        tools_dict["execute_shell"](command="echo 'phase test'")
+        self.assertTrue(any(p[0] == "executing" and "echo" in p[1] for p in phase_records))
+
 
 if __name__ == "__main__":
     unittest.main()

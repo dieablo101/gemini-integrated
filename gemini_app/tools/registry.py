@@ -25,7 +25,7 @@ class ToolRegistry:
         self,
         working_dir: Union[str, Path],
         history: List[Dict[str, Any]],
-        phase_callback: Optional[Callable[[str], None]] = None,
+        phase_callback: Optional[Callable[..., None]] = None,
         reboot_callback: Optional[Callable[..., Dict[str, Any]]] = None,
         snapshot_callback: Optional[Callable[[str], Dict[str, Any]]] = None,
         memory_index: Optional[MemoryIndex] = None,
@@ -39,11 +39,19 @@ class ToolRegistry:
         self.memory_index = memory_index or MemoryIndex()
         self.notes_callback = notes_callback
 
+    def _notify_phase(self, phase: str, details: str = "") -> None:
+        if self.phase_callback:
+            try:
+                self.phase_callback(phase, details)
+            except TypeError:
+                self.phase_callback(phase)
+
     def get_tool_callables(self) -> Tuple[List[Callable], Dict[str, Callable]]:
         """Returns SDK-compatible function callables and a lookup dictionary."""
 
         def scan_workspace_tree(include_ignored: bool = True) -> str:
             """Scans the working directory git tree, returning tracked and .gitignore files."""
+            self._notify_phase("scanning", "scanning workspace tree")
             return _scan_workspace_tree(self.working_dir, include_ignored=include_ignored)
 
         def expand_mind(
@@ -52,8 +60,14 @@ class ToolRegistry:
             turn_ids: List[str] = [],
         ) -> Dict[str, Any]:
             """Fetches up to 50 items (historical chat turns and local files/dependencies)."""
-            if self.phase_callback:
-                self.phase_callback("probing")
+            if file_paths:
+                display_f = file_paths[0] if len(file_paths) == 1 else f"{file_paths[0]} (+{len(file_paths)-1})"
+                self._notify_phase("reading", f"reading file ({display_f})")
+            elif turn_numbers or turn_ids:
+                turns_label = f"{len(turn_numbers or turn_ids)} turn(s)"
+                self._notify_phase("expanding", f"expanding mind (recalling {turns_label})")
+            else:
+                self._notify_phase("probing", "expanding mind (seeking context & tools)")
             return _expand_mind(
                 self.working_dir,
                 self.history,
@@ -65,8 +79,7 @@ class ToolRegistry:
 
         def recall_memory(query: str, max_results: int = 10) -> Dict[str, Any]:
             """Fast indexed retrieval across entire conversational history, archived projects, and past discussions."""
-            if self.phase_callback:
-                self.phase_callback("probing")
+            self._notify_phase("recalling", f"recalling indexed memory ({query})")
             return _recall_memory(
                 query=query,
                 max_results=max_results,
@@ -75,10 +88,12 @@ class ToolRegistry:
 
         def write_file(path: str, content: str) -> Dict[str, Any]:
             """Writes or overwrites a file on disk relative to the working directory."""
+            self._notify_phase("writing", f"writing code in file ({path})")
             return _write_file(self.working_dir, path=path, content=content)
 
         def apply_patch(path: str, search_block: str, replace_block: str) -> Dict[str, Any]:
             """Applies a surgical find-and-replace patch to a file. The search_block must appear exactly once."""
+            self._notify_phase("patching", f"patching code in file ({path})")
             return _apply_patch(
                 self.working_dir,
                 path=path,
@@ -88,6 +103,7 @@ class ToolRegistry:
 
         def search_codebase(query: str, path_pattern: str = "*", max_matches: int = 50) -> Dict[str, Any]:
             """Searches workspace files for a text pattern or regex query, returning matching lines."""
+            self._notify_phase("searching", f"searching codebase ({query})")
             return _search_codebase(
                 self.working_dir,
                 query=query,
@@ -97,10 +113,15 @@ class ToolRegistry:
 
         def execute_shell(command: str, timeout_seconds: int = 60) -> Dict[str, Any]:
             """Executes a shell command inside the working directory and returns stdout, stderr, and exit_code."""
+            cmd_snippet = command.strip().replace("\n", " ")
+            if len(cmd_snippet) > 35:
+                cmd_snippet = cmd_snippet[:32] + "..."
+            self._notify_phase("executing", f"executing terminal line command ({cmd_snippet})")
             return _execute_shell(self.working_dir, command=command, timeout_seconds=timeout_seconds)
 
         def reboot_console(delay_seconds: float = 1.5, status_report: str = "") -> Dict[str, Any]:
             """Reboots/restarts the bilateral terminal console in place, preserving chat and terminal session."""
+            self._notify_phase("rebooting", "preparing console reboot")
             if self.reboot_callback:
                 try:
                     return self.reboot_callback(delay_seconds, status_report)
@@ -110,14 +131,14 @@ class ToolRegistry:
 
         def take_snapshot(label: str = "") -> Dict[str, Any]:
             """Captures a UI snapshot of the console application on Gemini's end, indexed and held."""
+            self._notify_phase("snapshotting", f"capturing UI snapshot ({label or 'live'})")
             if self.snapshot_callback:
                 return self.snapshot_callback(label)
             return {"status": "error", "message": "Snapshot capture callback unavailable in this context."}
 
         def review_snapshots(snapshot_ids: List[str] = [], only_held: bool = True, count: int = 5) -> Dict[str, Any]:
             """Reviews UI snapshots taken by the user or Gemini, returning reconstructed screen text and metadata."""
-            if self.phase_callback:
-                self.phase_callback("probing")
+            self._notify_phase("reviewing", "reviewing held UI snapshots")
             return _review_held_snapshots(
                 snapshot_ids=snapshot_ids,
                 only_held=only_held,
@@ -131,6 +152,7 @@ class ToolRegistry:
             turn_id: str = "",
         ) -> Dict[str, Any]:
             """Reads or updates Gemini working notes, relational turn notes, or global notes."""
+            self._notify_phase("notes", f"syncing {mode} notes ({action})")
             if self.notes_callback:
                 return self.notes_callback(action=action, mode=mode, content=content, turn_id=turn_id)
             return {"status": "error", "message": "Notes management callback unavailable in this context."}

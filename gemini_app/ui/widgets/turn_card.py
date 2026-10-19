@@ -51,9 +51,9 @@ class TurnCard(Vertical):
 
         if fork_active:
             box = "[X]" if self.is_selected else "[ ]"
-            return f"{box} {self.sender} (#{self.turn_index + 1}){note_badge}"
+            return f"{box} {self.sender}{note_badge}"
         else:
-            return f"{self.sender} (#{self.turn_index + 1}){note_badge}"
+            return f"{self.sender}{note_badge}"
 
     def update_display(self) -> None:
         try:

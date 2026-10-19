@@ -87,6 +87,12 @@ from gemini_app.events import (
 )
 from gemini_app.mind.screen import MindMapScreen
 from gemini_app.storage.memory_index import MemoryIndex
+from gemini_app.storage.rollback import (
+    mark_reboot_in_progress,
+    mark_startup_successful,
+    perform_git_rollback,
+    record_stable_commit,
+)
 from gemini_app.tools.registry import ToolRegistry
 from gemini_app.tools.snapshots import capture_ui_snapshot, cleanup_stale_ephemerals, list_held_snapshots
 from gemini_app.ui.modals import (
@@ -173,6 +179,7 @@ class ChatApp(App):
         self._c_c_timer: Timer | None = None
 
         self._request_phase: str = "idle"
+        self._request_details: str = ""
         self._request_start_time: float = 0.0
         self._spinner_idx: int = 0
         self._status_timer: Timer | None = None
@@ -729,14 +736,48 @@ class ChatApp(App):
         self.call_after_refresh(self._initial_startup_load)
 
     async def _initial_startup_load(self) -> None:
+        mark_startup_successful()
         last_active_id = self._read_active_chat_from_state()
+
         if last_active_id and (self._get_legacy_chat_file(last_active_id).exists() or self._get_chat_dir(last_active_id).exists()):
-            await self.load_chat(last_active_id)
+            # Read prior session meta & mind map to boot directly into our cognitive anchors
+            legacy_file = self._get_legacy_chat_file(last_active_id)
+            chat_dir = self._get_chat_dir(last_active_id)
+            prev_meta = {}
+            if legacy_file.exists():
+                try:
+                    prev_meta = json.loads(legacy_file.read_text(encoding="utf-8"))
+                except Exception:
+                    pass
+            elif chat_dir.is_dir() and (chat_dir / "meta.json").exists():
+                try:
+                    prev_meta = json.loads((chat_dir / "meta.json").read_text(encoding="utf-8"))
+                except Exception:
+                    pass
+
+            notes_raw = prev_meta.get("notes", "")
+            if isinstance(notes_raw, dict):
+                self.gemini_notes = notes_raw.get("gemini_notes", "") or ""
+                self.global_notes = notes_raw.get("global_notes", "") or self.global_notes or ""
+                self.relational_notes = dict(notes_raw.get("relational_notes", {}))
+            elif isinstance(notes_raw, str) and notes_raw.strip():
+                self.gemini_notes = notes_raw
+
+            mind_map = prev_meta.get("mind_map", {})
+            if mind_map:
+                self.current_gemini_state = mind_map.get("gemini_state") or self.current_gemini_state
+                self.current_user_state = mind_map.get("user_state") or self.current_user_state
+                self.current_tree_state = mind_map.get("tree_state") or self.current_tree_state
+                self.current_tree_content = mind_map.get("tree_content") or self.current_tree_content
+                self.active_task_title = prev_meta.get("title") or self.current_gemini_state
+
+            # Start fresh chat session for this boot while tracking lineage
+            self._start_new_chat(title="", parent_id=last_active_id)
         else:
             files = self._get_all_chat_entries()
             if files:
                 first_id = files[0]["id"]
-                await self.load_chat(first_id)
+                self._start_new_chat(title="", parent_id=first_id)
             else:
                 self._start_new_chat(title="")
 
@@ -813,6 +854,7 @@ class ChatApp(App):
             self._status_timer.stop()
             self._status_timer = None
         self._request_phase = "idle"
+        self._request_details = ""
 
     def _tick_status(self) -> None:
         if self._request_phase == "idle":
@@ -822,7 +864,9 @@ class ChatApp(App):
         frame = SPINNER_FRAMES[self._spinner_idx % len(SPINNER_FRAMES)]
         self._spinner_idx += 1
 
-        if self._request_phase == "connecting":
+        if self._request_details:
+            status_text = f"{frame} {self._request_details}... ({elapsed:.1f}s)"
+        elif self._request_phase == "connecting":
             status_text = f"{frame} Connecting / Sending request... ({elapsed:.1f}s)"
         elif self._request_phase == "waiting":
             status_text = f"{frame} Waiting on Gemini response... ({elapsed:.1f}s)"
@@ -836,6 +880,7 @@ class ChatApp(App):
     @on(RequestPhaseUpdate)
     def on_request_phase_update(self, event: RequestPhaseUpdate) -> None:
         self._request_phase = event.phase
+        self._request_details = getattr(event, "details", "") or ""
         self._tick_status()
 
     @on(MindMapRecalibrated)
@@ -846,6 +891,18 @@ class ChatApp(App):
         self.current_tree_state = event.tree_state
         self.save_current_chat()
         self.update_feed_title()
+
+        try:
+            self.memory_index.save_mind_map(
+                chat_id=self.current_chat_id,
+                gemini_state=event.gemini_state,
+                user_state=event.user_state,
+                tree_state=event.tree_state,
+                tree_content=event.tree_content,
+                active_task_title=getattr(self, "active_task_title", ""),
+            )
+        except Exception:
+            pass
 
         # Update MindMapScreen if it is anywhere in the screen stack
         for sc in self.screen_stack:
@@ -1035,7 +1092,7 @@ class ChatApp(App):
                 pass
 
     def action_reboot(self, status_report: str | None = None) -> None:
-        """Saves current state and notes cleanly, restores terminal mode, and execs the application process."""
+        """Saves current state and notes cleanly, marks reboot safety flag, and execs the application process."""
         try:
             self.flush_current_notes()
             self._do_notes_flush()
@@ -1044,6 +1101,7 @@ class ChatApp(App):
                 self._save_to_state("active_chat", self.current_chat_id)
             report = status_report or "✓ Reboot complete: Console reloaded, session restored, UI operational."
             self._save_to_state("pending_reboot_report", report)
+            mark_reboot_in_progress()
         except Exception:
             pass
 
@@ -1615,7 +1673,7 @@ class ChatApp(App):
         self.update_feed_nav_banner()
         self.notify(f"Fork created: '{self.current_chat_title}' (Awaiting response)", timeout=4.0)
 
-    def _start_new_chat(self, title: str) -> None:
+    def _start_new_chat(self, title: str, parent_id: str | None = None) -> None:
         self._stop_status_ticker()
         self.hide_status()
 
@@ -1627,17 +1685,10 @@ class ChatApp(App):
 
         self.current_chat_id = uuid4().hex[:8]
         self.current_chat_title = title or "Unified Stream"
-        self.current_chat_parent_id = None
+        self.current_chat_parent_id = parent_id
         self.current_chat_working_dir = None
         self.current_chat_last_index = 0
         self.current_chat_center_marker = ""
-        self.gemini_notes = ""
-        self.relational_notes = {}
-        self.active_task_title = "Unifying Notes System & Relational Anchors"
-        self.current_gemini_state = "Unifying Notes System & Relational Anchors"
-        self.current_user_state = "Collaborating on unified bilateral console session."
-        self.current_tree_state = ["T100", "F:gemini_app/ui/widgets/notes.py"]
-        self.current_tree_content = "└── Unified Console [Active]"
         self.history = []
 
         feed = self.query_one("#feed", FeedArea)
@@ -2060,6 +2111,15 @@ class ChatApp(App):
             self.action_reboot(status_report=report)
             return True
 
+        elif verb in ("rollback", "revert"):
+            success, msg = perform_git_rollback()
+            if success:
+                self.notify("Rollback completed. Rebooting...", timeout=2.0)
+                self.set_timer(1.0, lambda: self.action_reboot(status_report="✓ Rolled back to previous stable version."))
+            else:
+                self.notify(f"Rollback failed: {msg}", severity="error")
+            return True
+
         elif verb == "clear":
             self.history = []
             feed = self.query_one("#feed", FeedArea)
@@ -2191,7 +2251,7 @@ class ChatApp(App):
         tool_reg = ToolRegistry(
             working_dir=working_dir_snapshot,
             history=self.history,
-            phase_callback=lambda p: self.app.call_from_thread(self.post_message, RequestPhaseUpdate(p)),
+            phase_callback=lambda p, d="": self.app.call_from_thread(self.post_message, RequestPhaseUpdate(p, d)),
             reboot_callback=_schedule_reboot,
             snapshot_callback=_schedule_snapshot,
             memory_index=self.memory_index,
@@ -2330,7 +2390,7 @@ class ChatApp(App):
                         fn_result = {"error": f"Tool '{fn_name}' not recognized."}
 
                     # Transition status UI back to waiting before sending the tool result back across the wire
-                    self.app.call_from_thread(self.post_message, RequestPhaseUpdate("waiting"))
+                    self.app.call_from_thread(self.post_message, RequestPhaseUpdate("waiting", "waiting on Gemini response"))
 
                     # Feed tool response back into the active thought process
                     response = chat_session.send_message(

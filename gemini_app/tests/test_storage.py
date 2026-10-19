@@ -198,6 +198,39 @@ class TestStorage(unittest.TestCase):
         self.assertEqual(results[0]["turn_id"], "q2")
         self.assertEqual(results[0]["title"], "Quantum Computing")
 
+    def test_code_symbols_and_tags_extraction(self):
+        from gemini_app.storage.memory_index import extract_code_symbols, extract_tags
+        sample_code = (
+            "def launch_satellites():\n"
+            "    import socket\n"
+            "    execute_shell('pytest -v')\n"
+            "    return 'src/telemetry.py'\n"
+        )
+        symbols = extract_code_symbols(sample_code)
+        self.assertIn("launch_satellites", symbols)
+        self.assertIn("src/telemetry.py", symbols)
+        self.assertIn("execute_shell", symbols)
+
+        tags = extract_tags(sample_code)
+        self.assertIn("#code", tags)
+        self.assertIn("#terminal", tags)
+
+    def test_save_and_get_mind_map(self):
+        self.memory_index.save_mind_map(
+            chat_id="chat_mm_01",
+            gemini_state="Refactoring memory index",
+            user_state="Requesting richer search",
+            tree_state=["T101", "F:gemini_app/storage/memory_index.py"],
+            tree_content="└── Memory Tree [Active]",
+            active_task_title="Memory Indexing Upgrade",
+        )
+        latest = self.memory_index.get_latest_mind_map()
+        self.assertIsNotNone(latest)
+        self.assertEqual(latest["chat_id"], "chat_mm_01")
+        self.assertEqual(latest["gemini_state"], "Refactoring memory index")
+        self.assertEqual(latest["tree_state"], ["T101", "F:gemini_app/storage/memory_index.py"])
+        self.assertEqual(latest["active_task_title"], "Memory Indexing Upgrade")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,56 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gemini-integrated"
+version = "1.0.0"
+description = "Autonomous Bilateral Terminal Console and LLM Developer Tool powered by Google Gemini and Textual"
+readme = "README.md"
+authors = [
+    { name = "Kyle Gallagher" },
+]
+license = { text = "MIT" }
+requires-python = ">=3.10"
+keywords = ["gemini", "ai", "terminal", "textual", "llm", "tui", "developer-tools"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Build Tools",
+    "Topic :: Text Editors :: Integrated Development Environments (IDE)",
+]
+
+dependencies = [
+    "textual>=0.50.0",
+    "google-genai>=1.0.0",
+    "rich>=13.0.0",
+    "pyperclip>=1.8.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "build",
+    "wheel",
+    "twine",
+]
+
+[project.scripts]
+gemini-integrated = "gemini_app.main:main"
+gemini = "gemini_app.main:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["gemini_app*"]
+
+[tool.setuptools.package-data]
+"*" = ["*.txt", "*.md"]

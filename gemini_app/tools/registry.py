@@ -3,7 +3,14 @@
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
+from gemini_app.projects import scaffold_project as _scaffold_project
 from gemini_app.storage.memory_index import MemoryIndex
+from gemini_app.system_deps import (
+    check_dependencies as _check_system_deps,
+    detect_os as _detect_os,
+    ensure_system_dependencies as _ensure_system_deps,
+    install_system_dependencies as _install_system_deps,
+)
 from gemini_app.tools.execution import execute_shell as _execute_shell
 from gemini_app.tools.mind_tools import (
     expand_mind as _expand_mind,
@@ -166,6 +173,43 @@ class ToolRegistry:
                 )
             return {"status": "error", "message": "Notes management callback unavailable in this context."}
 
+        def scaffold_project(
+            project_name: str,
+            description: str = "",
+            author: Optional[str] = None,
+            license_type: str = "MIT",
+            target_dir: Optional[str] = None,
+            init_git: bool = True,
+        ) -> Dict[str, Any]:
+            """Scaffolds a new project directory in ~/Projects with Git, README.md, and LICENSE (Copyright Kyle Gallagher unless stated)."""
+            self._notify_phase("scaffolding", f"scaffolding project ({project_name})")
+            return _scaffold_project(
+                project_name=project_name,
+                description=description,
+                author=author,
+                license_type=license_type,
+                target_dir=target_dir,
+                init_git=init_git,
+            )
+
+        def manage_system_dependencies(
+            action: str = "check",
+            packages: Optional[List[str]] = None,
+        ) -> Dict[str, Any]:
+            """Inspects Linux OS distribution and autonomously manages or installs system dependencies (e.g. git, curl)."""
+            self._notify_phase("system", f"managing system dependencies ({action})")
+            if action == "install":
+                return _install_system_deps(packages=packages)
+            elif action == "ensure":
+                return _ensure_system_deps(required=packages)
+            elif action == "detect":
+                return _detect_os()
+            return {
+                "os": _detect_os(),
+                "status": "success",
+                "dependencies": _check_system_deps(commands=packages),
+            }
+
         tools_list = [
             scan_workspace_tree,
             expand_mind,
@@ -178,6 +222,8 @@ class ToolRegistry:
             take_snapshot,
             review_snapshots,
             manage_notes,
+            scaffold_project,
+            manage_system_dependencies,
         ]
 
         tools_dict = {
@@ -192,6 +238,8 @@ class ToolRegistry:
             "take_snapshot": take_snapshot,
             "review_snapshots": review_snapshots,
             "manage_notes": manage_notes,
+            "scaffold_project": scaffold_project,
+            "manage_system_dependencies": manage_system_dependencies,
         }
 
         return tools_list, tools_dict

@@ -52,6 +52,7 @@ from gemini_app.config import (
     CENTER_SCREEN_MODE,
     CHATS_DIR,
     CURRENT_USER,
+    DEFAULT_COPYRIGHT_HOLDER,
     DEFAULT_MODEL,
     DEFAULT_PALETTE,
     DEFAULT_WINDOW_CAPACITY,
@@ -60,6 +61,7 @@ from gemini_app.config import (
     GATED_NAV_KEYS,
     MAX_SNIPPET_LINES_ON_WIRE,
     MOBILE_BREAKPOINT,
+    PROJECTS_DIR,
     SCREENSHOTS_DIR,
     SOCKET_PATH,
     SPINNER_FRAMES,
@@ -68,6 +70,9 @@ from gemini_app.config import (
     TURNS_PER_SEGMENT,
     WIRE_CONTINUATION_PROMPT,
 )
+from gemini_app.onboarding import get_stored_api_key, save_gemini_api_key
+from gemini_app.projects import get_user_real_name, scaffold_project, set_user_real_name
+from gemini_app.system_deps import detect_os, ensure_system_dependencies
 from gemini_app.helpers import (
     build_ascii_tree,
     cast_ray_from_center,
@@ -99,6 +104,7 @@ from gemini_app.tools.registry import ToolRegistry
 from gemini_app.tools.snapshots import capture_ui_snapshot, cleanup_stale_ephemerals, list_held_snapshots
 from gemini_app.ui.boot import BootScreen
 from gemini_app.ui.modals import (
+    ApiKeyModal,
     CommandsModal,
     ConfirmModal,
     DirectoryPathInput,
@@ -140,7 +146,16 @@ class ChatApp(App):
 
     def __init__(self) -> None:
         super().__init__()
-        self.client = genai.Client()
+        # Load API key and initialize client safely
+        api_key = get_stored_api_key()
+        if api_key:
+            os.environ["GEMINI_API_KEY"] = api_key
+        try:
+            self.client = genai.Client()
+        except Exception:
+            self.client = None
+
+        self.user_real_name: str = get_user_real_name()
         self.lock = AppLockController(self)
         self.memory_index = MemoryIndex()
 
@@ -198,7 +213,43 @@ class ChatApp(App):
             "ui-theme": self._cmd_ui_theme,
             "reboot": lambda arg: self.action_reboot(status_report=arg if arg else None),
             "restart": lambda arg: self.action_reboot(status_report=arg if arg else None),
+            "api-key": lambda _: self.action_configure_api_key(),
+            "scaffold": self._cmd_scaffold_project,
+            "new-project": self._cmd_scaffold_project,
+            "sys-deps": lambda _: self._cmd_sys_deps(),
         }
+
+    def action_configure_api_key(self) -> None:
+        """Opens ApiKeyModal to update or configure the Google Gemini API Key."""
+        def _on_key_submitted(key: str | None) -> None:
+            if key:
+                save_gemini_api_key(key)
+                try:
+                    self.client = genai.Client()
+                    self.notify("Gemini API Key updated and saved to env variables & ~/.bashrc!", title="API Key Configured")
+                except Exception as e:
+                    self.notify(f"Client init warning: {e}", severity="warning")
+        self.push_screen(ApiKeyModal(), _on_key_submitted)
+
+    def _cmd_scaffold_project(self, arg: str) -> None:
+        """Scaffolds a new project in ~/Projects with Git, README.md, and Kyle Gallagher LICENSE."""
+        name = arg.strip()
+        if not name:
+            self.notify("Usage: /scaffold <project-name>", severity="warning")
+            return
+        res = scaffold_project(name, author=self.user_real_name)
+        if res.get("status") == "success":
+            self.notify(f"Scaffolded '{name}' at {res.get('project_path')}!", title="Project Created")
+        else:
+            self.notify(f"Scaffold error: {res.get('message')}", severity="error")
+
+    def _cmd_sys_deps(self) -> None:
+        """Checks and installs system dependencies autonomously based on Linux OS check."""
+        res = ensure_system_dependencies()
+        if res.get("all_installed"):
+            self.notify(f"System dependencies verified for {res.get('os_info', {}).get('name', 'Linux')}.", title="Dependencies OK")
+        else:
+            self.notify(f"Installed packages: {res.get('installed_packages', [])}", title="Dependencies Installed")
 
     def consume_notes_editor(self) -> None:
         """Consumes text typed into the notes editor by the user into Gemini-managed notes."""
@@ -2297,6 +2348,36 @@ class ChatApp(App):
                 self.notify(f"Unknown notes action '{sub}'. Use: prune, archive, unarchive, stats.", severity="error")
                 return True
 
+        elif verb in ("project", "scaffold"):
+            if not arg:
+                self.notify("Usage: /project <name> [description]", severity="warning")
+                return True
+            p_parts = arg.split(None, 1)
+            p_name = p_parts[0]
+            p_desc = p_parts[1] if len(p_parts) > 1 else ""
+            res = scaffold_project(name=p_name, description=p_desc, author=self.user_real_name)
+            if res.get("status") == "success":
+                msg = f"✓ Project '{p_name}' scaffolded in ~/Projects/{p_name} (Git repo initialized, README.md, LICENSE with Copyright {res.get('copyright_holder')})."
+                self.notify(msg, timeout=4.5)
+                self.call_after_refresh(lambda: self.append_to_feed("system", f"### Project Scaffolding Complete\n{msg}\n- **Path:** `{res.get('path')}`\n- **Git:** `{res.get('git')}`", jump_to_start=False))
+            else:
+                self.notify(f"Scaffolding failed: {res.get('message')}", severity="error")
+            return True
+
+        elif verb == "projects":
+            proj_dir = PROJECTS_DIR
+            if not proj_dir.exists():
+                proj_dir.mkdir(parents=True, exist_ok=True)
+            projs = [p.name for p in proj_dir.iterdir() if p.is_dir() and not p.name.startswith(".")]
+            if not projs:
+                self.notify(f"No projects found in {proj_dir}. Use /project <name> to scaffold one.", timeout=4.0)
+            else:
+                lines = [f"### Projects in `{proj_dir}`:"]
+                for p in sorted(projs):
+                    lines.append(f"- **{p}** (`{proj_dir / p}`)")
+                self.call_after_refresh(lambda: self.append_to_feed("system", "\n".join(lines), jump_to_start=False))
+            return True
+
         elif verb == "clear":
             self.history = []
             feed = self.query_one("#feed", FeedArea)
@@ -2310,6 +2391,8 @@ class ChatApp(App):
                 "### Console Slash Commands\n"
                 "- `/theme <name>`: Switch color theme (e.g. `/theme amber`, `/theme hacker`)\n"
                 "- `/themes`: List all available color themes\n"
+                "- `/project <name> [desc]`: Scaffold a new project in ~/Projects (Git, README, LICENSE)\n"
+                "- `/projects`: List existing projects in ~/Projects\n"
                 "- `/notes [prune|archive|unarchive|stats]`: Manage, prune, or archive notes\n"
                 "- `/snapshot [label]`: Capture UI snapshot held for Gemini review\n"
                 "- `/snapshots`: View count and list of held snapshots\n"
@@ -2680,6 +2763,16 @@ class ChatApp(App):
                 )
 
             # Start Chat Session with history pre-loaded properly
+            if self.client is None:
+                try:
+                    self.client = genai.Client()
+                except Exception:
+                    self.app.call_from_thread(
+                        self.post_message,
+                        RequestFailed("Google Gemini API key not configured. Run /api-key or export GEMINI_API_KEY."),
+                    )
+                    return
+
             chat_session = self.client.chats.create(
                 model=DEFAULT_MODEL,
                 history=sdk_history,

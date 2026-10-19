@@ -1,0 +1,9 @@
+include README.md
+include LICENSE.txt
+include init.el
+include gemini-integrated.py
+include install.sh
+include pyproject.toml
+include setup.py
+recursive-include gemini_app *.py
+recursive-include screenshots *.svg

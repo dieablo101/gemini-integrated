@@ -19,6 +19,11 @@ ARCHIVE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
 SCREENSHOTS_DIR: Path = GEMINI_HOME / "screenshots"
 SCREENSHOTS_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
 
+PROJECTS_DIR: Path = Path.home() / "Projects"
+PROJECTS_DIR.mkdir(mode=0o755, parents=True, exist_ok=True)
+
+DEFAULT_COPYRIGHT_HOLDER: str = "Kyle Gallagher"
+
 STATE_FILE: Path = GEMINI_HOME / "state.json"
 SOCKET_PATH: Path = GEMINI_HOME / "gemini_textual.sock"
 
@@ -364,6 +369,27 @@ def generate_theme_css_rules() -> str:
             text-style: none;
         }}
         .theme-{name} #dialog-buttons Button:focus {{
+            border: double {acc};
+            text-style: none;
+        }}
+
+        .theme-{name} #api_key_dialog {{
+            border: thick {acc};
+            scrollbar-color: {acc} #181818;
+            scrollbar-color-hover: {acc_bright} #252525;
+        }}
+        .theme-{name} #api_key_dialog Input {{
+            border: solid {acc};
+        }}
+        .theme-{name} #api_key_buttons Button {{
+            border: solid {acc};
+            text-style: none;
+        }}
+        .theme-{name} #api_key_buttons Button:hover {{
+            color: {acc};
+            text-style: none;
+        }}
+        .theme-{name} #api_key_buttons Button:focus {{
             border: double {acc};
             text-style: none;
         }}

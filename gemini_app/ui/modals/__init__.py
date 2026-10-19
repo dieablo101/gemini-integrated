@@ -1,5 +1,6 @@
-"""Modal dialogs: commands, confirm, fork, inputs, snippets, git trees, and frame select."""
+"""Modal dialogs: commands, confirm, fork, inputs, snippets, git trees, api key, and frame select."""
 
+from gemini_app.ui.modals.api_key import ApiKeyModal
 from gemini_app.ui.modals.base import ResponsiveModalScreen
 from gemini_app.ui.modals.commands import CommandsModal
 from gemini_app.ui.modals.confirm import ConfirmModal
@@ -17,6 +18,7 @@ from gemini_app.ui.modals.snippets import (
 )
 
 __all__ = [
+    "ApiKeyModal",
     "ResponsiveModalScreen",
     "CommandsModal",
     "ConfirmModal",

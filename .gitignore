@@ -1,4 +1,6 @@
 chats/
 .venv
-chats/
 __pycache__/
+*.egg-info/
+build/
+dist/

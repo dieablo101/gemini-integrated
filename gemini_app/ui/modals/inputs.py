@@ -285,3 +285,106 @@ class TitlePromptModal(ResponsiveModalScreen[str | None]):
     @on(Button.Pressed, "#cancel_btn")
     def action_cancel(self) -> None:
         self.dismiss(None)
+
+
+class ApiKeyModal(ResponsiveModalScreen[str | None]):
+    """Modal prompt for entering Google Gemini API Key."""
+
+    DEFAULT_CSS = """
+    ApiKeyModal {
+        align: center middle;
+        layer: overlay;
+        background: rgba(0, 0, 0, 0.85);
+    }
+    #api_key_dialog {
+        padding: 1 2;
+        width: 65;
+        max-width: 90vw;
+        height: auto;
+        max-height: 90vh;
+        overflow-y: auto;
+        overflow-x: hidden;
+        background: #000000;
+        border: thick red;
+    }
+    #api_key_dialog Label {
+        margin-bottom: 1;
+        text-style: bold;
+        color: #ffffff;
+        width: 100%;
+        height: auto;
+        text-wrap: wrap;
+    }
+    #api_key_dialog .hint {
+        color: #888888;
+        text-style: none;
+        margin-bottom: 1;
+    }
+    #api_key_dialog Input {
+        margin-bottom: 1;
+        background: #000000;
+        color: #ffffff;
+    }
+    #api_key_buttons {
+        width: 100%;
+        height: auto;
+        align-horizontal: right;
+    }
+    #api_key_buttons Button {
+        margin-left: 1;
+        background: #000000;
+        color: #ffffff;
+        text-style: none;
+    }
+    ApiKeyModal.-mobile #api_key_dialog {
+        width: 100vw;
+        height: 100vh;
+        max-width: 100vw;
+        max-height: 100vh;
+        border: none;
+        padding: 1;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+        Binding("ctrl+g", "cancel", "Cancel"),
+    ]
+
+    def __init__(self, prompt: str = "Enter Google Gemini API Key:") -> None:
+        super().__init__()
+        self.prompt_text = prompt
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll(id="api_key_dialog"):
+            yield Label(self.prompt_text)
+            yield Label(
+                "Key will be saved to your environment variables and ~/.bashrc for future sessions.",
+                classes="hint",
+            )
+            yield Input(
+                placeholder="AIzaSy...",
+                password=True,
+                id="api_key_input",
+            )
+            with Horizontal(id="api_key_buttons"):
+                yield Button("Cancel", id="cancel_btn")
+                yield Button("Save Key", id="save_btn")
+
+    def on_mount(self) -> None:
+        super().on_mount()
+        self.query_one(Input).focus()
+
+    @on(Input.Submitted, "#api_key_input")
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self.dismiss(event.value.strip() or None)
+
+    @on(Button.Pressed, "#save_btn")
+    def on_save_pressed(self) -> None:
+        val = self.query_one(Input).value.strip()
+        self.dismiss(val or None)
+
+    @on(Button.Pressed, "#cancel_btn")
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+

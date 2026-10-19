@@ -1,108 +1,174 @@
-### gemini-integrated : A LLM ( large language model ) programmers tool!
+# gemini-integrated : Autonomous Bilateral Terminal Console & LLM Programmer's Tool
 
 ![gemini-integrated screenshot 1](./screenshots/screen1.svg)
 ![gemini-integrated screenshot 2](./screenshots/screen2.svg)
 ![gemini-integrated screenshot 3](./screenshots/screen3.svg)
-![gemini-integrated screenshot 3](./screenshots/screen4.svg)
+![gemini-integrated screenshot 4](./screenshots/screen4.svg)
 
-A terminal-based AI chat application built with **Textual** and the **Google GenAI SDK** (`gemini-3.8-flash`), featuring interactive chat branching (forking), code snippet insertion and extraction, Git tree exploration, and tight Emacs integration.
-
----
-
-1. Textual UI & App Structure:
-   - Feed & Virtualization Engine (FeedArea): Sliding runway window (RUNWAY_ABOVE_BUDGET, RUNWAY_BELOW_BUDGET, DEFAULT_WINDOW_CAPACITY = 10) with outward 1D raycast snapping (cast_ray_from_center) and turn indexing.
-   - Input & Editor (ExpandingInput, SnippetPreview, EmacsBaseTextArea): Custom Emacs-style keybindings (mark region, kill-ring/line operations, cursor navigation), expanding text area, inline snippet placeholder expansion ({&snippetN}).
-   - Styling & Theming: Dynamic theme engine supporting color palettes (red, blue, green, orange, purple, yellow, pink), persisted in state.json.
-
-2. Dialogs & Modals:
-   - CommandsModal (keyboard shortcut cheat sheet)
-   - DirectoryPathInput & FilePathInput (tab completion for filesystem paths)
-   - ConfirmModal, ForkModal, TitlePromptModal, WriteSnippetModal, InsertFileModal
-   - GitTreeModal (dual tracked/ignored trees with ASCII preview insertion)
-   - FrameSelectModal (Emacs frame/window targeting)
-
-3. External Integrations & IPC:
-   - Google GenAI Client (google.genai): Using gemini-3.8-flash with conversational history collapsing.
-   - Unix Domain Socket (gemini_textual.sock): Listens for remote snippets (e.g., from external editors/scripts) and dispatches RemoteInsert.
-   - Emacs Client Interop: Querying active frames via emacsclient --eval and inserting snippets directly into buffers.
-   - Chat Forking & Tree History: Branching chats with parent tracking (parent_id) and visual tree indentation in the history list.
+**gemini-integrated** is a high-performance terminal console and bilateral AI development environment built on **Textual** and the **Google GenAI SDK** (`gemini-3.8-flash`). Designed specifically for autonomous software engineering, conversational branching, persistent relational memory, and deep workflow integration.
 
 ---
 
-## Installation
+## ⚡ Quick Start: 1-Line Remote Install
 
-### Prerequisites
-- Python 3.10+
-- A Google Gemini API key configured (via `GEMINI_API_KEY` environment variable).
-- Optional: `emacs` / `emacsclient` running as a daemon or server if using Emacs frame-pasting features.
-
-### Dependencies
-Install the required dependencies:
+You can install `gemini-integrated` with a single shell command—**even if you do not have Git installed yet**:
 
 ```bash
-pip install textual google-genai rich pyperclip
+curl -fsSL https://raw.githubusercontent.com/dieablo101/gemini-integrated/main/install.sh | bash
 ```
 
-Ensure `gemini-integrated.py` is executable:
+*Or via wget:*
 
 ```bash
-chmod +x gemini-integrated.py
+wget -qO- https://raw.githubusercontent.com/dieablo101/gemini-integrated/main/install.sh | bash
 ```
+
+The installer autonomously downloads the repository archive, creates system links (`gemini-integrated` and `gemini`), and adds `~/.local/bin` to your environment path.
 
 ---
 
-## Usage
+## 🚀 Autonomous First-Boot Experience
 
-Set your Gemini API key and run the script:
+When you boot `gemini-integrated` for the first time:
+
+1. **Autonomous Linux Distro Check & Dependency Resolution**:
+   - Automatically detects your Linux distribution (`/etc/os-release`), supporting **Ubuntu/Debian**, **Fedora/RHEL**, **Arch/Manjaro**, **openSUSE**, **Alpine**, and **Void Linux**.
+   - Inspects essential system binaries (e.g. `git`, `xclip`) and installs missing dependencies via the native package manager (`apt-get`, `dnf`, `pacman`, `zypper`, `apk`).
+2. **Inbuilt `.venv` Creation & Pip Package Installation**:
+   - Automatically verifies or creates an isolated virtual environment (`.venv`).
+   - Automatically bootstraps all required Python dependencies (`textual`, `google-genai`, `rich`, `pyperclip`, `setuptools`, `wheel`, `build`) before launching.
+3. **Interactive API Key Onboarding**:
+   - Prompts you for your **Google Gemini API Key** on first run.
+   - Automatically exports it to your environment (`os.environ`) and persists it to `~/.bashrc`, `~/.zshrc`, `~/.profile`, and `~/.gemini/.env`.
+4. **Project Scaffolding in `~/Projects`**:
+   - Creates a dedicated `~/Projects` workspace in your home directory.
+   - Any project you create or scaffold with Gemini automatically initializes a Git repository, generates a comprehensive `README.md`, and creates an MIT `LICENSE` with **Copyright Kyle Gallagher** (persisted in user state).
+
+---
+
+## 📦 Pip Package Installation
+
+`gemini-integrated` is packaged as a standard Python package. You can install it directly using `pip`:
 
 ```bash
-export GEMINI_API_KEY="your-api-key-here"
-./gemini-integrated.py
+# Clone and install in editable development mode:
+git clone https://github.com/dieablo101/gemini-integrated.git
+cd gemini-integrated
+pip install -e .
+
+# Or build the wheel and install:
+python3 -m pip install build
+python3 -m build
+pip install dist/*.whl
 ```
 
-### Remote Code Insertion (from Bash / External Tools)
-
-You can send text directly to the running application input buffer over the Unix socket:
+Once installed, simply run:
 
 ```bash
-python3 -c '
-import socket, json
-
-payload = {
-    "action": "insert",
-    "text": "def hello():\n    print(\"Hello world\")",
-    "lang": "python",
-    "file": "test.py",
-    "start_line": 1,
-    "end_line": 2
-}
-s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-s.connect("/.gemini/gemini_textual.sock")
-s.sendall(json.dumps(payload).encode("utf-8"))
-s.close()
-'
+gemini-integrated
+# or
+gemini
 ```
 
 ---
 
-## File Structure
+## 🛠️ Architecture & Core Systems
+
+### 1. Persistent Cognitive Mind Map & Topological Graph
+- **Bilateral Mind Anchors**: Tracks `GEMINI MIND STATE`, `USER MIND STATE`, and active file/turn anchors (`tree_state`) in persistent memory.
+- **Visual Mind Screen (`C-c m`)**: Full-screen interactive dashboard with live ASCII relation trees, cognitive state inspection, and manual steering / course-correction.
+
+### 2. Tri-Modal Relational Notes Engine
+- **Three Unified Scopes**:
+  - **Gemini Working Notes**: Dynamic operational notes maintained and refined autonomously by Gemini.
+  - **Relational Turn Notes**: Granular notes bound directly to specific conversation turns (`turn_id`).
+  - **Global User Notes**: Persistent references spanning all chats and projects.
+- **Topical Indexing & Memory Maintenance**: Automatic chat scanning, topic grouping, deduplication (`/notes prune`), and archiving (`/notes archive`).
+
+### 3. Project Scaffolding Engine
+- Scaffold full project boilerplates instantly with `/project <name> [desc]` or via bilateral tool calling.
+- Guarantees `git init`, initial commit, `.gitignore`, structured `README.md`, and MIT License with **Copyright Kyle Gallagher**.
+
+### 4. Fast SQLite FTS5 Memory Index (`/recall`)
+- Real-time full-text search indexing across entire chat history, past projects, code snippets, and topical notes.
+- Query instant contextual recollections with `/recall <query>`.
+
+### 5. UI Snapshot Engine & Visual Audits (`C-c ` ` or `/snapshot`)
+- Live bilateral terminal capture: Gemini can inspect its own UI layout, modal states, and visual formatting via text-rendered UI snapshots.
+- Autonomous post-reboot visual audits on application launch.
+
+### 6. Crash Guardian & Autonomous Git Rollback
+- Self-healing supervision wraps the Textual event loop. If an unhandled exception or bad patch occurs during a reboot or migration, the Guardian automatically performs a git rollback to the last verified stable commit and restarts cleanly.
+
+### 7. Conversational Branching (Forking `C-c .`)
+- Select any subset of messages from a conversation and fork them into a brand-new chat branch with ancestor tracking.
+
+### 8. Emacs Client & Unix Socket IPC
+- **Unix Domain Socket** (`~/.gemini/gemini_textual.sock`): External tools, scripts, or IDEs can inject code snippets directly into the active prompt buffer.
+- **Emacs Interop (`C-c e`)**: Seamlessly push code blocks directly into active Emacs buffers and frames via `emacsclient`.
+
+---
+
+## ⌨️ Keybindings & Shortcuts
+
+| Keybinding | Action |
+| :--- | :--- |
+| `C-c c` | Open Keyboard Shortcuts Cheat Sheet |
+| `C-c m` | Open Cognitive Mind Map & Steering Screen |
+| `C-c [` | Toggle Tri-Modal Notes Panel |
+| `C-c .` | Toggle Chat Forking / Branching Selection |
+| `C-c r` | Save Active Snippet to Disk |
+| `C-c f` | Insert File from Disk into Prompt |
+| `C-c g` | Open Git Tree Explorer & File Multi-Selector |
+| `C-c e` | Send Active Snippet to Emacs Buffer |
+| `C-c w` | Copy Active Snippet to Clipboard |
+| `C-c y` | Yank Clipboard Text into Input Buffer |
+| `C-c t` | Set Section / Active Work Task Title |
+| `C-c ` ` | Capture UI Snapshot (held for Gemini review) |
+| `Ctrl + q` | Clean Exit & Session State Save |
+
+### Slash Commands
+
+- `/project <name> [desc]`: Scaffold a new project under `~/Projects`
+- `/projects`: List existing projects
+- `/theme <name>`: Switch visual color theme (`red`, `blue`, `green`, `orange`, `purple`, `yellow`, `pink`)
+- `/notes [prune|archive|unarchive|stats]`: Manage, deduplicate, and archive topical notes
+- `/snapshot [label]`: Capture UI snapshot
+- `/snapshots`: Review held snapshots index
+- `/recall <query>`: Fast search across all historical turns and archived projects
+- `/diff`: View git working tree status and diff summary
+- `/tokens`: Display word and approximate token consumption metrics
+- `/reboot`: Perform an immediate clean in-place restart
+- `/clear`: Clear the active chat runway
+- `/help`: Show command cheat sheet
+
+---
+
+## 📁 Repository Structure
 
 ```text
-├── gemini-integrated.py  # Main application executable
-└── chats/                # Conversation sessions stored as JSON
-    ├── <id>.json
-    └── ...
+├── gemini-integrated.py    # Autonomous boot runner and environment validator
+├── install.sh              # 1-line remote curl/wget installer
+├── pyproject.toml          # PEP 517/621 Python package configuration
+├── setup.py                # Setuptools build script
+├── init.el                 # Emacs bilateral integration script
+├── README.md               # Application documentation
+├── screenshots/            # Visual SVG screenshots
+└── gemini_app/             # Modular application package
+    ├── config.py           # Paths, themes, breakpoints, and constants
+    ├── projects.py         # Autonomous project scaffolding engine (Copyright Kyle Gallagher)
+    ├── system_deps.py      # Linux OS detector and package manager dependency installer
+    ├── onboarding.py       # API key prompt and environment variable persistence
+    ├── events.py           # Message bus and event definitions
+    ├── helpers.py          # ASCII trees, syntax detectors, raycast algorithms
+    ├── main.py             # Application entry point protected by Crash Guardian
+    ├── mind/               # Cognitive mind map parser and interactive screen
+    ├── storage/            # Dual storage, memory index, notes manager, rollback guardian
+    ├── tools/              # Gemini SDK tool registry, shell execution, snapshots, workspace
+    └── ui/                 # Textual application, boot screen, modal dialogs, custom widgets
 ```
-
-## Emacs Integration Setup (Optional)
-
-To enable seamless round-trip sending between Emacs and this application:
-
-### 1. Send selected text from Emacs to Gemini Client
-
-Add the Elisp `init.el` to your .d.emacs folder for flawless victory.
-- ctrl + c then g then i, in emacs to send marked text to this app from emacs.
 
 ---
 
-This program was written by the gemini API.
+### 🤖 Created with Neural Precision & Bilateral Sync by Gemini ✨
+*This software was autonomously designed, architected, and brought to life with 💖 and precision by **Gemini** (Google AI).*

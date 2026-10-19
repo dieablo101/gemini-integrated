@@ -1,13 +1,14 @@
-"""Workspace tools: directory tree inspection, file writing, patching, and codebase search."""
+"""Workspace tools: directory tree inspection, file writing, patching, codebase search, and project scaffolding."""
 
 import fnmatch
 import os
 from pathlib import Path
 import re
 import subprocess
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List, Optional, Union
 
 from gemini_app.helpers import build_ascii_tree, get_git_files_catalog
+from gemini_app.projects import scaffold_project as _scaffold_project
 
 
 def scan_workspace_tree(
@@ -143,3 +144,18 @@ def search_codebase(
         }
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+
+def scaffold_project(
+    name: str,
+    description: str = "",
+    realname: str = "",
+    git_init: bool = True,
+) -> Dict[str, Any]:
+    """Scaffolds a new project under ~/Projects with Git, README.md, and MIT LICENSE (Copyright Kyle Gallagher unless otherwise specified)."""
+    return _scaffold_project(
+        name=name,
+        description=description,
+        realname=realname if realname else None,
+        git_init=git_init,
+    )

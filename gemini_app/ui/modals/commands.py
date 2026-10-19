@@ -120,6 +120,9 @@ class CommandsModal(ResponsiveModalScreen[None]):
             yield Label("Clicking any [bold]T#<num>[/] chip jumps 10-card slider directly to that note", classes="cmd_row")
 
             yield Label("Slash Commands:", classes="cmd_section_title")
+            yield Label("[bold]/api-key[/]          : Configure / update Google Gemini API key", classes="cmd_row")
+            yield Label("[bold]/scaffold <name>[/]  : Scaffold new project in ~/Projects with Git & License", classes="cmd_row")
+            yield Label("[bold]/sys-deps[/]         : Check & install missing Linux system dependencies", classes="cmd_row")
             yield Label("[bold]/title <task>[/]   : Set active work title dynamically", classes="cmd_row")
             yield Label("[bold]/snapshot <name>[/] : Take permanent named UI snapshot (saved to disk)", classes="cmd_row")
             yield Label("[bold]/snapshots[/]        : View count and list of held snapshots", classes="cmd_row")

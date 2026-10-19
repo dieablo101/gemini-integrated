@@ -282,6 +282,18 @@ class TestTools(unittest.TestCase):
         self.assertEqual(ui_res["target"], "feed")
         self.assertEqual(ui_res["palette"], "purple")
 
+        # Test interact_ui with pulse_nav target
+        nav_res = tools_dict["interact_ui"](
+            action="pulse_nav",
+            target="edge",
+            palette="green",
+            duration=2.0,
+            message="At the edge / top of stream!",
+        )
+        self.assertEqual(nav_res["status"], "success")
+        self.assertEqual(nav_res["action"], "pulse_nav")
+        self.assertEqual(nav_res["target"], "edge")
+
 
 if __name__ == "__main__":
     unittest.main()

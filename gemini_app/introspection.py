@@ -61,6 +61,8 @@ def get_tier_1_visual(app: Any) -> Dict[str, Any]:
             "notes_panel_open": notes_open,
             "focused_widget_id": focused_id,
             "focused_widget_type": focused_type,
+            "nav_indicator_action": getattr(app, "_nav_indicator_action", None),
+            "nav_indicator_palette": getattr(app, "_nav_indicator_palette", None),
         },
     }
 
@@ -231,6 +233,41 @@ def apply_accent_talk(
                 "message": f"Global theme pulsed to '{pal_clean}' for {duration:.1f}s.",
             }
 
+    # Navbar navigation item triggers (e.g. edge, cards, snippets, mind, fork)
+    nav_targets = (
+        "edge",
+        "edge_home",
+        "edge_end",
+        "cards",
+        "snippets",
+        "mind",
+        "fork",
+        "scroll",
+        "viewport",
+    )
+    if target_clean in nav_targets:
+        nav_action = target_clean
+        if nav_action == "scroll":
+            nav_action = "scroll_down"
+        elif nav_action == "viewport":
+            nav_action = "page_down"
+
+        if hasattr(app, "trigger_nav_indicator"):
+            app.trigger_nav_indicator(
+                nav_action, toast_message=message, palette=pal_clean, duration=duration
+            )
+
+        return {
+            "status": "success",
+            "target": target_clean,
+            "palette": pal_clean,
+            "accent": accent,
+            "duration": duration,
+            "message": f"Navbar indicator '{target_clean}' pulsed with '{pal_clean}' ({accent})"
+            + (f" for {duration:.1f}s" if duration > 0 else "")
+            + (f": {message}" if message else "."),
+        }
+
     # Targeted accent shifts
     widget_selector_map = {
         "feed": "#feed",
@@ -239,11 +276,15 @@ def apply_accent_talk(
         "footer": "#custom_footer",
         "preview": "#snippet_preview",
         "status": "#feed_status",
+        "navbar": "#feed_nav_banner",
+        "nav": "#feed_nav_banner",
     }
 
     selector = widget_selector_map.get(target_clean)
     if not selector:
-        valid_targets = ", ".join(list(widget_selector_map.keys()) + ["all", "theme", "mind"])
+        valid_targets = ", ".join(
+            list(widget_selector_map.keys()) + list(nav_targets) + ["all", "theme", "mind"]
+        )
         return {
             "status": "error",
             "message": f"Unknown target '{target}'. Available targets: {valid_targets}",
@@ -253,16 +294,28 @@ def apply_accent_talk(
     try:
         widgets = list(app.query(selector)) if hasattr(app, "query") else []
         for w in widgets:
-            w.styles.border = ("round", accent)
-            applied = True
+            if getattr(w, "id", None) == "feed_nav_banner":
+                orig_color = w.styles.color
+                w.styles.color = accent
+                applied = True
+                if duration > 0 and hasattr(app, "set_timer"):
+                    def _reset_nav(target_widget=w, prev_c=orig_color):
+                        try:
+                            target_widget.styles.color = prev_c
+                        except Exception:
+                            pass
+                    app.set_timer(duration, _reset_nav)
+            else:
+                w.styles.border = ("round", accent)
+                applied = True
 
-            if duration > 0 and hasattr(app, "set_timer"):
-                def _reset_border(target_widget=w):
-                    try:
-                        target_widget.styles.border = None
-                    except Exception:
-                        pass
-                app.set_timer(duration, _reset_border)
+                if duration > 0 and hasattr(app, "set_timer"):
+                    def _reset_border(target_widget=w):
+                        try:
+                            target_widget.styles.border = None
+                        except Exception:
+                            pass
+                    app.set_timer(duration, _reset_border)
 
         if message and hasattr(app, "notify"):
             app.notify(f"[{accent}]{message}[/]", timeout=max(2.0, duration))

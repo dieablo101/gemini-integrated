@@ -214,6 +214,7 @@ class ChatApp(App):
         self._reconnect_max_retries: int = 0
 
         self._nav_indicator_action: str | None = None
+        self._nav_indicator_palette: str | None = None
         self._nav_indicator_timer: Timer | None = None
 
         self._commands_registry: dict[str, Callable[[str], None]] = {
@@ -478,17 +479,33 @@ class ChatApp(App):
             valid_themes = ", ".join(THEMES.keys())
             self.notify(f"Invalid theme '{arg}'. Choose from: {valid_themes}", severity="error")
 
-    def trigger_nav_indicator(self, action: str) -> None:
+    def trigger_nav_indicator(
+        self,
+        action: str,
+        toast_message: str = "",
+        palette: str = "",
+        duration: float = 0.35,
+    ) -> None:
         self._nav_indicator_action = action
+        self._nav_indicator_palette = palette or None
         self.update_feed_nav_banner()
+
+        if toast_message:
+            accent = (
+                THEMES.get(palette, {}).get("accent", self.accent_color)
+                if palette
+                else self.accent_color
+            )
+            self.notify(f"[{accent}]{toast_message}[/]", timeout=max(1.5, duration))
 
         if self._nav_indicator_timer:
             self._nav_indicator_timer.stop()
 
-        self._nav_indicator_timer = self.set_timer(0.20, self._clear_nav_indicator)
+        self._nav_indicator_timer = self.set_timer(duration, self._clear_nav_indicator)
 
     def _clear_nav_indicator(self) -> None:
         self._nav_indicator_action = None
+        self._nav_indicator_palette = None
         self._nav_indicator_timer = None
         self.update_feed_nav_banner()
 
@@ -603,6 +620,7 @@ class ChatApp(App):
         self.push_screen(CommandsModal())
 
     def action_open_mind_map(self) -> None:
+        self.trigger_nav_indicator("mind")
         if isinstance(self.screen, MindMapScreen):
             self.pop_screen()
             return
@@ -705,7 +723,13 @@ class ChatApp(App):
             feed = self.query_one("#feed", FeedArea)
 
             avail_w = self.size.width - 2 if self.size and self.size.width > 2 else 78
-            accent = self.accent_color
+            base_accent = self.accent_color
+            pal_name = getattr(self, "_nav_indicator_palette", None) or ""
+            indicator_accent = (
+                THEMES.get(pal_name, {}).get("accent", base_accent)
+                if pal_name
+                else base_accent
+            )
 
             if feed.fork_ui_active:
                 banner.add_class("fork-active")
@@ -720,22 +744,52 @@ class ChatApp(App):
                 content = self._render_flow_nav_banner(items, sep_markup, sep_plain, avail_w)
             else:
                 banner.remove_class("fork-active")
-                sep_markup = f"[not bold {accent}]|[/]"
+                sep_markup = f"[not bold {base_accent}]|[/]"
                 sep_plain = "|"
 
-                up_scroll = f"[bold {accent}]↑[/]" if self._nav_indicator_action == "scroll_up" else "↑"
-                dn_scroll = f"[bold {accent}]↓[/]" if self._nav_indicator_action == "scroll_down" else "↓"
-                up_page = f"[bold {accent}]↑[/]" if self._nav_indicator_action == "page_up" else "↑"
-                dn_page = f"[bold {accent}]↓[/]" if self._nav_indicator_action == "page_down" else "↓"
+                up_scroll = f"[bold {indicator_accent}]↑[/]" if self._nav_indicator_action == "scroll_up" else "↑"
+                dn_scroll = f"[bold {indicator_accent}]↓[/]" if self._nav_indicator_action == "scroll_down" else "↓"
+                up_page = f"[bold {indicator_accent}]↑[/]" if self._nav_indicator_action == "page_up" else "↑"
+                dn_page = f"[bold {indicator_accent}]↓[/]" if self._nav_indicator_action == "page_down" else "↓"
+
+                if self._nav_indicator_action == "edge_home":
+                    edge_item = f"[bold {indicator_accent} reverse] Home [/]/End: Edge"
+                elif self._nav_indicator_action == "edge_end":
+                    edge_item = f"Home/[bold {indicator_accent} reverse] End [/]: Edge"
+                elif self._nav_indicator_action in ("edge", "edge_all"):
+                    edge_item = f"[bold {indicator_accent} reverse] Home/End: Edge [/]"
+                else:
+                    edge_item = "Home/End: Edge"
+
+                cards_item = (
+                    f"[bold {indicator_accent} reverse] PgUp/PgDn: Cards [/]"
+                    if self._nav_indicator_action == "cards"
+                    else "PgUp/PgDn: Cards"
+                )
+                snippets_item = (
+                    f"[bold {indicator_accent} reverse] M-n/M-p: Snippets [/]"
+                    if self._nav_indicator_action == "snippets"
+                    else "M-n/M-p: Snippets"
+                )
+                mind_item = (
+                    f"[bold {indicator_accent} reverse] C-c m: Mind [/]"
+                    if self._nav_indicator_action == "mind"
+                    else "C-c m: Mind"
+                )
+                fork_item = (
+                    f"[bold {indicator_accent} reverse] C-c .: Fork [/]"
+                    if self._nav_indicator_action == "fork"
+                    else "C-c .: Fork"
+                )
 
                 items = [
                     f"{up_scroll}/{dn_scroll}: Scroll",
                     f"Shift+{up_page}/{dn_page}: Viewport",
-                    "PgUp/PgDn: Cards",
-                    "Home/End: Edge",
-                    "M-n/M-p: Snippets",
-                    "C-c m: Mind",
-                    "C-c .: Fork",
+                    cards_item,
+                    edge_item,
+                    snippets_item,
+                    mind_item,
+                    fork_item,
                 ]
                 content = self._render_flow_nav_banner(items, sep_markup, sep_plain, avail_w)
 
@@ -2717,6 +2771,17 @@ class ChatApp(App):
                     apply_accent_talk(self, target=target, palette=palette, duration=duration, message=message)
                 self.app.call_from_thread(_do_accent)
                 return {"status": "success", "target": target, "palette": palette, "duration": duration}
+            elif act in ("pulse_nav", "nav", "flash_nav"):
+                def _do_nav_pulse():
+                    apply_accent_talk(
+                        self,
+                        target=target if target != "all" else "edge",
+                        palette=palette,
+                        duration=duration,
+                        message=message,
+                    )
+                self.app.call_from_thread(_do_nav_pulse)
+                return {"status": "success", "action": "pulse_nav", "target": target, "palette": palette, "duration": duration}
             elif act in ("animate_mind", "mind_anim", "mind"):
                 def _do_anim():
                     start_mind_animation(self, effect=effect, palette=palette, duration=duration, message=message)
@@ -2813,7 +2878,7 @@ class ChatApp(App):
             f"12. `scaffold_project(project_name='...', description='...', author='...'): Scaffolds a new project directory in ~/Projects.\n"
             f"13. `manage_system_dependencies(action='check'|'install'|'ensure'|'detect', packages=[...]): Inspects and manages system packages.\n"
             f"14. `introspect_console(tier='all'|'visual'|'runtime'|'workflow'): Inspects live console state across visual layout, runtime environment, and workflow anchors.\n"
-            f"15. `interact_ui(action='set_theme'|'accent_talk'|'animate_mind'|'inspect', target='feed'|'mind'|'notes'|'input'|'footer'|'all', palette='...', effect='sparkle'|'pulse'|'wave'|'synapse'|'glow', duration=3.0, message='...'): Talk through theme accents on the fly or animate the Mind screen.\n\n"
+            f"15. `interact_ui(action='set_theme'|'accent_talk'|'pulse_nav'|'animate_mind'|'inspect', target='feed'|'mind'|'notes'|'input'|'footer'|'navbar'|'edge'|'cards'|'snippets'|'fork'|'all', palette='...', effect='sparkle'|'pulse'|'wave'|'synapse'|'glow', duration=3.0, message='...'): Talk through theme accents, pulse navbar navigation items (edge/cards/snippets/fork), or animate the Mind screen.\n\n"
             f"### UI SNAPSHOT RETENTION & VALIDATION PROTOCOL\n"
             f"• Snapshot Retention Rules:\n"
             f"  - Snapshots captured via command with a name (`/snapshot <name>`) are saved permanently to disk without deleting them.\n"

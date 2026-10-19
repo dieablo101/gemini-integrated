@@ -141,3 +141,21 @@ class TestUIApp(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(app.history), 1)
             self.assertEqual(app.history[0]["role"], "model")
             self.assertIn("✓ Test Reboot Complete: 100% operational.", app.history[0]["text"])
+
+    async def test_nav_indicator_and_accent_talk(self):
+        from gemini_app.introspection import apply_accent_talk
+        app = ChatApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("space")
+
+            # Test direct trigger_nav_indicator
+            app.trigger_nav_indicator("edge_home", toast_message="▲ Test edge top", duration=0.2)
+            self.assertEqual(app._nav_indicator_action, "edge_home")
+            banner = app.query_one("#feed_nav_banner", Static)
+            self.assertIn("Home", str(banner.content))
+
+            # Test apply_accent_talk with nav indicator target
+            res = apply_accent_talk(app, target="edge", palette="green", duration=0.2, message="At the edge!")
+            self.assertEqual(res["status"], "success")
+            self.assertEqual(res["target"], "edge")
+            self.assertEqual(app._nav_indicator_action, "edge")

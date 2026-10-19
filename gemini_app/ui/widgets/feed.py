@@ -537,6 +537,9 @@ class FeedArea(VerticalScroll):
         if not total or self.is_locked():
             return
 
+        if hasattr(self.app, "trigger_nav_indicator"):
+            self.app.trigger_nav_indicator("cards")
+
         target_idx = max(0, min(total - 1, self.active_turn_index + delta))
         if target_idx == self.active_turn_index:
             return
@@ -675,6 +678,10 @@ class FeedArea(VerticalScroll):
             return
         self.highlight_card(0, scroll=False)
         self._run_target_mutation("jump_home")
+        if hasattr(self.app, "trigger_nav_indicator"):
+            self.app.trigger_nav_indicator(
+                "edge_home", toast_message="▲ Jumped to top of stream (Home)", duration=1.5
+            )
 
     def jump_to_end(self) -> None:
         if self.is_locked():
@@ -682,6 +689,10 @@ class FeedArea(VerticalScroll):
         last_idx = max(0, len(self._all_messages) - 1)
         self.highlight_card(last_idx, scroll=False)
         self._run_target_mutation("jump_end")
+        if hasattr(self.app, "trigger_nav_indicator"):
+            self.app.trigger_nav_indicator(
+                "edge_end", toast_message="▼ Jumped to bottom of stream (End)", duration=1.5
+            )
 
     def jump_to_turn(self, turn_idx: int) -> None:
         """Navigates the 10-card slider directly to the specified turn index."""
@@ -767,6 +778,8 @@ class FeedArea(VerticalScroll):
         return visible
 
     def navigate_snippet(self, delta: int) -> None:
+        if hasattr(self.app, "trigger_nav_indicator"):
+            self.app.trigger_nav_indicator("snippets")
         visible = self._get_visible_fences()
         if not visible:
             self.app.notify("No selectable snippet on screen", timeout=1.5)
@@ -811,6 +824,8 @@ class FeedArea(VerticalScroll):
 
     def toggle_fork_ui(self) -> None:
         self.fork_ui_active = not self.fork_ui_active
+        if hasattr(self.app, "trigger_nav_indicator"):
+            self.app.trigger_nav_indicator("fork")
         if self.fork_ui_active:
             self.add_class("fork-ui-active")
         else:

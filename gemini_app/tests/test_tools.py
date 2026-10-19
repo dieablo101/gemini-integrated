@@ -6,8 +6,9 @@ import subprocess
 import tempfile
 import unittest
 
+from gemini_app.storage.memory_index import MemoryIndex
 from gemini_app.tools.execution import execute_shell
-from gemini_app.tools.mind_tools import expand_mind
+from gemini_app.tools.mind_tools import expand_mind, recall_memory
 from gemini_app.tools.registry import ToolRegistry
 from gemini_app.tools.workspace import (
     apply_patch,
@@ -30,6 +31,8 @@ class TestTools(unittest.TestCase):
         # Initialize git repo for tree scanning
         subprocess.run(["git", "init"], cwd=str(self.work_dir), capture_output=True)
         subprocess.run(["git", "add", "."], cwd=str(self.work_dir), capture_output=True)
+
+        self.memory_index = MemoryIndex(self.work_dir / "mem.db")
 
     def tearDown(self):
         self.temp_dir.cleanup()
@@ -89,6 +92,7 @@ class TestTools(unittest.TestCase):
             history,
             turn_numbers=[1, 2],
             file_paths=["README.md"],
+            memory_index=self.memory_index,
         )
         self.assertIn("T1", result["turns"])
         self.assertEqual(result["turns"]["T1"]["content"], "Turn 1 content")
@@ -96,6 +100,24 @@ class TestTools(unittest.TestCase):
         self.assertEqual(result["turns"]["T2"]["content"], "Turn 2 content")
         self.assertIn("README.md", result["files"])
         self.assertIn("# Test Repo", result["files"]["README.md"])
+
+    def test_recall_memory(self):
+        self.memory_index.index_turn(
+            turn_id="tid_42",
+            chat_id="chat_proj_x",
+            turn_number=7,
+            role="user",
+            content="We built a custom AST parser in Cython",
+            title="AST Cython Engine",
+        )
+        rec = recall_memory(
+            query="Cython parser",
+            max_results=5,
+            memory_index=self.memory_index,
+        )
+        self.assertEqual(rec["matches_count"], 1)
+        self.assertEqual(rec["matches"][0]["turn_id"], "tid_42")
+        self.assertEqual(rec["matches"][0]["title"], "AST Cython Engine")
 
     def test_expand_mind_limit(self):
         history = []
@@ -118,12 +140,14 @@ class TestTools(unittest.TestCase):
             history=history,
             phase_callback=on_phase,
             reboot_callback=lambda d: {"status": "scheduled", "delay": d},
+            memory_index=self.memory_index,
         )
         tools_list, tools_dict = registry.get_tool_callables()
 
-        self.assertEqual(len(tools_list), 9)
+        self.assertEqual(len(tools_list), 10)
         self.assertIn("scan_workspace_tree", tools_dict)
         self.assertIn("expand_mind", tools_dict)
+        self.assertIn("recall_memory", tools_dict)
         self.assertIn("write_file", tools_dict)
         self.assertIn("apply_patch", tools_dict)
         self.assertIn("search_codebase", tools_dict)
@@ -150,6 +174,7 @@ class TestTools(unittest.TestCase):
             working_dir=self.work_dir,
             history=history,
             reboot_callback=lambda d, r="": {"status": "scheduled", "delay": d, "report": r},
+            memory_index=self.memory_index,
         )
         _, dict2 = registry2.get_tool_callables()
         r_res2 = dict2["reboot_console"](delay_seconds=1.0, status_report="Console Ready")

@@ -88,6 +88,7 @@ from gemini_app.events import (
     RequestPhaseUpdate,
 )
 from gemini_app.mind.screen import MindMapScreen
+from gemini_app.storage.memory_index import MemoryIndex
 from gemini_app.tools.registry import ToolRegistry
 from gemini_app.tools.snapshots import capture_ui_snapshot, cleanup_stale_ephemerals, list_held_snapshots
 from gemini_app.ui.modals import (
@@ -136,6 +137,7 @@ class ChatApp(App):
         super().__init__()
         self.client = genai.Client()
         self.lock = AppLockController(self)
+        self.memory_index = MemoryIndex()
 
         self.active_palette_name: str = DEFAULT_PALETTE
         self.current_chat_id: str = ""
@@ -700,6 +702,9 @@ class ChatApp(App):
         self.update_feed_nav_banner()
         self._update_footer_markup()
         self.query_one("#input").focus()
+
+        # Background index all historical chats into SQLite FTS5 Memory Index
+        asyncio.create_task(asyncio.to_thread(self.memory_index.index_all_existing_chats))
 
         reboot_report = self._read_and_clear_reboot_report()
         if reboot_report:
@@ -1516,6 +1521,22 @@ class ChatApp(App):
 
         self._save_to_state("active_chat", self.current_chat_id)
 
+        # Incrementally index newly added turns into SQLite FTS5 Memory Index
+        if self.history:
+            last_turn = self.history[-1]
+            try:
+                self.memory_index.index_turn(
+                    turn_id=last_turn.get("turn_id", ""),
+                    chat_id=self.current_chat_id,
+                    turn_number=len(self.history),
+                    role=last_turn.get("role", "user"),
+                    content=last_turn.get("text", ""),
+                    project_dir=self.current_chat_working_dir,
+                    title=self.current_chat_title,
+                )
+            except Exception:
+                pass
+
     async def delete_highlighted_chat(self) -> None:
         history_widget = self.query_one("#history", HistoryList)
         if history_widget.highlighted is None or history_widget.option_count == 0:
@@ -2213,6 +2234,23 @@ class ChatApp(App):
                 self.notify(f"Git diff error: {e}", severity="error")
             return True
 
+        elif verb in ("recall", "memory"):
+            if not arg:
+                self.notify("Usage: /recall <search terms>", severity="warning")
+                return True
+            matches = self.memory_index.search(arg, limit=5)
+            if not matches:
+                self.notify(f"No memory matches for '{arg}'.", timeout=3.0)
+            else:
+                lines = [f"### Fast Memory Matches for '{arg}':"]
+                for m in matches:
+                    role_str = m.get("role", "user")
+                    t_num = m.get("turn_number", 0)
+                    t_title = m.get("title") or m.get("chat_id")
+                    lines.append(f"- **Turn #{t_num}** ({role_str}) in *{t_title}*:\n  > {m.get('snippet')}")
+                self.call_after_refresh(lambda: self.append_to_feed("system", "\n".join(lines), jump_to_start=False))
+            return True
+
         elif verb in ("tokens", "stats"):
             total_words = sum(len(m.get("text", "").split()) for m in self.history)
             approx_tokens = int(total_words * 1.33)
@@ -2355,6 +2393,7 @@ class ChatApp(App):
             phase_callback=lambda p: self.app.call_from_thread(self.post_message, RequestPhaseUpdate(p)),
             reboot_callback=_schedule_reboot,
             snapshot_callback=_schedule_snapshot,
+            memory_index=self.memory_index,
         )
         tools_list, available_tools = tool_reg.get_tool_callables()
 
@@ -2406,14 +2445,15 @@ class ChatApp(App):
             f"### EXPANSION CAPABILITIES\n"
             f"You have tools available to inspect the environment, write files, and execute commands:\n"
             f"1. `scan_workspace_tree(include_ignored=True)`: Survey directory structure and dependencies.\n"
-            f"2. `expand_mind(turn_numbers=[...], file_paths=[...])`: Pull up to 50 items (turns or files) into thought memory.\n"
-            f"3. `write_file(path='...', content='...')`: Write or overwrite a file directly on disk.\n"
-            f"4. `apply_patch(path='...', search_block='...', replace_block='...')`: Apply a surgical unique find-and-replace patch.\n"
-            f"5. `search_codebase(query='...', path_pattern='*', max_matches=50)`: Search workspace files for text or regex pattern.\n"
-            f"6. `execute_shell(command='...', timeout_seconds=60)`: Run shell commands (e.g. tests, linters, python scripts).\n"
-            f"7. `reboot_console(delay_seconds=1.5, status_report='...')`: Restarts the console application cleanly in place when requested by the user or following code updates.\n"
-            f"8. `take_snapshot(label='...')`: Captures a live UI snapshot of the console application on Gemini's end, indexed and held.\n"
-            f"9. `review_snapshots(snapshot_ids=[...], only_held=True, count=5)`: Reviews UI snapshots captured by the user or Gemini, returning reconstructed screen text and layout metadata.\n\n"
+            f"2. `expand_mind(turn_numbers=[...], file_paths=[...], turn_ids=[...])`: Pull up to 50 items (turns or files) into thought memory.\n"
+            f"3. `recall_memory(query='...', max_results=10)`: Fast indexed retrieval across entire conversational history, archived projects, and past discussions.\n"
+            f"4. `write_file(path='...', content='...')`: Write or overwrite a file directly on disk.\n"
+            f"5. `apply_patch(path='...', search_block='...', replace_block='...')`: Apply a surgical unique find-and-replace patch.\n"
+            f"6. `search_codebase(query='...', path_pattern='*', max_matches=50)`: Search workspace files for text or regex pattern.\n"
+            f"7. `execute_shell(command='...', timeout_seconds=60)`: Run shell commands (e.g. tests, linters, python scripts).\n"
+            f"8. `reboot_console(delay_seconds=1.5, status_report='...')`: Restarts the console application cleanly in place when requested by the user or following code updates.\n"
+            f"9. `take_snapshot(label='...')`: Captures a live UI snapshot of the console application on Gemini's end, indexed and held.\n"
+            f"10. `review_snapshots(snapshot_ids=[...], only_held=True, count=5)`: Reviews UI snapshots captured by the user or Gemini, returning reconstructed screen text and layout metadata.\n\n"
             f"### UI SNAPSHOT RETENTION & VALIDATION PROTOCOL\n"
             f"• Snapshot Retention Rules:\n"
             f"  - Snapshots captured via command with a name (`/snapshot <name>`) are saved permanently to disk without deleting them.\n"

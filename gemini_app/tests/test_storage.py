@@ -1,4 +1,4 @@
-"""Unit tests for ChatStore and ForkEngine."""
+"""Unit tests for ChatStore, ForkEngine, and MemoryIndex."""
 
 import json
 import tempfile
@@ -7,6 +7,7 @@ from pathlib import Path
 
 from gemini_app.storage.chat_store import ChatStore
 from gemini_app.storage.fork_engine import ForkEngine
+from gemini_app.storage.memory_index import MemoryIndex
 
 
 class TestStorage(unittest.TestCase):
@@ -16,12 +17,14 @@ class TestStorage(unittest.TestCase):
         self.chats_dir = self.base / "chats"
         self.archive_dir = self.chats_dir / ".archive"
         self.state_file = self.base / "state.json"
+        self.memory_db = self.base / "memory.db"
         self.store = ChatStore(
             chats_dir=self.chats_dir,
             archive_dir=self.archive_dir,
             state_file=self.state_file,
         )
         self.fork_engine = ForkEngine(self.store)
+        self.memory_index = MemoryIndex(self.memory_db)
 
     def tearDown(self):
         self.tmp_dir.cleanup()
@@ -141,6 +144,59 @@ class TestStorage(unittest.TestCase):
         self.store.save_state_key("active_chat", "abc_123")
         state = self.store.load_state()
         self.assertEqual(state.get("active_chat"), "abc_123")
+
+    def test_memory_index_turn_and_search(self):
+        self.memory_index.index_turn(
+            turn_id="turn_test_1",
+            chat_id="chat_arch_1",
+            turn_number=1,
+            role="user",
+            content="Building a supersonic rocket engine with Python",
+            project_dir="/opt/rocket",
+            title="Rocket Propulsion",
+        )
+        self.memory_index.index_turn(
+            turn_id="turn_test_2",
+            chat_id="chat_arch_1",
+            turn_number=2,
+            role="model",
+            content="Use liquid methane and oxygen staged combustion cycle.",
+            project_dir="/opt/rocket",
+            title="Rocket Propulsion",
+        )
+
+        # Fast search query
+        matches = self.memory_index.search("combustion")
+        self.assertEqual(len(matches), 1)
+        self.assertEqual(matches[0]["turn_id"], "turn_test_2")
+        self.assertEqual(matches[0]["role"], "model")
+        self.assertIn("combustion", matches[0]["content"])
+
+        # Multiple token search
+        matches_multi = self.memory_index.search("rocket engine")
+        self.assertGreaterEqual(len(matches_multi), 1)
+        self.assertEqual(matches_multi[0]["turn_id"], "turn_test_1")
+
+    def test_memory_index_all_existing_chats(self):
+        # Create a mock legacy json file in self.chats_dir
+        mock_legacy = self.chats_dir / "legacy_project.json"
+        mock_legacy.write_text(json.dumps({
+            "id": "legacy_project",
+            "title": "Quantum Computing",
+            "working_dir": "/opt/quantum",
+            "messages": [
+                {"turn_id": "q1", "role": "user", "text": "How do qubits maintain superposition?"},
+                {"turn_id": "q2", "role": "model", "text": "Through quantum state isolation and cryogenic cooling."},
+            ]
+        }), encoding="utf-8")
+
+        total = self.memory_index.index_all_existing_chats(self.chats_dir)
+        self.assertEqual(total, 2)
+
+        results = self.memory_index.search("cryogenic")
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["turn_id"], "q2")
+        self.assertEqual(results[0]["title"], "Quantum Computing")
 
 
 if __name__ == "__main__":

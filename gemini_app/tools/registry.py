@@ -3,8 +3,12 @@
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
+from gemini_app.storage.memory_index import MemoryIndex
 from gemini_app.tools.execution import execute_shell as _execute_shell
-from gemini_app.tools.mind_tools import expand_mind as _expand_mind
+from gemini_app.tools.mind_tools import (
+    expand_mind as _expand_mind,
+    recall_memory as _recall_memory,
+)
 from gemini_app.tools.snapshots import review_held_snapshots as _review_held_snapshots
 from gemini_app.tools.workspace import (
     apply_patch as _apply_patch,
@@ -24,12 +28,14 @@ class ToolRegistry:
         phase_callback: Optional[Callable[[str], None]] = None,
         reboot_callback: Optional[Callable[..., Dict[str, Any]]] = None,
         snapshot_callback: Optional[Callable[[str], Dict[str, Any]]] = None,
+        memory_index: Optional[MemoryIndex] = None,
     ) -> None:
         self.working_dir = working_dir
         self.history = history
         self.phase_callback = phase_callback
         self.reboot_callback = reboot_callback
         self.snapshot_callback = snapshot_callback
+        self.memory_index = memory_index or MemoryIndex()
 
     def get_tool_callables(self) -> Tuple[List[Callable], Dict[str, Callable]]:
         """Returns SDK-compatible function callables and a lookup dictionary."""
@@ -38,7 +44,11 @@ class ToolRegistry:
             """Scans the working directory git tree, returning tracked and .gitignore files."""
             return _scan_workspace_tree(self.working_dir, include_ignored=include_ignored)
 
-        def expand_mind(turn_numbers: List[int] = [], file_paths: List[str] = []) -> Dict[str, Any]:
+        def expand_mind(
+            turn_numbers: List[int] = [],
+            file_paths: List[str] = [],
+            turn_ids: List[str] = [],
+        ) -> Dict[str, Any]:
             """Fetches up to 50 items (historical chat turns and local files/dependencies)."""
             if self.phase_callback:
                 self.phase_callback("probing")
@@ -47,6 +57,18 @@ class ToolRegistry:
                 self.history,
                 turn_numbers=turn_numbers,
                 file_paths=file_paths,
+                turn_ids=turn_ids,
+                memory_index=self.memory_index,
+            )
+
+        def recall_memory(query: str, max_results: int = 10) -> Dict[str, Any]:
+            """Fast indexed retrieval across entire conversational history, archived projects, and past discussions."""
+            if self.phase_callback:
+                self.phase_callback("probing")
+            return _recall_memory(
+                query=query,
+                max_results=max_results,
+                memory_index=self.memory_index,
             )
 
         def write_file(path: str, content: str) -> Dict[str, Any]:
@@ -103,6 +125,7 @@ class ToolRegistry:
         tools_list = [
             scan_workspace_tree,
             expand_mind,
+            recall_memory,
             write_file,
             apply_patch,
             search_codebase,
@@ -115,6 +138,7 @@ class ToolRegistry:
         tools_dict = {
             "scan_workspace_tree": scan_workspace_tree,
             "expand_mind": expand_mind,
+            "recall_memory": recall_memory,
             "write_file": write_file,
             "apply_patch": apply_patch,
             "search_codebase": search_codebase,

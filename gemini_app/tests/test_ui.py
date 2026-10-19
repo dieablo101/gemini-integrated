@@ -82,21 +82,45 @@ class TestUIApp(unittest.IsolatedAsyncioTestCase):
     async def test_notes_toggle(self):
         app = ChatApp()
         async with app.run_test(size=(120, 40)) as pilot:
+            # Dismiss boot screen so interval timer stops
+            await pilot.press("space")
             await app.workers.wait_for_complete()
             self.assertFalse(app.notes_open)
+
+            # 1. First toggle open
             app.action_toggle_notes()
             await app.workers.wait_for_complete()
             self.assertTrue(app.notes_open)
 
+            # Verify no worker errors occurred
+            worker_errors = [w.error for w in app.workers if w.error is not None]
+            self.assertEqual(worker_errors, [])
+
+            # 2. Switch filters across modes
+            notes_panel = app.query_one("#notes_panel")
+            for mode in ("relevant", "get_back_to", "think_about", "topics", "working"):
+                notes_panel.switch_filter(mode)
+
+            # 3. Toggle closed
+            app.action_toggle_notes()
+            await app.workers.wait_for_complete()
+            self.assertFalse(app.notes_open)
+
+            # 4. Toggle open again (verifying no duplicate ID collisions on remount)
+            app.action_toggle_notes()
+            await app.workers.wait_for_complete()
+            self.assertTrue(app.notes_open)
+
+            worker_errors = [w.error for w in app.workers if w.error is not None]
+            self.assertEqual(worker_errors, [])
+
     async def test_commands_modal(self):
         app = ChatApp()
         async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
+            await pilot.press("space")
             app.action_open_commands_modal()
-            await pilot.pause()
             self.assertIsInstance(app.screen, CommandsModal)
             app.pop_screen()
-            await pilot.pause()
 
     async def test_reboot_status_report_toast(self):
         app = ChatApp()

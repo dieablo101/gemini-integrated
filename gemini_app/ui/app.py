@@ -198,10 +198,16 @@ class ChatApp(App):
 
     def consume_notes_editor(self) -> None:
         """Consumes text typed into the notes editor by the user into Gemini-managed notes."""
+        if getattr(self, "_consuming_notes", False):
+            return
+        self._consuming_notes = True
         try:
             editor = self.query_one("#notes_editor", NotesEditorArea)
             raw_text = editor.text
             if not raw_text.strip():
+                return
+            # If editor text matches initial rendered template, nothing new was typed by the user
+            if getattr(editor, "_initial_rendered_text", "") and raw_text.strip() == editor._initial_rendered_text.strip():
                 return
             curr_topic = getattr(self, "active_task_title", "") or self.notes_manager.active_topic
             added = self.notes_manager.consume_user_input(
@@ -220,6 +226,8 @@ class ChatApp(App):
                 self.notify("✓ Working notes updated.", timeout=2.0)
         except Exception as e:
             self.notify(f"Error consuming note: {e}", severity="error")
+        finally:
+            self._consuming_notes = False
 
     def schedule_notes_flush(self) -> None:
         if self._notes_flush_timer:

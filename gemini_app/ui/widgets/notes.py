@@ -168,6 +168,23 @@ class NotesEditorArea(EmacsBaseTextArea):
         super()._on_key(event)
 
 
+class TopicChip(Static):
+    """Clickable topic chip for switching active notes context without ID collisions."""
+
+    def __init__(self, topic: str, count: int, is_active: bool = False, **kwargs) -> None:
+        self.topic_name: str = topic
+        active_class = " chip-active" if is_active else ""
+        super().__init__(f"{topic} ({count})", classes=f"note_chip{active_class}", **kwargs)
+
+    def update_topic(self, topic: str, count: int, is_active: bool) -> None:
+        self.topic_name = topic
+        self.update(f"{topic} ({count})")
+        if is_active:
+            self.add_class("chip-active")
+        else:
+            self.remove_class("chip-active")
+
+
 class NotesPanel(Vertical):
     """Unified Gemini-Managed Notes Panel with topic association and cognitive view filters."""
 
@@ -199,7 +216,7 @@ class NotesPanel(Vertical):
         yield NotesEditorArea(id="notes_editor")
 
     def refresh_topic_chips(self) -> None:
-        """Refreshes horizontal topic filter chips from the notes catalog."""
+        """Refreshes horizontal topic filter chips in-place from the notes catalog."""
         app: ChatApp = self.app  # type: ignore
         try:
             chips_row = self.query_one("#notes_chips_row", Horizontal)
@@ -212,21 +229,36 @@ class NotesPanel(Vertical):
             return
 
         topics = manager.get_all_topics()
-        # Remove existing chips
-        for child in list(chips_row.children):
-            if "note_chip" in child.classes:
-                child.remove()
-
         if not topics:
             chips_row.styles.display = "none"
+            for child in list(chips_row.children):
+                if isinstance(child, TopicChip) or "note_chip" in child.classes:
+                    child.remove()
             return
 
         chips_row.styles.display = "block"
-        for t_name, count in topics[:6]:
+        topics_to_show = topics[:6]
+
+        # Purge any legacy non-TopicChip widgets with class note_chip
+        for child in list(chips_row.children):
+            if "note_chip" in child.classes and not isinstance(child, TopicChip):
+                child.remove()
+
+        existing_chips = [c for c in chips_row.children if isinstance(c, TopicChip)]
+
+        # Update existing chips in place to prevent DOM churn and ID collisions
+        for i, (t_name, count) in enumerate(topics_to_show):
             is_active = (t_name == manager.current_topic)
-            active_class = " chip-active" if is_active else ""
-            chip = Static(f"{t_name} ({count})", id=f"chip_topic_{t_name}", classes=f"note_chip{active_class}")
-            chips_row.mount(chip)
+            if i < len(existing_chips):
+                existing_chips[i].update_topic(t_name, count, is_active)
+            else:
+                new_chip = TopicChip(t_name, count, is_active)
+                chips_row.mount(new_chip)
+
+        # Remove any extra chips if topics count reduced
+        if len(existing_chips) > len(topics_to_show):
+            for surplus_chip in existing_chips[len(topics_to_show):]:
+                surplus_chip.remove()
 
     def refresh_related_chips(self) -> None:
         """Compatibility alias for refresh_topic_chips."""
@@ -251,8 +283,8 @@ class NotesPanel(Vertical):
         app: ChatApp = self.app  # type: ignore
         manager = getattr(app, "notes_manager", None)
 
-        # 1. Flush any existing editor changes first
-        app.flush_current_notes(consume_input=True)
+        # 1. Flush any existing editor changes first without re-consuming template as new user notes
+        app.flush_current_notes(consume_input=False)
 
         # 2. Update active filter state
         self.active_filter = new_filter
@@ -356,9 +388,14 @@ class NotesPanel(Vertical):
     @on(events.Click, ".note_chip")
     def on_topic_chip_click(self, event: events.Click) -> None:
         chip = event.widget
-        chip_id = getattr(chip, "id", "")
-        if chip_id and chip_id.startswith("chip_topic_"):
-            target_topic = chip_id.replace("chip_topic_", "").strip()
+        target_topic = getattr(chip, "topic_name", "")
+        if not target_topic:
+            # Fallback for legacy id
+            chip_id = getattr(chip, "id", "") or ""
+            if chip_id.startswith("chip_topic_"):
+                target_topic = chip_id.replace("chip_topic_", "").strip()
+
+        if target_topic:
             app: ChatApp = self.app  # type: ignore
             manager = getattr(app, "notes_manager", None)
             if manager:

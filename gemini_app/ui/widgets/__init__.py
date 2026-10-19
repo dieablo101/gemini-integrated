@@ -1,7 +1,7 @@
 """Custom Textual widgets: FeedArea, TurnCard, Notes, and TextAreas."""
 
 from gemini_app.ui.widgets.feed import FeedArea
-from gemini_app.ui.widgets.notes import NotesEditorArea, NotesPanel
+from gemini_app.ui.widgets.notes import NotesEditorArea, NotesPanel, TopicChip
 from gemini_app.ui.widgets.text_areas import (
     EmacsBaseTextArea,
     ExpandingInput,
@@ -14,6 +14,7 @@ __all__ = [
     "TurnCard",
     "NotesEditorArea",
     "NotesPanel",
+    "TopicChip",
     "EmacsBaseTextArea",
     "SnippetPreview",
     "ExpandingInput",

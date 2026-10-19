@@ -8,9 +8,17 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from gemini_app.onboarding import (
+    ensure_first_time_onboarding,
+    get_git_config,
     get_stored_api_key,
+    get_stored_git_email,
+    get_stored_user_real_name,
+    is_first_boot_pending,
+    mark_onboarding_completed,
     persist_api_key_to_shell,
     save_gemini_api_key,
+    set_git_config,
+    setup_git_credentials,
 )
 from gemini_app.projects import (
     generate_gitignore,
@@ -143,6 +151,34 @@ class TestOnboarding(unittest.TestCase):
             # Check shell persistence
             bashrc_content = self.bashrc.read_text(encoding="utf-8")
             self.assertIn(f'export GEMINI_API_KEY="{test_key}"', bashrc_content)
+
+    def test_setup_git_credentials(self):
+        with patch("gemini_app.onboarding.set_git_config", return_value=True):
+            res = setup_git_credentials(real_name="Alice Dev", email="alice@example.com")
+            self.assertEqual(res["status"], "success")
+            self.assertEqual(res["real_name"], "Alice Dev")
+            self.assertEqual(res["git_email"], "alice@example.com")
+
+            # Check that state.json was updated
+            self.assertTrue(self.state_file.exists())
+            self.assertEqual(get_stored_user_real_name(), "Alice Dev")
+            self.assertEqual(get_stored_git_email(), "alice@example.com")
+
+    def test_is_first_boot_pending_and_completed(self):
+        self.assertTrue(is_first_boot_pending())
+        mark_onboarding_completed()
+        self.assertFalse(is_first_boot_pending())
+
+    def test_ensure_first_time_onboarding_interactive(self):
+        with patch("builtins.input", side_effect=["Bob Coder", "bob@example.com"]):
+            with patch("getpass.getpass", return_value="dummy_key_777"):
+                with patch("gemini_app.onboarding.set_git_config", return_value=True):
+                    with patch("sys.stdin.isatty", return_value=True):
+                        res = ensure_first_time_onboarding(interactive=True)
+                        self.assertEqual(res["real_name"], "Bob Coder")
+                        self.assertEqual(res["git_email"], "bob@example.com")
+                        self.assertTrue(res["api_key_configured"])
+                        self.assertFalse(is_first_boot_pending())
 
 
 class TestToolRegistryExtensions(unittest.TestCase):

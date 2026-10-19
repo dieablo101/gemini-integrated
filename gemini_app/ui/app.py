@@ -117,6 +117,7 @@ from gemini_app.ui.modals import (
     FilePathInput,
     ForkModal,
     FrameSelectModal,
+    GitSetupModal,
     GitTreeModal,
     InsertFileModal,
     ResponsiveModalScreen,
@@ -222,6 +223,8 @@ class ChatApp(App):
             "reboot": lambda arg: self.action_reboot(status_report=arg if arg else None),
             "restart": lambda arg: self.action_reboot(status_report=arg if arg else None),
             "api-key": lambda _: self.action_configure_api_key(),
+            "git-setup": lambda _: self.action_configure_git(),
+            "credentials": lambda _: self.action_configure_git(),
             "scaffold": self._cmd_scaffold_project,
             "new-project": self._cmd_scaffold_project,
             "sys-deps": lambda _: self._cmd_sys_deps(),
@@ -239,8 +242,18 @@ class ChatApp(App):
                     self.notify(f"Client init warning: {e}", severity="warning")
         self.push_screen(ApiKeyModal(), _on_key_submitted)
 
+    def action_configure_git(self) -> None:
+        """Opens GitSetupModal to configure Real Name and Git credentials."""
+        def _on_git_done(res: dict | None) -> None:
+            if res:
+                name = res.get("real_name")
+                if name:
+                    self.user_real_name = name
+                self.notify("Git credentials and project author updated!", title="Git Setup Complete")
+        self.push_screen(GitSetupModal(), _on_git_done)
+
     def _cmd_scaffold_project(self, arg: str) -> None:
-        """Scaffolds a new project in ~/Projects with Git, README.md, and Kyle Gallagher LICENSE."""
+        """Scaffolds a new project in ~/Projects with Git, README.md, and MIT LICENSE."""
         name = arg.strip()
         if not name:
             self.notify("Usage: /scaffold <project-name>", severity="warning")

@@ -1,4 +1,4 @@
-"""Autonomous project scaffolding engine with Git initialization and Kyle Gallagher copyright."""
+"""Autonomous project scaffolding engine with Git initialization and user realname copyright."""
 
 from __future__ import annotations
 
@@ -176,7 +176,7 @@ def scaffold_project(
     """Scaffolds a new project directory with Git, README.md, and MIT LICENSE.
 
     - Target directory defaults to ~/Projects/<name>
-    - Copyright defaults to 'Kyle Gallagher' (or user realname in state)
+    - Copyright defaults to user realname in state (or configured author)
     - Automatically initializes git repo and creates initial commit if git is available.
     """
     effective_name = (name or project_name).strip()

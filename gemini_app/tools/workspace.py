@@ -152,7 +152,7 @@ def scaffold_project(
     realname: str = "",
     git_init: bool = True,
 ) -> Dict[str, Any]:
-    """Scaffolds a new project under ~/Projects with Git, README.md, and MIT LICENSE (Copyright Kyle Gallagher unless otherwise specified)."""
+    """Scaffolds a new project under ~/Projects with Git, README.md, and MIT LICENSE (Copyright yourname unless otherwise specified)."""
     return _scaffold_project(
         name=name,
         description=description,

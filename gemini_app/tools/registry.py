@@ -185,7 +185,7 @@ class ToolRegistry:
             target_dir: Optional[str] = None,
             init_git: bool = True,
         ) -> Dict[str, Any]:
-            """Scaffolds a new project directory in ~/Projects with Git, README.md, and LICENSE (Copyright Kyle Gallagher unless stated)."""
+            """Scaffolds a new project directory in ~/Projects with Git, README.md, and LICENSE (Copyright yourname unless stated)."""
             self._notify_phase("scaffolding", f"scaffolding project ({project_name})")
             return _scaffold_project(
                 project_name=project_name,

@@ -159,3 +159,20 @@ class TestUIApp(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(res["status"], "success")
             self.assertEqual(res["target"], "edge")
             self.assertEqual(app._nav_indicator_action, "edge")
+
+    async def test_git_setup_modal_flow(self):
+        from gemini_app.ui.modals.git_setup import GitSetupModal
+        app = ChatApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("space")  # dismiss boot
+            app.action_configure_git()
+            await pilot.pause()
+            self.assertIsInstance(app.screen, GitSetupModal)
+            modal = app.screen
+            name_input = modal.query_one("#git_name_input")
+            email_input = modal.query_one("#git_email_input")
+            self.assertIsNotNone(name_input)
+            self.assertIsNotNone(email_input)
+            await pilot.click("#git_setup_cancel_btn")
+            await pilot.pause()
+            self.assertNotIsInstance(app.screen, GitSetupModal)

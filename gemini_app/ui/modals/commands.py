@@ -121,6 +121,7 @@ class CommandsModal(ResponsiveModalScreen[None]):
 
             yield Label("Slash Commands:", classes="cmd_section_title")
             yield Label("[bold]/api-key[/]          : Configure / update Google Gemini API key", classes="cmd_row")
+            yield Label("[bold]/git-setup[/]        : Configure Real Name & Git credentials", classes="cmd_row")
             yield Label("[bold]/scaffold <name>[/]  : Scaffold new project in ~/Projects with Git & License", classes="cmd_row")
             yield Label("[bold]/sys-deps[/]         : Check & install missing Linux system dependencies", classes="cmd_row")
             yield Label("[bold]/title <task>[/]   : Set active work title dynamically", classes="cmd_row")

@@ -112,5 +112,6 @@ echo -e "  ${CYAN}${BOLD}gemini-integrated${NC}  or  ${CYAN}${BOLD}gemini${NC}\n
 echo -e "Note: On your first run, Gemini will autonomously:"
 echo -e "  1. Check your Linux distro and install system tools (git, etc.)"
 echo -e "  2. Configure your virtual environment (.venv) and Python packages"
-echo -e "  3. Prompt for and persist your Google Gemini API Key"
-echo -e "  4. Scaffold projects directly in ~/Projects with Git, README, and Copyright Kyle Gallagher\n"
+echo -e "  3. Prompt for your Real Name and Git credentials to setup Git properly"
+echo -e "  4. Prompt for and persist your Google Gemini API Key"
+echo -e "  5. Scaffold projects directly in ~/Projects with Git, README, and Copyright yourname\n"

@@ -37,12 +37,15 @@ When you boot `gemini-integrated` for the first time:
 2. **Inbuilt `.venv` Creation & Pip Package Installation**:
    - Automatically verifies or creates an isolated virtual environment (`.venv`).
    - Automatically bootstraps all required Python dependencies (`textual`, `google-genai`, `rich`, `pyperclip`, `setuptools`, `wheel`, `build`) before launching.
-3. **Interactive API Key Onboarding**:
+3. **Interactive First-Time Onboarding & Git Setup**:
+   - Asks for your **Real Name** (used for MIT project licenses, README attribution, and git commits).
+   - Prompts for your **Git credentials** (`user.name` and `user.email`) and automatically configures Git globally (`git config --global`) so your repositories and commits are properly configured right from the start.
+4. **Interactive API Key Configuration**:
    - Prompts you for your **Google Gemini API Key** on first run.
    - Automatically exports it to your environment (`os.environ`) and persists it to `~/.bashrc`, `~/.zshrc`, `~/.profile`, and `~/.gemini/.env`.
-4. **Project Scaffolding in `~/Projects`**:
+5. **Project Scaffolding in `~/Projects`**:
    - Creates a dedicated `~/Projects` workspace in your home directory.
-   - Any project you create or scaffold with Gemini automatically initializes a Git repository, generates a comprehensive `README.md`, and creates an MIT `LICENSE` with **Copyright Kyle Gallagher** (persisted in user state).
+   - Any project you create or scaffold with Gemini automatically initializes a Git repository, generates a comprehensive `README.md`, and creates an MIT `LICENSE` with **Copyright yourname** (persisted in user state).
 
 ---
 
@@ -87,7 +90,7 @@ gemini
 
 ### 3. Project Scaffolding Engine
 - Scaffold full project boilerplates instantly with `/project <name> [desc]` or via bilateral tool calling.
-- Guarantees `git init`, initial commit, `.gitignore`, structured `README.md`, and MIT License with **Copyright Kyle Gallagher**.
+- Guarantees `git init`, initial commit, `.gitignore`, structured `README.md`, and MIT License with **Copyright yourname**.
 
 ### 4. Fast SQLite FTS5 Memory Index (`/recall`)
 - Real-time full-text search indexing across entire chat history, past projects, code snippets, and topical notes.
@@ -131,6 +134,8 @@ gemini
 
 - `/project <name> [desc]`: Scaffold a new project under `~/Projects`
 - `/projects`: List existing projects
+- `/git-setup`: Configure Real Name & Git credentials
+- `/api-key`: Configure / update Google Gemini API key
 - `/theme <name>`: Switch visual color theme (`red`, `blue`, `green`, `orange`, `purple`, `yellow`, `pink`)
 - `/notes [prune|archive|unarchive|stats]`: Manage, deduplicate, and archive topical notes
 - `/snapshot [label]`: Capture UI snapshot
@@ -156,9 +161,9 @@ gemini
 ├── screenshots/            # Visual SVG screenshots
 └── gemini_app/             # Modular application package
     ├── config.py           # Paths, themes, breakpoints, and constants
-    ├── projects.py         # Autonomous project scaffolding engine (Copyright Kyle Gallagher)
+    ├── projects.py         # Autonomous project scaffolding engine (Copyright yourname)
     ├── system_deps.py      # Linux OS detector and package manager dependency installer
-    ├── onboarding.py       # API key prompt and environment variable persistence
+    ├── onboarding.py       # First-time onboarding, Real Name, Git credential setup & API key persistence
     ├── events.py           # Message bus and event definitions
     ├── helpers.py          # ASCII trees, syntax detectors, raycast algorithms
     ├── main.py             # Application entry point protected by Crash Guardian

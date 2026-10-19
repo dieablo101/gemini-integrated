@@ -394,6 +394,27 @@ def generate_theme_css_rules() -> str:
             text-style: none;
         }}
 
+        .theme-{name} #git_setup_dialog {{
+            border: thick {acc};
+            scrollbar-color: {acc} #181818;
+            scrollbar-color-hover: {acc_bright} #252525;
+        }}
+        .theme-{name} #git_setup_dialog Input {{
+            border: solid {acc};
+        }}
+        .theme-{name} #git_setup_buttons Button {{
+            border: solid {acc};
+            text-style: none;
+        }}
+        .theme-{name} #git_setup_buttons Button:hover {{
+            color: {acc};
+            text-style: none;
+        }}
+        .theme-{name} #git_setup_buttons Button:focus {{
+            border: double {acc};
+            text-style: none;
+        }}
+
         .theme-{name} #frame_dialog {{
             border: thick {acc};
             scrollbar-color: {acc} #181818;

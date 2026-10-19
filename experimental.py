@@ -6397,6 +6397,42 @@ class ChatApp(App):
         chat_id_snapshot = self.current_chat_id
         working_dir_snapshot = self.get_effective_working_dir()
 
+        def write_file(path: str, content: str) -> dict:
+            """Writes or overwrites a file on disk relative to the working directory."""
+            try:
+                target = (Path(working_dir_snapshot) / path).resolve()
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(content, encoding="utf-8")
+                return {
+                    "status": "success",
+                    "path": str(target),
+                    "bytes_written": len(content.encode("utf-8")),
+                }
+            except Exception as e:
+                return {"status": "error", "message": str(e)}
+
+        def execute_shell(command: str, timeout_seconds: int = 60) -> dict:
+            """Executes a shell command inside the working directory and returns stdout, stderr, and exit_code."""
+            try:
+                res = subprocess.run(
+                    command,
+                    shell=True,
+                    cwd=working_dir_snapshot,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout_seconds,
+                )
+                return {
+                    "exit_code": res.returncode,
+                    "stdout": res.stdout,
+                    "stderr": res.stderr,
+                }
+            except subprocess.TimeoutExpired:
+                return {"status": "error", "message": f"Command timed out after {timeout_seconds}s"}
+            except Exception as e:
+                return {"status": "error", "message": str(e)}
+
+
         def _begin_request():
             self._request_phase = "connecting"
             self._start_status_ticker()
@@ -6451,6 +6487,8 @@ class ChatApp(App):
         available_tools = {
             "scan_workspace_tree": scan_workspace_tree,
             "expand_mind": expand_mind,
+            "write_file": write_file,
+            "execute_shell": execute_shell,
         }
 
         # 2. Build Wire Payload (User Mind State: Last 10 Turns with truncated snippets)
@@ -6499,10 +6537,11 @@ class ChatApp(App):
             f"### VISUAL RELATION TREE:\n"
             f"```text\n{self.current_tree_content or '└── *[Session Start]*'}\n```\n\n"
             f"### EXPANSION CAPABILITIES\n"
-            f"You only have the recent 10 turns in active memory with truncated code fences.\n"
-            f"You have two tools available to think with:\n"
+            f"You have tools available to inspect the environment, write files, and execute commands:\n"
             f"1. `scan_workspace_tree(include_ignored=True)`: Survey directory structure and dependencies.\n"
-            f"2. `expand_mind(turn_numbers=[...], file_paths=[...])`: Pull up to 50 items (turns or files) into your thought engine.\n\n"
+            f"2. `expand_mind(turn_numbers=[...], file_paths=[...])`: Pull up to 50 items (turns or files) into thought memory.\n"
+            f"3. `write_file(path='...', content='...')`: Write or overwrite a file directly on disk.\n"
+            f"4. `execute_shell(command='...', timeout_seconds=60)`: Run shell commands (e.g. tests, linters, python scripts).\n\n"
             f"### REQUIRED METADATA FOOTER\n"
             f"At the very end of your response, always output this exact JSON block fenced in json:mind_map\n"
             f"{{\n"
@@ -6534,7 +6573,7 @@ class ChatApp(App):
                 history=sdk_history,
                 config=types.GenerateContentConfig(
                     system_instruction=system_instruction,
-                    tools=[scan_workspace_tree, expand_mind],
+                    tools=[scan_workspace_tree, expand_mind, write_file, execute_shell],
                     temperature=0.2,
                 ),
             )

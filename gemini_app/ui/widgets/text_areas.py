@@ -493,6 +493,61 @@ class ExpandingInput(EmacsBaseTextArea):
             self.app.cycle_global_focus(direction=direction)
             return
 
+        # Fast filter shortcuts: Alt+1..6 when in notes_input or notes_panel is open
+        if self.id == "notes_input" or (getattr(self.app, "notes_open", False)):
+            if event.key in ("alt+1", "meta+1"):
+                event.prevent_default(); event.stop()
+                try:
+                    self.app.query_one("#notes_panel").switch_filter("working")
+                except Exception:
+                    pass
+                return
+            elif event.key in ("alt+2", "meta+2"):
+                event.prevent_default(); event.stop()
+                try:
+                    self.app.query_one("#notes_panel").switch_filter("relevant")
+                except Exception:
+                    pass
+                return
+            elif event.key in ("alt+3", "meta+3"):
+                event.prevent_default(); event.stop()
+                try:
+                    self.app.query_one("#notes_panel").switch_filter("get_back_to")
+                except Exception:
+                    pass
+                return
+            elif event.key in ("alt+4", "meta+4"):
+                event.prevent_default(); event.stop()
+                try:
+                    self.app.query_one("#notes_panel").switch_filter("think_about")
+                except Exception:
+                    pass
+                return
+            elif event.key in ("alt+5", "meta+5"):
+                event.prevent_default(); event.stop()
+                try:
+                    self.app.query_one("#notes_panel").switch_filter("topics")
+                except Exception:
+                    pass
+                return
+            elif event.key in ("alt+6", "meta+6"):
+                event.prevent_default(); event.stop()
+                try:
+                    self.app.query_one("#notes_panel").switch_filter("archived")
+                except Exception:
+                    pass
+                return
+
+        if self.id == "notes_input":
+            if event.key in ("ctrl+g", "escape"):
+                event.prevent_default(); event.stop()
+                if self._mark_point is not None or self.selected_text:
+                    self._clear_mark()
+                    self.app.notify("Quit", timeout=1.0)
+                else:
+                    self.app.action_toggle_notes()
+                return
+
         if event.key == "ctrl+q":
             event.prevent_default(); event.stop()
             self.app.action_quit()

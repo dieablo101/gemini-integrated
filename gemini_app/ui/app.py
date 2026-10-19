@@ -704,7 +704,7 @@ class ChatApp(App):
         wid = getattr(w, "id", None)
         if wid in ("input", "snippet_preview"):
             self._last_non_notes_input_id = wid
-        if wid in ("input", "notes_editor", "snippet_preview", "notes_input"):
+        if wid in ("input", "snippet_preview", "notes_input"):
             self._last_focused_input_id = wid
 
     def on_key(self, event: events.Key) -> None:
@@ -1326,7 +1326,7 @@ class ChatApp(App):
 
                     if opening:
                         try:
-                            self.query_one("#notes_editor", NotesEditorArea).focus()
+                            self.query_one("#notes_input", ExpandingInput).focus()
                         except Exception:
                             pass
                     else:
@@ -1371,11 +1371,6 @@ class ChatApp(App):
         ring.append(input_widget)
 
         if self.notes_open:
-            try:
-                notes_editor = self.query_one("#notes_editor", NotesEditorArea)
-                ring.append(notes_editor)
-            except Exception:
-                pass
             try:
                 notes_input = self.query_one("#notes_input", ExpandingInput)
                 ring.append(notes_input)

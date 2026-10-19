@@ -363,25 +363,29 @@ class TestNotesPanelWidgets(unittest.IsolatedAsyncioTestCase):
             notes_input = app.query_one("#notes_input", ExpandingInput)
             self.assertIsNotNone(notes_input)
 
-            # Verify initial focus is on notes_editor, NOT notes_input
-            notes_editor = app.query_one("#notes_editor")
-            self.assertEqual(app.focused, notes_editor)
-
-            # Press Tab -> should cycle to notes_input
-            app.cycle_global_focus(direction=1)
-            await pilot.pause()
+            # Verify initial focus is on notes_input, NOT notes_editor
             self.assertEqual(app.focused, notes_input)
 
-            # Press Tab -> should cycle to main input
-            main_input = app.query_one("#input")
+            # Verify notes_editor is read-only and cannot be focused
+            notes_editor = app.query_one("#notes_editor")
+            self.assertFalse(notes_editor.can_focus)
+            self.assertTrue(notes_editor.read_only)
+
+            # Press Tab -> should cycle to main input (skipping notes_editor)
             app.cycle_global_focus(direction=1)
             await pilot.pause()
+            main_input = app.query_one("#input")
             self.assertEqual(app.focused, main_input)
 
-            # Press Shift+Tab from main input -> should cycle back to notes_input
-            app.cycle_global_focus(direction=-1)
+            # Press Tab -> should cycle back to notes_input (skipping notes_editor)
+            app.cycle_global_focus(direction=1)
             await pilot.pause()
             self.assertEqual(app.focused, notes_input)
+
+            # Press Shift+Tab from notes_input -> should cycle to main input
+            app.cycle_global_focus(direction=-1)
+            await pilot.pause()
+            self.assertEqual(app.focused, main_input)
 
             # Test submitting a note from notes_input
             notes_input.text = "Todo: calibrate reconnect timer precision"

@@ -22,12 +22,14 @@ if TYPE_CHECKING:
 
 
 class NotesEditorArea(EmacsBaseTextArea):
-    """Editor area displaying Gemini managed notes and receiving user note directives."""
+    """Read-only display area displaying Gemini managed notes."""
 
-    can_focus = True
+    can_focus = False
 
     def __init__(self, **kwargs) -> None:
+        kwargs["read_only"] = True
         super().__init__(**kwargs)
+        self.read_only = True
         self._last_nav_time: float = 0.0
         self._nav_cooldown: float = 0.022
         self._suppress_change_sync: bool = False
@@ -36,6 +38,7 @@ class NotesEditorArea(EmacsBaseTextArea):
     def on_mount(self) -> None:
         super().on_mount()
         self.show_line_numbers = False
+        self.read_only = True
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         if self._suppress_change_sync or not self.has_focus:
@@ -218,7 +221,7 @@ class NotesPanel(Vertical):
             yield Static("📦 Archive", id="tab_archived", classes="notes_tab")
         with Horizontal(id="notes_chips_row"):
             yield Static("Topics:", id="notes_chips_title", classes="notes_chips_title")
-        yield Static("🧠 Gemini Managed Notes | Alt+1..6 to filter | Enter: Save & close", id="notes_header_info")
+        yield Static("🧠 Gemini Managed Notes | Alt+1..6 to filter | Esc / C-c [ to close", id="notes_header_info")
         yield NotesEditorArea(id="notes_editor")
         yield ExpandingInput(id="notes_input")
 
@@ -325,29 +328,30 @@ class NotesPanel(Vertical):
 
         if new_filter == "working":
             self.border_title = f" 🧠 Working Notes [{current_topic}] "
-            hint.update(f"Active Topic: {current_topic} | Working & Relevant Notes | Enter: Save & close")
+            hint.update(f"Active Topic: {current_topic} | Working & Relevant Notes | Esc / C-c [ to close")
         elif new_filter == "relevant":
             self.border_title = f" 📌 Relevant Notes [{current_topic}] "
-            hint.update(f"Relevant notes in relation to '{current_topic}' | Enter: Save & close")
+            hint.update(f"Relevant notes in relation to '{current_topic}' | Esc / C-c [ to close")
         elif new_filter == "get_back_to":
             self.border_title = " ⏳ Notes to Get Back To "
-            hint.update("Action items & follow-ups to get back to | Enter: Save & close")
+            hint.update("Action items & follow-ups to get back to | Esc / C-c [ to close")
         elif new_filter == "think_about":
             self.border_title = " 💡 Notes to Think About "
-            hint.update("Brainstorms & considerations to think about | Enter: Save & close")
+            hint.update("Brainstorms & considerations to think about | Esc / C-c [ to close")
         elif new_filter == "archived":
             self.border_title = " 📦 Archived Notes "
-            hint.update("Archived notes catalog | Enter: Save & close")
+            hint.update("Archived notes catalog | Esc / C-c [ to close")
         else:  # topics
             self.border_title = " 📚 All Notes by Topic "
-            hint.update("Unified notes organized across all project topics | Enter: Save & close")
+            hint.update("Unified notes organized across all project topics | Esc / C-c [ to close")
 
         editor._suppress_change_sync = True
         try:
             rendered = manager.format_working_view(view_mode=new_filter) if manager else ""
             editor._initial_rendered_text = rendered
             editor.load_text(rendered)
-            editor.move_cursor(editor.document.end, select=False)
+            editor.move_cursor((0, 0), select=False)
+            editor.scroll_home(animate=False)
         finally:
             editor._suppress_change_sync = False
 
@@ -376,32 +380,32 @@ class NotesPanel(Vertical):
     @on(events.Click, "#tab_working")
     def on_working_tab_click(self) -> None:
         self.switch_filter("working")
-        self.query_one("#notes_editor", NotesEditorArea).focus()
+        self.query_one("#notes_input", ExpandingInput).focus()
 
     @on(events.Click, "#tab_relevant")
     def on_relevant_tab_click(self) -> None:
         self.switch_filter("relevant")
-        self.query_one("#notes_editor", NotesEditorArea).focus()
+        self.query_one("#notes_input", ExpandingInput).focus()
 
     @on(events.Click, "#tab_get_back_to")
     def on_get_back_to_tab_click(self) -> None:
         self.switch_filter("get_back_to")
-        self.query_one("#notes_editor", NotesEditorArea).focus()
+        self.query_one("#notes_input", ExpandingInput).focus()
 
     @on(events.Click, "#tab_think_about")
     def on_think_about_tab_click(self) -> None:
         self.switch_filter("think_about")
-        self.query_one("#notes_editor", NotesEditorArea).focus()
+        self.query_one("#notes_input", ExpandingInput).focus()
 
     @on(events.Click, "#tab_topics")
     def on_topics_tab_click(self) -> None:
         self.switch_filter("topics")
-        self.query_one("#notes_editor", NotesEditorArea).focus()
+        self.query_one("#notes_input", ExpandingInput).focus()
 
     @on(events.Click, "#tab_archived")
     def on_archived_tab_click(self) -> None:
         self.switch_filter("archived")
-        self.query_one("#notes_editor", NotesEditorArea).focus()
+        self.query_one("#notes_input", ExpandingInput).focus()
 
     @on(events.Click, ".note_chip")
     def on_topic_chip_click(self, event: events.Click) -> None:
@@ -419,5 +423,5 @@ class NotesPanel(Vertical):
             if manager:
                 manager.set_current_topic(target_topic)
                 self.switch_filter(self.active_filter)
-                self.query_one("#notes_editor", NotesEditorArea).focus()
+                self.query_one("#notes_input", ExpandingInput).focus()
                 app.notify(f"Active notes topic set to: {target_topic}", timeout=2.0)

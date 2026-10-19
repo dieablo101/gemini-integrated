@@ -403,16 +403,23 @@ def ensure_first_time_onboarding(interactive: bool = True) -> dict[str, Any]:
     # 4. Vault Passkey (protects sensitive tokens & recovery keys in ~/.gemini/vault)
     if not is_vault_configured():
         print("\nA Vault Passkey protects sensitive tokens and recovery files in ~/.gemini/vault.")
-        try:
-            vault_pass = getpass.getpass("Enter Vault Passkey (or press Enter to skip): ").strip()
-            if vault_pass:
-                set_vault_passkey(vault_pass)
-                print("\033[1;32m✓ Vault configured with salted PBKDF2-HMAC-SHA256 passkey.\033[0m")
-                results["vault_configured"] = True
-            else:
+        while True:
+            try:
+                vault_pass = getpass.getpass("Enter Vault Passkey (or press Enter to skip): ").strip()
+                if not vault_pass:
+                    results["vault_configured"] = False
+                    break
+                confirm_pass = getpass.getpass("Confirm Vault Passkey: ").strip()
+                if vault_pass == confirm_pass:
+                    set_vault_passkey(vault_pass)
+                    print("\033[1;32m✓ Vault configured with salted PBKDF2-HMAC-SHA256 passkey.\033[0m")
+                    results["vault_configured"] = True
+                    break
+                else:
+                    print("\033[1;31mPasskeys do not match. Please try again (or press Enter to skip).\033[0m")
+            except (KeyboardInterrupt, EOFError):
                 results["vault_configured"] = False
-        except (KeyboardInterrupt, EOFError):
-            results["vault_configured"] = False
+                break
     else:
         results["vault_configured"] = True
 

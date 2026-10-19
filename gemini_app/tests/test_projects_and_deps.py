@@ -180,6 +180,24 @@ class TestOnboarding(unittest.TestCase):
                         self.assertTrue(res["api_key_configured"])
                         self.assertFalse(is_first_boot_pending())
 
+    def test_ensure_first_time_onboarding_vault_confirmation(self):
+        # API key, then passkey, then mismatch confirmation, then passkey, then matching confirmation
+        with patch("builtins.input", side_effect=["Alice Dev", "alice@dev.org"]):
+            with patch(
+                "getpass.getpass",
+                side_effect=[
+                    "dummy_api_key",
+                    "secret123",
+                    "secretWrong",
+                    "secret123",
+                    "secret123",
+                ],
+            ):
+                with patch("gemini_app.onboarding.set_git_config", return_value=True):
+                    with patch("sys.stdin.isatty", return_value=True):
+                        res = ensure_first_time_onboarding(interactive=True)
+                        self.assertTrue(res.get("vault_configured"))
+
 
 class TestToolRegistryExtensions(unittest.TestCase):
     def setUp(self):

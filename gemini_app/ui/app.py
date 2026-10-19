@@ -294,8 +294,22 @@ class ChatApp(App):
                 else:
                     self.notify("Incorrect vault passkey.", severity="error")
             else:
-                set_vault_passkey(pswrd)
-                self.notify("✓ Vault passkey set and secured.", timeout=3.5)
+                def _on_confirm(confirm_pswrd: str | None) -> None:
+                    if not confirm_pswrd:
+                        self.notify("Vault passkey confirmation cancelled.", severity="warning")
+                        return
+                    if pswrd != confirm_pswrd:
+                        self.notify("Passkeys did not match. Vault passkey was not set.", severity="error")
+                        return
+                    set_vault_passkey(pswrd)
+                    self.notify("✓ Vault passkey set and secured.", timeout=3.5)
+
+                self.prompt_password(
+                    title="🔐 Confirm Vault Passkey",
+                    message="Please re-enter your new vault passkey to confirm:",
+                    submit_label="Confirm Passkey",
+                    callback=_on_confirm,
+                )
 
         self.prompt_password(
             title=title,

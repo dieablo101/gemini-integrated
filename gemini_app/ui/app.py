@@ -87,7 +87,7 @@ from gemini_app.events import (
 )
 from gemini_app.mind.screen import MindMapScreen
 from gemini_app.storage.memory_index import MemoryIndex
-from gemini_app.storage.notes_manager import NoteItem, NotesManager
+from gemini_app.storage.notes_manager import NoteItem, NotesManager, sanitize_working_notes
 from gemini_app.storage.rollback import (
     mark_reboot_in_progress,
     mark_startup_successful,
@@ -215,6 +215,7 @@ class ChatApp(App):
                 active_topic=curr_topic,
                 turn_id=getattr(self, "current_focused_turn_id", ""),
             )
+            self.notes_manager.prune_notes()
             self.gemini_notes = self.notes_manager.working_notes
             self.schedule_notes_flush()
             notes_panel = self.query_one("#notes_panel", NotesPanel)
@@ -358,9 +359,13 @@ class ChatApp(App):
             editors = list(self.query("#notes_editor"))
             if editors and editors[0].has_focus:
                 text_val = editors[0].text
-                self.gemini_notes = text_val
-                if hasattr(self, "notes_manager"):
-                    self.notes_manager.working_notes = text_val
+                # Only sync working notes if editor is currently in working filter, and sanitize it!
+                if getattr(self, "active_notes_mode", "working") in ("working", "gemini"):
+                    clean_w = sanitize_working_notes(text_val)
+                    if clean_w:
+                        self.gemini_notes = clean_w
+                        if hasattr(self, "notes_manager"):
+                            self.notes_manager.working_notes = clean_w
         except Exception:
             pass
 
@@ -793,6 +798,7 @@ class ChatApp(App):
 
             notes_raw = prev_meta.get("notes", "")
             self.notes_manager = NotesManager.from_dict(notes_raw)
+            self.notes_manager.prune_notes()
             self.gemini_notes = self.notes_manager.working_notes
             self.global_notes = ""
             self.relational_notes = {}
@@ -1411,6 +1417,7 @@ class ChatApp(App):
             
             notes_raw = data.get("notes", "")
             self.notes_manager = NotesManager.from_dict(notes_raw)
+            self.notes_manager.prune_notes()
             self.gemini_notes = self.notes_manager.working_notes
             self.relational_notes = {}
             if self.history:
@@ -1437,6 +1444,7 @@ class ChatApp(App):
 
             notes_raw = meta_data.get("notes", "")
             self.notes_manager = NotesManager.from_dict(notes_raw)
+            self.notes_manager.prune_notes()
             self.gemini_notes = self.notes_manager.working_notes
             self.relational_notes = {}
 
@@ -2163,6 +2171,89 @@ class ChatApp(App):
                 self.notify(f"Rollback failed: {msg}", severity="error")
             return True
 
+        elif verb in ("notes", "note"):
+            if not arg or arg == "stats":
+                archived_cnt = len(self.notes_manager.get_archived_notes())
+                topics_cnt = len(self.notes_manager.get_all_topics())
+                self.notify(
+                    f"Notes: {len(self.notes_manager.notes)} total across {topics_cnt} topics | "
+                    f"{len(self.notes_manager.get_notes_to_get_back_to())} action items | "
+                    f"{len(self.notes_manager.get_notes_to_think_about())} brainstorms | "
+                    f"{archived_cnt} archived",
+                    timeout=5.0,
+                )
+                return True
+            parts = arg.split(None, 1)
+            sub = parts[0].lower()
+            sub_arg = parts[1].strip() if len(parts) > 1 else ""
+
+            if sub in ("prune", "dedup", "clean"):
+                res = self.notes_manager.prune_notes()
+                self.gemini_notes = self.notes_manager.working_notes
+                self.schedule_notes_flush()
+                try:
+                    self.query_one("#notes_panel", NotesPanel).refresh_display()
+                except Exception:
+                    pass
+                self.notify(
+                    f"✓ Notes pruned: {res['duplicates_removed']} duplicate(s) removed, {res['empty_removed']} empty removed. {res['total_remaining']} remaining.",
+                    timeout=4.0,
+                )
+                return True
+
+            elif sub in ("archive",):
+                if not sub_arg or sub_arg == "completed":
+                    cnt = self.notes_manager.archive_completed_notes()
+                    self.schedule_notes_flush()
+                    try:
+                        self.query_one("#notes_panel", NotesPanel).refresh_display()
+                    except Exception:
+                        pass
+                    self.notify(f"✓ Archived {cnt} completed note(s).", timeout=3.0)
+                    return True
+                ok = self.notes_manager.archive_note(sub_arg)
+                if ok:
+                    self.schedule_notes_flush()
+                    try:
+                        self.query_one("#notes_panel", NotesPanel).refresh_display()
+                    except Exception:
+                        pass
+                    self.notify(f"✓ Note matching '{sub_arg}' archived.", timeout=3.0)
+                else:
+                    self.notify(f"No active note found matching '{sub_arg}'.", severity="warning")
+                return True
+
+            elif sub in ("unarchive", "restore"):
+                if not sub_arg:
+                    self.notify("Usage: /notes unarchive <id or query>", severity="warning")
+                    return True
+                ok = self.notes_manager.unarchive_note(sub_arg)
+                if ok:
+                    self.schedule_notes_flush()
+                    try:
+                        self.query_one("#notes_panel", NotesPanel).refresh_display()
+                    except Exception:
+                        pass
+                    self.notify(f"✓ Restored note matching '{sub_arg}' from archive.", timeout=3.0)
+                else:
+                    self.notify(f"No archived note found matching '{sub_arg}'.", severity="warning")
+                return True
+
+            elif sub in ("archived", "archive_list"):
+                archived = self.notes_manager.get_archived_notes()
+                if not archived:
+                    self.notify("No archived notes on record.", timeout=3.0)
+                else:
+                    lines = [f"### Archived Notes ({len(archived)}):"]
+                    for a in archived:
+                        lines.append(f"- **[{a.id}]** ({a.topic}): {a.content}")
+                    self.call_after_refresh(lambda: self.append_to_feed("system", "\n".join(lines), jump_to_start=False))
+                return True
+
+            else:
+                self.notify(f"Unknown notes action '{sub}'. Use: prune, archive, unarchive, stats.", severity="error")
+                return True
+
         elif verb == "clear":
             self.history = []
             feed = self.query_one("#feed", FeedArea)
@@ -2176,6 +2267,7 @@ class ChatApp(App):
                 "### Console Slash Commands\n"
                 "- `/theme <name>`: Switch color theme (e.g. `/theme amber`, `/theme hacker`)\n"
                 "- `/themes`: List all available color themes\n"
+                "- `/notes [prune|archive|unarchive|stats]`: Manage, prune, or archive notes\n"
                 "- `/snapshot [label]`: Capture UI snapshot held for Gemini review\n"
                 "- `/snapshots`: View count and list of held snapshots\n"
                 "- `/diff`: Preview uncommitted git changes\n"
@@ -2338,6 +2430,29 @@ class ChatApp(App):
                 deleted = self.notes_manager.delete_note(content or turn_id)
                 self.app.call_from_thread(self.schedule_notes_flush)
                 return {"status": "success" if deleted else "not_found", "deleted": deleted}
+
+            elif act in ("prune", "dedup", "deduplicate"):
+                res = self.notes_manager.prune_notes()
+                self.gemini_notes = self.notes_manager.working_notes
+                self.app.call_from_thread(self.schedule_notes_flush)
+                return {"status": "success", "message": "Pruned notes and sanitized working notes.", "stats": res}
+
+            elif act in ("archive",):
+                if not content or content == "completed":
+                    cnt = self.notes_manager.archive_completed_notes()
+                else:
+                    cnt = 1 if self.notes_manager.archive_note(content or turn_id) else 0
+                self.app.call_from_thread(self.schedule_notes_flush)
+                return {"status": "success", "archived_count": cnt}
+
+            elif act in ("unarchive", "restore"):
+                ok = self.notes_manager.unarchive_note(content or turn_id)
+                self.app.call_from_thread(self.schedule_notes_flush)
+                return {"status": "success" if ok else "not_found", "unarchived": ok}
+
+            elif act in ("archived",):
+                items = [n.to_dict() for n in self.notes_manager.get_archived_notes()]
+                return {"status": "success", "count": len(items), "notes": items}
 
             elif act == "set":
                 if mode_clean == "global":

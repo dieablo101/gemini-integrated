@@ -1,10 +1,15 @@
-"""Unit tests for the Unified Gemini Managed Notes Engine and Silent Quota Reconnect."""
+"""Unit tests for the Unified Gemini Managed Notes Engine, Pruning, Archiving, and Silent Quota Reconnect."""
 
 import time
 import unittest
 from unittest.mock import MagicMock, patch
 
-from gemini_app.storage.notes_manager import NoteItem, NotesManager
+from gemini_app.storage.notes_manager import (
+    NoteItem,
+    NotesManager,
+    normalize_note_text,
+    sanitize_working_notes,
+)
 
 
 class TestNotesManager(unittest.TestCase):
@@ -20,18 +25,46 @@ class TestNotesManager(unittest.TestCase):
         self.assertEqual(self.mgr.active_topic, "audio")
         self.assertEqual(self.mgr.current_topic, "audio")
 
+    def test_sanitize_working_notes(self):
+        corrupted = (
+            "# 🧠 Gemini Working Notes [Topic: general]\n"
+            "# 🧠 Gemini Working Notes [Topic: general]\n"
+            "Valid working plan line 1\n"
+            "Valid working plan line 2\n"
+            "# 📌 Relevant Notes in Relation to Current Work (1)\n"
+            "• [👤 User] [think_about] (ui): testing"
+        )
+        cleaned = sanitize_working_notes(corrupted)
+        self.assertNotIn("# 🧠 Gemini Working Notes", cleaned)
+        self.assertNotIn("# 📌 Relevant Notes", cleaned)
+        self.assertNotIn("• [👤 User]", cleaned)
+        self.assertIn("Valid working plan line 1", cleaned)
+        self.assertIn("Valid working plan line 2", cleaned)
+
+        # Placeholders should clean to empty
+        placeholder = (
+            "# 🧠 Gemini Working Notes [Topic: general]\n"
+            "*(No active working notes set. Gemini updates working notes autonomously as tasks proceed.)*\n\n"
+            "# 📌 Relevant Notes in Relation to Current Work (0)\n"
+            "*(No user or topic notes currently flagged as relevant to this work.)*"
+        )
+        self.assertEqual(sanitize_working_notes(placeholder), "")
+
     def test_record_note_and_topics(self):
         item1 = self.mgr.record_note("Add volume fader", topic="audio", status="working", author="gemini")
+        self.assertIsNotNone(item1)
         self.assertEqual(item1.topic, "audio")
         self.assertEqual(item1.status, "working")
         self.assertEqual(item1.author, "gemini")
 
         item2 = self.mgr.record_note("Remember to test mono output", topic="audio", status="get_back_to", author="user")
+        self.assertIsNotNone(item2)
         self.assertEqual(item2.topic, "audio")
         self.assertEqual(item2.status, "get_back_to")
         self.assertEqual(item2.author, "user")
 
         item3 = self.mgr.record_note("Consider spatial audio shaders", topic="audio", status="think_about", author="user")
+        self.assertIsNotNone(item3)
         self.assertEqual(item3.status, "think_about")
 
         # Check retrieval by category
@@ -74,6 +107,84 @@ class TestNotesManager(unittest.TestCase):
         rel_notes = self.mgr.get_relevant_notes("network")
         self.assertTrue(any("latency" in n.content.lower() for n in rel_notes))
 
+    def test_consume_user_input_no_duplicates_on_resave(self):
+        # Initial note in manager
+        self.mgr.record_note("Check Wi-Fi drop test", topic="network", status="get_back_to", author="user")
+        self.assertEqual(len(self.mgr.notes), 1)
+
+        # Render view as if displayed in the editor
+        rendered = self.mgr.format_working_view("working")
+        self.assertIn("Check Wi-Fi drop test", rendered)
+
+        # Simulate user opening and pressing Enter without typing anything new
+        self.mgr.consume_user_input(raw_text=rendered, active_topic="network")
+        self.assertEqual(len(self.mgr.notes), 1, "Re-saving rendered view must not duplicate existing notes!")
+
+        # Re-save multiple times
+        for _ in range(3):
+            self.mgr.consume_user_input(raw_text=rendered, active_topic="network")
+        self.assertEqual(len(self.mgr.notes), 1, "Multiple re-saves must strictly maintain deduplication!")
+
+    def test_note_archiving(self):
+        n1 = self.mgr.record_note("Configure TLS certificates", topic="security", status="working", author="gemini")
+        n2 = self.mgr.record_note("Rotate SSH keys", topic="security", status="completed", author="user")
+        self.assertIsNotNone(n1)
+        self.assertIsNotNone(n2)
+
+        # Active relevant notes should include n1 and n2 initially
+        self.assertEqual(len(self.mgr.get_relevant_notes("security")), 2)
+
+        # Archive n1 by ID
+        ok = self.mgr.archive_note(n1.id)
+        self.assertTrue(ok)
+        self.assertTrue(n1.archived)
+        self.assertEqual(n1.status, "archived")
+
+        # Active relevant notes should now exclude n1
+        self.assertEqual(len(self.mgr.get_relevant_notes("security")), 1)
+
+        # Archived view should list n1
+        archived_view = self.mgr.format_working_view("archived")
+        self.assertIn("Configure TLS certificates", archived_view)
+        self.assertIn("Archived Notes (1)", archived_view)
+
+        # Unarchive n1
+        unarch_ok = self.mgr.unarchive_note(n1.id, restore_status="working")
+        self.assertTrue(unarch_ok)
+        self.assertFalse(n1.archived)
+        self.assertEqual(len(self.mgr.get_relevant_notes("security")), 2)
+
+        # Test archive_completed_notes
+        cnt = self.mgr.archive_completed_notes()
+        self.assertEqual(cnt, 1)
+        self.assertTrue(n2.archived)
+
+    def test_deduplicate_and_prune_notes(self):
+        # Add intentional duplicates
+        self.mgr.record_note("Test audio fader response", topic="audio", status="working")
+        # Direct append bypassing record_note duplicate check to simulate legacy/external corruption
+        dup_item = NoteItem(
+            id="n_dup1",
+            topic="audio",
+            content="• [👤 User] (audio): Test audio fader response",
+            status="think_about",
+        )
+        empty_item = NoteItem(
+            id="n_empty",
+            topic="audio",
+            content="   ",
+            status="working",
+        )
+        self.mgr.notes.extend([dup_item, empty_item])
+        self.assertEqual(len(self.mgr.notes), 3)
+
+        # Prune notes
+        summary = self.mgr.prune_notes()
+        self.assertEqual(summary["duplicates_removed"], 1)
+        self.assertEqual(summary["empty_removed"], 1)
+        self.assertEqual(summary["total_remaining"], 1)
+        self.assertEqual(self.mgr.notes[0].content, "Test audio fader response")
+
     def test_scan_chat_for_notes(self):
         history = [
             {"turn_id": "t1", "role": "user", "text": "Hello, let's work on boot.\nNote: keep glyph matrix strictly 3 rows."},
@@ -98,6 +209,11 @@ class TestNotesManager(unittest.TestCase):
         self.assertEqual(shader_note.topic, "shaders")
         self.assertEqual(shader_note.status, "think_about")
 
+        # Scanning again should not create duplicates
+        orig_count = len(self.mgr.notes)
+        self.mgr.scan_chat_for_notes(history, default_topic="boot")
+        self.assertEqual(len(self.mgr.notes), orig_count, "Chat scanning must not duplicate existing notes!")
+
     def test_format_working_view(self):
         self.mgr.set_working_notes("Implementing bilateral reconnection protocol")
         self.mgr.record_note("Check Wi-Fi drop test", topic=self.mgr.active_topic, status="get_back_to", author="user")
@@ -121,14 +237,16 @@ class TestNotesManager(unittest.TestCase):
     def test_serialization_roundtrip(self):
         self.mgr.set_working_notes("Persistent working state")
         self.mgr.record_note("Verify audio buffers", topic="audio", status="working", author="gemini")
-        self.mgr.record_note("Review snapshot storage", topic="snapshots", status="get_back_to", author="user")
+        n2 = self.mgr.record_note("Review snapshot storage", topic="snapshots", status="get_back_to", author="user")
+        self.assertIsNotNone(n2)
+        self.mgr.archive_note(n2.id)
 
         data = self.mgr.to_dict()
         loaded = NotesManager.from_dict(data)
 
         self.assertEqual(loaded.working_notes, "Persistent working state")
         self.assertEqual(len(loaded.notes), 2)
-        self.assertEqual(len(loaded.get_notes_to_get_back_to()), 1)
+        self.assertEqual(len(loaded.get_archived_notes()), 1)
 
 
 class TestSilentQuotaReconnect(unittest.TestCase):

@@ -1,7 +1,7 @@
 """Unified Gemini-Managed Notes Panel.
 
 Displays Gemini working notes, relevant user & topic notes, follow-ups (get back to),
-brainstorms (think about), and topics catalog. Automatically consumes user-submitted notes.
+brainstorms (think about), topics catalog, and archived notes. Automatically consumes user-submitted notes.
 """
 
 from __future__ import annotations
@@ -48,7 +48,7 @@ class NotesEditorArea(EmacsBaseTextArea):
         if self.app.intercept_c_c_key(event):
             return
 
-        # Fast filter shortcuts: Alt+1..5
+        # Fast filter shortcuts: Alt+1..6
         panel: NotesPanel = self.app.query_one("#notes_panel", NotesPanel)  # type: ignore
 
         if event.key in ("alt+1", "meta+1"):
@@ -75,6 +75,11 @@ class NotesEditorArea(EmacsBaseTextArea):
             event.prevent_default()
             event.stop()
             panel.switch_filter("topics")
+            return
+        elif event.key in ("alt+6", "meta+6"):
+            event.prevent_default()
+            event.stop()
+            panel.switch_filter("archived")
             return
 
         if event.key in ("ctrl+j", "shift+enter", "shift+return"):
@@ -188,7 +193,7 @@ class TopicChip(Static):
 class NotesPanel(Vertical):
     """Unified Gemini-Managed Notes Panel with topic association and cognitive view filters."""
 
-    FILTER_MODES = ("working", "relevant", "get_back_to", "think_about", "topics")
+    FILTER_MODES = ("working", "relevant", "get_back_to", "think_about", "topics", "archived")
 
     def __init__(self, **kwargs) -> None:
         super().__init__(id="notes_panel", **kwargs)
@@ -210,9 +215,10 @@ class NotesPanel(Vertical):
             yield Static("⏳ Get Back", id="tab_get_back_to", classes="notes_tab")
             yield Static("💡 Think", id="tab_think_about", classes="notes_tab")
             yield Static("📚 Topics", id="tab_topics", classes="notes_tab")
+            yield Static("📦 Archive", id="tab_archived", classes="notes_tab")
         with Horizontal(id="notes_chips_row"):
             yield Static("Topics:", id="notes_chips_title", classes="notes_chips_title")
-        yield Static("🧠 Gemini Managed Notes | Alt+1..5 to filter | Enter: Save note & close", id="notes_header_info")
+        yield Static("🧠 Gemini Managed Notes | Alt+1..6 to filter | Enter: Save & close", id="notes_header_info")
         yield NotesEditorArea(id="notes_editor")
 
     def refresh_topic_chips(self) -> None:
@@ -276,6 +282,8 @@ class NotesPanel(Vertical):
             "get_back_to": "get_back_to",
             "think_about": "think_about",
             "topics": "topics",
+            "archived": "archived",
+            "archive": "archived",
         }
         self.switch_filter(mapping.get(mode_clean, "working"))
 
@@ -297,6 +305,7 @@ class NotesPanel(Vertical):
             ("tab_get_back_to", "get_back_to"),
             ("tab_think_about", "think_about"),
             ("tab_topics", "topics"),
+            ("tab_archived", "archived"),
         ):
             try:
                 w = self.query_one(f"#{tab_id}", Static)
@@ -315,19 +324,22 @@ class NotesPanel(Vertical):
 
         if new_filter == "working":
             self.border_title = f" 🧠 Working Notes [{current_topic}] "
-            hint.update(f"Active Topic: {current_topic} | Working & Relevant Notes | Enter: Save")
+            hint.update(f"Active Topic: {current_topic} | Working & Relevant Notes | Enter: Save & close")
         elif new_filter == "relevant":
             self.border_title = f" 📌 Relevant Notes [{current_topic}] "
-            hint.update(f"Relevant notes in relation to '{current_topic}' | Enter: Save")
+            hint.update(f"Relevant notes in relation to '{current_topic}' | Enter: Save & close")
         elif new_filter == "get_back_to":
             self.border_title = " ⏳ Notes to Get Back To "
-            hint.update("Action items & follow-ups to get back to | Enter: Save")
+            hint.update("Action items & follow-ups to get back to | Enter: Save & close")
         elif new_filter == "think_about":
             self.border_title = " 💡 Notes to Think About "
-            hint.update("Brainstorms & considerations to think about | Enter: Save")
+            hint.update("Brainstorms & considerations to think about | Enter: Save & close")
+        elif new_filter == "archived":
+            self.border_title = " 📦 Archived Notes "
+            hint.update("Archived notes catalog | Enter: Save & close")
         else:  # topics
             self.border_title = " 📚 All Notes by Topic "
-            hint.update("Unified notes organized across all project topics | Enter: Save")
+            hint.update("Unified notes organized across all project topics | Enter: Save & close")
 
         editor._suppress_change_sync = True
         try:
@@ -383,6 +395,11 @@ class NotesPanel(Vertical):
     @on(events.Click, "#tab_topics")
     def on_topics_tab_click(self) -> None:
         self.switch_filter("topics")
+        self.query_one("#notes_editor", NotesEditorArea).focus()
+
+    @on(events.Click, "#tab_archived")
+    def on_archived_tab_click(self) -> None:
+        self.switch_filter("archived")
         self.query_one("#notes_editor", NotesEditorArea).focus()
 
     @on(events.Click, ".note_chip")

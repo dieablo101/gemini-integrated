@@ -250,6 +250,48 @@ class TestNotesManager(unittest.TestCase):
 
 
 class TestSilentQuotaReconnect(unittest.TestCase):
+    def test_extract_retry_delay(self):
+        import re
+
+        def _extract_retry_delay(err_text: str) -> float | None:
+            m = re.search(r"(?:retry\s+(?:in|after)|wait)\s+([\d\.]+)\s*(?:seconds|second|sec|s\b)", err_text, re.IGNORECASE)
+            if m:
+                try:
+                    return float(m.group(1))
+                except ValueError:
+                    pass
+            m = re.search(r"seconds:\s*([\d\.]+)", err_text, re.IGNORECASE)
+            if m:
+                try:
+                    return float(m.group(1))
+                except ValueError:
+                    pass
+            m = re.search(r"retry_delay[^{]*\{[^}]*seconds:\s*([\d\.]+)", err_text, re.IGNORECASE)
+            if m:
+                try:
+                    return float(m.group(1))
+                except ValueError:
+                    pass
+            return None
+
+        self.assertEqual(_extract_retry_delay("Quota exceeded. Please retry in 18s."), 18.0)
+        self.assertEqual(_extract_retry_delay("Rate limit reached. Please retry after 12.5s"), 12.5)
+        self.assertEqual(_extract_retry_delay("ResourceExhausted: 429 [retry_delay { seconds: 20 }]"), 20.0)
+        self.assertEqual(_extract_retry_delay("429 wait 5 seconds"), 5.0)
+        self.assertIsNone(_extract_retry_delay("Random quota error without timing hint"))
+
+    def test_smooth_countdown_math(self):
+        import math
+
+        target_time = time.monotonic() + 5.0
+        # Rem at t=0 should be 5
+        rem = max(0, int(math.ceil(target_time - time.monotonic())))
+        self.assertIn(rem, (4, 5))
+
+        # At expiration, rem should be 0
+        rem_expired = max(0, int(math.ceil(time.monotonic() - 1.0 - time.monotonic())))
+        self.assertEqual(rem_expired, 0)
+
     def test_quota_retry_logic(self):
         call_count = 0
 
@@ -299,6 +341,56 @@ class TestSilentQuotaReconnect(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             _simulate_retry(hard_failure)
+
+
+class TestNotesPanelWidgets(unittest.IsolatedAsyncioTestCase):
+    async def test_notes_panel_contains_notes_input_and_focus_cycling(self):
+        from gemini_app.ui.app import ChatApp
+        from gemini_app.ui.widgets.text_areas import ExpandingInput
+
+        app = ChatApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            # Dismiss boot screen
+            await pilot.press("space")
+            await app.workers.wait_for_complete()
+
+            # Toggle notes open
+            app.action_toggle_notes()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+
+            # Verify notes_input is mounted
+            notes_input = app.query_one("#notes_input", ExpandingInput)
+            self.assertIsNotNone(notes_input)
+
+            # Verify initial focus is on notes_editor, NOT notes_input
+            notes_editor = app.query_one("#notes_editor")
+            self.assertEqual(app.focused, notes_editor)
+
+            # Press Tab -> should cycle to notes_input
+            app.cycle_global_focus(direction=1)
+            await pilot.pause()
+            self.assertEqual(app.focused, notes_input)
+
+            # Press Tab -> should cycle to main input
+            main_input = app.query_one("#input")
+            app.cycle_global_focus(direction=1)
+            await pilot.pause()
+            self.assertEqual(app.focused, main_input)
+
+            # Press Shift+Tab from main input -> should cycle back to notes_input
+            app.cycle_global_focus(direction=-1)
+            await pilot.pause()
+            self.assertEqual(app.focused, notes_input)
+
+            # Test submitting a note from notes_input
+            notes_input.text = "Todo: calibrate reconnect timer precision"
+            notes_input.action_submit()
+            await pilot.pause()
+            
+            # Verify it was consumed
+            todos = app.notes_manager.get_notes_to_get_back_to()
+            self.assertTrue(any("reconnect timer precision" in n.content for n in todos))
 
 
 if __name__ == "__main__":

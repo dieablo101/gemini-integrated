@@ -303,7 +303,7 @@ Screen {
         display: none;
         margin-bottom: 0;
     }
-    #input {
+    #input, #notes_input {
         border: solid red;
         background: #000000;
         color: #ffffff;
@@ -311,7 +311,7 @@ Screen {
         scrollbar-size-horizontal: 0;
         scrollbar-gutter: auto;
     }
-    #input:focus {
+    #input:focus, #notes_input:focus {
         border: solid red;
         background: #000000;
     }

@@ -14,7 +14,7 @@ from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.widgets import Label, Static, TextArea
 
-from gemini_app.ui.widgets.text_areas import EmacsBaseTextArea
+from gemini_app.ui.widgets.text_areas import EmacsBaseTextArea, ExpandingInput
 from gemini_app.ui.widgets.feed import FeedArea
 
 if TYPE_CHECKING:
@@ -220,6 +220,7 @@ class NotesPanel(Vertical):
             yield Static("Topics:", id="notes_chips_title", classes="notes_chips_title")
         yield Static("🧠 Gemini Managed Notes | Alt+1..6 to filter | Enter: Save & close", id="notes_header_info")
         yield NotesEditorArea(id="notes_editor")
+        yield ExpandingInput(id="notes_input")
 
     def refresh_topic_chips(self) -> None:
         """Refreshes horizontal topic filter chips in-place from the notes catalog."""

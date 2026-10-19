@@ -7,6 +7,7 @@ import copy
 from datetime import datetime
 import getpass
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -186,6 +187,9 @@ class ChatApp(App):
         self._request_start_time: float = 0.0
         self._spinner_idx: int = 0
         self._status_timer: Timer | None = None
+        self._reconnect_target_time: float = 0.0
+        self._reconnect_attempt: int = 0
+        self._reconnect_max_retries: int = 0
 
         self._nav_indicator_action: str | None = None
         self._nav_indicator_timer: Timer | None = None
@@ -700,7 +704,7 @@ class ChatApp(App):
         wid = getattr(w, "id", None)
         if wid in ("input", "snippet_preview"):
             self._last_non_notes_input_id = wid
-        if wid in ("input", "notes_editor", "snippet_preview"):
+        if wid in ("input", "notes_editor", "snippet_preview", "notes_input"):
             self._last_focused_input_id = wid
 
     def on_key(self, event: events.Key) -> None:
@@ -906,6 +910,9 @@ class ChatApp(App):
             self._status_timer = None
         self._request_phase = "idle"
         self._request_details = ""
+        self._reconnect_target_time = 0.0
+        self._reconnect_attempt = 0
+        self._reconnect_max_retries = 0
 
     def _tick_status(self) -> None:
         if self._request_phase == "idle":
@@ -915,10 +922,23 @@ class ChatApp(App):
         frame = SPINNER_FRAMES[self._spinner_idx % len(SPINNER_FRAMES)]
         self._spinner_idx += 1
 
-        if self._request_details:
+        if self._request_phase == "reconnecting":
+            if self._reconnect_target_time > 0:
+                rem_sec = max(0.0, self._reconnect_target_time - time.monotonic())
+                if rem_sec > 0.05:
+                    if rem_sec < 10.0:
+                        rem_str = f"{rem_sec:.1f}s"
+                    else:
+                        rem_str = f"{int(math.ceil(rem_sec))}s"
+                    status_text = f"{frame} Quota reached — reconnecting silently in {rem_str} (retry {self._reconnect_attempt}/{self._reconnect_max_retries})"
+                else:
+                    status_text = f"{frame} Quota reached — reconnecting now (retry {self._reconnect_attempt}/{self._reconnect_max_retries})..."
+            elif self._request_details:
+                status_text = f"{frame} {self._request_details}"
+            else:
+                status_text = f"{frame} Quota limit reached — reconnecting silently..."
+        elif self._request_details:
             status_text = f"{frame} {self._request_details}... ({elapsed:.1f}s)"
-        elif self._request_phase == "reconnecting":
-            status_text = f"{frame} {self._request_details or 'Quota limit reached — reconnecting silently'}... ({elapsed:.1f}s)"
         elif self._request_phase == "connecting":
             status_text = f"{frame} Connecting / Sending request... ({elapsed:.1f}s)"
         elif self._request_phase == "waiting":
@@ -1354,6 +1374,11 @@ class ChatApp(App):
             try:
                 notes_editor = self.query_one("#notes_editor", NotesEditorArea)
                 ring.append(notes_editor)
+            except Exception:
+                pass
+            try:
+                notes_input = self.query_one("#notes_input", ExpandingInput)
+                ring.append(notes_input)
             except Exception:
                 pass
 
@@ -2286,6 +2311,36 @@ class ChatApp(App):
         if not user_msg:
             return
 
+        # Handle notes input field inside notes panel
+        ctrl = getattr(event, "control", None) or getattr(event, "_sender", None)
+        if ctrl and getattr(ctrl, "id", None) == "notes_input":
+            # Check for slash commands or !/ prefix commands
+            if user_msg.startswith("/") or user_msg.startswith("!/"):
+                if self._handle_slash_command(user_msg):
+                    return
+
+            curr_topic = getattr(self, "active_task_title", "") or self.notes_manager.current_topic or "general"
+            added = self.notes_manager.consume_user_input(
+                raw_text=user_msg,
+                active_topic=curr_topic,
+                turn_id=getattr(self, "current_focused_turn_id", ""),
+            )
+            self.notes_manager.prune_notes()
+            self.gemini_notes = self.notes_manager.working_notes
+            self.schedule_notes_flush()
+            try:
+                notes_panel = self.query_one("#notes_panel", NotesPanel)
+                notes_panel.refresh_display()
+            except Exception:
+                pass
+
+            if added:
+                topics_str = ", ".join(set(n.topic for n in added))
+                self.notify(f"✓ Note recorded under topic: '{topics_str}'", timeout=3.5)
+            else:
+                self.notify("✓ Working notes updated.", timeout=2.0)
+            return
+
         # Check for slash commands or !/ prefix commands
         if user_msg.startswith("/") or user_msg.startswith("!/"):
             if self._handle_slash_command(user_msg):
@@ -2609,6 +2664,28 @@ class ChatApp(App):
                 ),
             )
 
+            # Helper for extracting retry duration from quota error text
+            def _extract_retry_delay(err_text: str) -> float | None:
+                m = re.search(r"(?:retry\s+(?:in|after)|wait)\s+([\d\.]+)\s*(?:seconds|second|sec|s\b)", err_text, re.IGNORECASE)
+                if m:
+                    try:
+                        return float(m.group(1))
+                    except ValueError:
+                        pass
+                m = re.search(r"seconds:\s*([\d\.]+)", err_text, re.IGNORECASE)
+                if m:
+                    try:
+                        return float(m.group(1))
+                    except ValueError:
+                        pass
+                m = re.search(r"retry_delay[^{]*\{[^}]*seconds:\s*([\d\.]+)", err_text, re.IGNORECASE)
+                if m:
+                    try:
+                        return float(m.group(1))
+                    except ValueError:
+                        pass
+                return None
+
             # Helper for silent reconnection and resume on quota limit / ResourceExhausted
             def _send_with_silent_quota_retry(send_call: Callable[[], Any], max_retries: int = 5, base_delay: float = 3.0) -> Any:
                 attempt = 0
@@ -2628,26 +2705,39 @@ class ChatApp(App):
                             raise call_err
 
                         attempt += 1
-                        wait_sec = base_delay * (2 ** (attempt - 1))
-                        for rem in range(int(wait_sec), 0, -1):
+                        delay_hint = _extract_retry_delay(err_text)
+                        if delay_hint is not None and delay_hint > 0:
+                            wait_sec = max(delay_hint + 0.25, 0.5)
+                        else:
+                            wait_sec = base_delay * (2 ** (attempt - 1))
+
+                        target_time = time.monotonic() + wait_sec
+
+                        def _update_reconnect_ui(t=target_time, att=attempt, mr=max_retries):
+                            self._reconnect_target_time = t
+                            self._reconnect_attempt = att
+                            self._reconnect_max_retries = mr
+                            self._request_phase = "reconnecting"
+                            self._request_details = ""
+                            self._tick_status()
+
+                        self.app.call_from_thread(_update_reconnect_ui)
+
+                        while time.monotonic() < target_time:
                             if self.current_chat_id != chat_id_snapshot:
                                 return None
-                            self.app.call_from_thread(
-                                self.post_message,
-                                RequestPhaseUpdate(
-                                    "reconnecting",
-                                    f"Quota reached — reconnecting silently in {rem}s (retry {attempt}/{max_retries})"
-                                )
-                            )
-                            time.sleep(1.0)
+                            time.sleep(0.02)
 
                         if self.current_chat_id != chat_id_snapshot:
                             return None
 
-                        self.app.call_from_thread(
-                            self.post_message,
-                            RequestPhaseUpdate("waiting", f"Reconnected — resuming where left off (attempt {attempt})")
-                        )
+                        def _update_retrying_ui(att=attempt, mr=max_retries):
+                            self._reconnect_target_time = 0.0
+                            self._request_phase = "waiting"
+                            self._request_details = f"Reconnecting now (attempt {att}/{mr})"
+                            self._tick_status()
+
+                        self.app.call_from_thread(_update_retrying_ui)
 
             # Send the latest turn with silent quota retry
             first_user_content = payload[-1]["parts"][0]["text"] if payload else ""

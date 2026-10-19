@@ -377,9 +377,14 @@ class ExpandingInput(EmacsBaseTextArea):
     can_focus = True
 
     class Submitted(Message):
-        def __init__(self, value: str) -> None:
+        def __init__(self, value: str, input: ExpandingInput | None = None) -> None:
             super().__init__()
             self.value = value
+            self._input = input
+
+        @property
+        def control(self) -> ExpandingInput | None:
+            return self._input or getattr(self, "_sender", None)
 
     def on_mount(self) -> None:
         super().on_mount()
@@ -643,7 +648,7 @@ class ExpandingInput(EmacsBaseTextArea):
         resolved_text = re.sub(r"\{\s*&snippet\d+\s*\}", replacer, raw_text)
         resolved_text = re.sub(r"\n{3,}", "\n\n", resolved_text).strip()
 
-        self.post_message(self.Submitted(resolved_text))
+        self.post_message(self.Submitted(resolved_text, input=self))
         self.clear()
         self.reset_snippets()
         self._clear_mark()

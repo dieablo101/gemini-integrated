@@ -196,10 +196,12 @@ def generate_theme_css_rules() -> str:
             scrollbar-color: {acc} #181818;
             scrollbar-color-hover: {acc_bright} #252525;
         }}
-        .theme-{name} #input {{
+        .theme-{name} #input,
+        .theme-{name} #notes_input {{
             border: solid {acc};
         }}
-        .theme-{name} #input:focus {{
+        .theme-{name} #input:focus,
+        .theme-{name} #notes_input:focus {{
             border: solid {acc};
         }}
         .theme-{name} Button {{

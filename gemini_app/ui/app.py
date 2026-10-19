@@ -442,13 +442,13 @@ class ChatApp(App):
             self.action_yank_to_input()
             return True
         elif key in ("ctrl+t", "t") or char == "t":
-            self.action_rename_chat()
+            self.notify("Feed section title is dynamically managed by Gemini based on active work.", timeout=3.0)
             return True
         elif key in ("ctrl+n", "n") or char == "n":
-            self.action_new_chat()
+            self.notify("Unified chat active. All conversation flows seamlessly in this session.", timeout=3.0)
             return True
         elif key in ("ctrl+b", "b") or char == "b":
-            self.action_toggle_history()
+            self.notify("Unified chat active. Gemini autonomously archives and indexes past history.", timeout=3.0)
             return True
         elif key in ("ctrl+r", "r") or char == "r":
             self.action_save_snippet_to_disk()
@@ -633,9 +633,9 @@ class ChatApp(App):
     def on_descendant_focus(self, event: events.DescendantFocus) -> None:
         w = event.widget
         wid = getattr(w, "id", None)
-        if wid in ("input", "snippet_preview", "history"):
+        if wid in ("input", "snippet_preview"):
             self._last_non_notes_input_id = wid
-        if wid in ("input", "notes_editor", "snippet_preview", "history"):
+        if wid in ("input", "notes_editor", "snippet_preview"):
             self._last_focused_input_id = wid
 
     def on_key(self, event: events.Key) -> None:
@@ -650,12 +650,28 @@ class ChatApp(App):
         if self.intercept_c_c_key(event):
             return
 
+    def update_feed_title(self) -> None:
+        """Dynamically updates the feed border title based on current work Gemini is doing."""
+        try:
+            feed = self.query_one("#feed", FeedArea)
+            work_desc = (self.current_gemini_state or "").strip()
+            if work_desc:
+                clean_work = work_desc.replace("\n", " ").strip()
+                if len(clean_work) > 65:
+                    clean_work = clean_work[:62] + "..."
+                feed.border_title = f" ⚡ {clean_work} "
+            elif self.current_chat_title:
+                feed.border_title = f" ⚡ {self.current_chat_title} "
+            else:
+                feed.border_title = " ⚡ Unified Console | System Ready "
+        except Exception:
+            pass
+
     def compose(self) -> ComposeResult:
         with Vertical(id="main_container"):
             yield Static("▲ Loading messages...", id="feed_loader_banner")
             with Horizontal(id="middle_split"):
                 yield FeedArea(id="feed")
-                yield HistoryList(id="history")
                 yield NotesPanel()
             yield Static("", id="feed_status")
             yield Static("", id="feed_nav_banner")
@@ -700,6 +716,7 @@ class ChatApp(App):
                 self._start_new_chat(title="")
 
         self.update_feed_nav_banner()
+        self.update_feed_title()
         self._update_footer_markup()
         self.query_one("#input").focus()
 
@@ -803,6 +820,7 @@ class ChatApp(App):
         self.current_tree_content = event.tree_content
         self.current_tree_state = event.tree_state
         self.save_current_chat()
+        self.update_feed_title()
 
         # Update MindMapScreen if it is anywhere in the screen stack
         for sc in self.screen_stack:
@@ -1408,8 +1426,7 @@ class ChatApp(App):
         if feed.styles.display == "none":
             feed.styles.display = "block"
 
-        display_title = self.current_chat_title or "Untitled Chat"
-        feed.border_title = f" {display_title} "
+        self.update_feed_title()
 
         marker_target = self.current_chat_center_marker or self.current_chat_last_index
         feed.set_messages(self.history, initial_target_marker=marker_target)
@@ -1436,12 +1453,7 @@ class ChatApp(App):
         if not title:
             title = "New Chat"
         self.current_chat_title = title
-
-        try:
-            feed = self.query_one("#feed", FeedArea)
-            feed.border_title = f" {title} "
-        except Exception:
-            pass
+        self.update_feed_title()
 
         for m in self.history:
             if "turn_id" not in m or not m["turn_id"]:

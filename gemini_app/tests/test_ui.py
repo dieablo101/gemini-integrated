@@ -14,8 +14,6 @@ class TestUIApp(unittest.IsolatedAsyncioTestCase):
             # Verify critical UI components are mounted
             feed = app.query_one("#feed")
             self.assertIsNotNone(feed)
-            history = app.query_one("#history")
-            self.assertIsNotNone(history)
             notes_panel = app.query_one("#notes_panel")
             self.assertIsNotNone(notes_panel)
             input_widget = app.query_one("#input")

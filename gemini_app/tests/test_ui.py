@@ -1,11 +1,50 @@
 """UI Smoke and Integration Tests for Gemini Textual App."""
 
+import asyncio
 import unittest
 from gemini_app.ui.app import ChatApp
+from gemini_app.ui.boot import BootScreen
 from gemini_app.ui.modals.commands import CommandsModal
+from textual.widgets import Static
 
 
 class TestUIApp(unittest.IsolatedAsyncioTestCase):
+    async def test_boot_screen_desktop_display(self):
+        app = ChatApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            boot_screen = app.screen
+            self.assertIsInstance(boot_screen, BootScreen)
+            title_widget = boot_screen.query_one("#boot_title_widget", Static)
+            render_text = str(title_widget.content)
+            self.assertIn("gemini-integrated", render_text)
+            self.assertFalse(boot_screen.has_class("-mobile"))
+
+    async def test_boot_screen_mobile_display(self):
+        app = ChatApp()
+        async with app.run_test(size=(60, 30)) as pilot:
+            await pilot.pause()
+            boot_screen = app.screen
+            self.assertIsInstance(boot_screen, BootScreen)
+            self.assertTrue(boot_screen.has_class("-mobile"))
+            title_widget = boot_screen.query_one("#boot_title_widget", Static)
+            render_text = str(title_widget.content)
+            self.assertIn("gemini", render_text)
+            self.assertIn("integrated", render_text)
+            # Make sure it's broken across lines
+            self.assertNotIn("gemini-integrated", render_text)
+
+    async def test_boot_screen_auto_dismiss(self):
+        app = ChatApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            self.assertIsInstance(app.screen, BootScreen)
+            # Fast-forward / wait for boot screen duration
+            await asyncio.sleep(2.1)
+            await pilot.pause()
+            # Once dismissed, the active screen is the base screen (ChatApp)
+            self.assertNotIsInstance(app.screen, BootScreen)
+
     async def test_app_lifecycle_and_mount(self):
         app = ChatApp()
         async with app.run_test(size=(120, 40)) as pilot:

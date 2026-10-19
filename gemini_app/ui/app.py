@@ -95,6 +95,7 @@ from gemini_app.storage.rollback import (
 )
 from gemini_app.tools.registry import ToolRegistry
 from gemini_app.tools.snapshots import capture_ui_snapshot, cleanup_stale_ephemerals, list_held_snapshots
+from gemini_app.ui.boot import BootScreen
 from gemini_app.ui.modals import (
     CommandsModal,
     ConfirmModal,
@@ -733,6 +734,7 @@ class ChatApp(App):
             self.screen.add_class("-mobile")
 
         await self.start_socket_server()
+        self.push_screen(BootScreen())
         self.call_after_refresh(self._initial_startup_load)
 
     async def _initial_startup_load(self) -> None:
@@ -791,6 +793,7 @@ class ChatApp(App):
 
         reboot_report = self._read_and_clear_reboot_report()
         if reboot_report:
+            snap_idx = 1
             try:
                 snap_entry = capture_ui_snapshot(
                     self,
@@ -808,6 +811,14 @@ class ChatApp(App):
             except Exception:
                 pass
             self.set_timer(0.4, lambda: self.notify(reboot_report, title="Update Notes", timeout=8.0))
+            def _post_boot_notify(idx=snap_idx, rep=reboot_report):
+                self.notify(
+                    f"📸 Snapshot #{idx} captured: Post-reboot visual layout audited.",
+                    title="Visual Audit",
+                    timeout=4.0,
+                )
+                self.set_timer(0.4, lambda: self.notify(rep, title="Update Notes", timeout=8.0))
+            self.set_timer(2.1, _post_boot_notify)
 
     def show_loader_banner(self) -> None:
         try:

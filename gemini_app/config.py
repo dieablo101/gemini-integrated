@@ -408,5 +408,20 @@ def generate_theme_css_rules() -> str:
         .theme-{name} #mind_input:focus {{
             border: solid {acc};
         }}
+
+        /* Boot Screen Theming */
+        .theme-{name} #boot_box {{
+            border: double {acc};
+            background: #080808;
+        }}
+        .theme-{name} #boot_footer_quit {{
+            color: {acc};
+        }}
+        .theme-{name} #boot_footer_commands {{
+            color: {acc};
+        }}
+        .theme-{name} #boot_footer_sep {{
+            color: {acc};
+        }}
         """)
     return "\n".join(blocks)

@@ -18,6 +18,8 @@ class TestUIApp(unittest.IsolatedAsyncioTestCase):
             title_widget = boot_screen.query_one("#boot_title_widget", Static)
             render_text = str(title_widget.content)
             self.assertIn("gemini-integrated", render_text)
+            self.assertIn("█", render_text)
+            self.assertIn("░", render_text)
             self.assertFalse(boot_screen.has_class("-mobile"))
 
     async def test_boot_screen_mobile_display(self):
@@ -31,8 +33,27 @@ class TestUIApp(unittest.IsolatedAsyncioTestCase):
             render_text = str(title_widget.content)
             self.assertIn("gemini", render_text)
             self.assertIn("integrated", render_text)
+            self.assertIn("█", render_text)
+            self.assertIn("░", render_text)
             # Make sure it's broken across lines
             self.assertNotIn("gemini-integrated", render_text)
+
+    def test_block_typography_and_shadow_generation(self):
+        from gemini_app.ui.boot import render_block_text_with_shadow, lerp_color
+
+        # Test color lerping
+        self.assertEqual(lerp_color("#000000", "#ffffff", 0.0), "#000000")
+        self.assertEqual(lerp_color("#000000", "#ffffff", 1.0), "#ffffff")
+        self.assertEqual(lerp_color("#000000", "#ffffff", 0.5), "#7f7f7f")
+
+        # Test block rendering
+        lines = render_block_text_with_shadow("GEMINI", frame_idx=0, acc="#dc2626", acc_bright="#ffffff", acc_dim="#4a0000")
+        self.assertEqual(len(lines), 4)  # 3 text rows + 1 shadow baseline row
+        # Check presence of block characters and stippled shadow
+        combined = "\n".join(lines)
+        self.assertIn("█", combined)
+        self.assertIn("▀", combined)
+        self.assertIn("░", combined)
 
     async def test_boot_screen_auto_dismiss(self):
         app = ChatApp()

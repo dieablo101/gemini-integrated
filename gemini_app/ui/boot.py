@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import time
 from textual import events
 from textual.app import ComposeResult
@@ -11,6 +12,109 @@ from textual.widgets import Static
 
 from gemini_app.config import DEFAULT_PALETTE, MOBILE_BREAKPOINT, THEMES
 from gemini_app.ui.modals.base import ResponsiveModalScreen
+
+
+def hex_to_rgb(h: str) -> tuple[int, int, int]:
+    """Convert hex string (e.g. '#ff0000' or '#f00') to RGB tuple."""
+    h = h.lstrip("#")
+    if len(h) == 3:
+        h = "".join(c * 2 for c in h)
+    return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+
+
+def lerp_color(c1: str, c2: str, t: float) -> str:
+    """Linearly interpolate between two hex colors by factor t (0.0 to 1.0)."""
+    t = max(0.0, min(1.0, t))
+    r1, g1, b1 = hex_to_rgb(c1)
+    r2, g2, b2 = hex_to_rgb(c2)
+    r = int(r1 + (r2 - r1) * t)
+    g = int(g1 + (g2 - g1) * t)
+    b = int(b1 + (b2 - b1) * t)
+    return f"#{max(0, min(255, r)):02x}{max(0, min(255, g)):02x}{max(0, min(255, b)):02x}"
+
+
+# Compact 3-row block glyphs for animated typography
+BLOCK_GLYPHS: dict[str, list[str]] = {
+    "G": ["█▀▀▀", "█ ▀█", "▀▀▀▀"],
+    "E": ["██▀", "██ ", "▀▀▀"],
+    "M": ["█▀█▀█", "█ ▀ █", "▀   ▀"],
+    "I": ["▀█▀", " █ ", "▀▀▀"],
+    "N": ["█▀▀█", "█  █", "▀  ▀"],
+    "-": ["  ", "▄▄", "  "],
+    "T": ["▀█▀", " █ ", " ▀ "],
+    "R": ["█▀▀█", "█▀▀▄", "▀  ▀"],
+    "A": ["▄▀▀▄", "█▀▀█", "▀  ▀"],
+    "D": ["█▀▀▄", "█  █", "▀▀▀ "],
+    " ": ["  ", "  ", "  "],
+}
+
+
+def render_block_text_with_shadow(
+    word: str,
+    frame_idx: int,
+    acc: str,
+    acc_bright: str,
+    acc_dim: str,
+    shadow_char: str = "░",
+) -> list[str]:
+    """Render a block text banner with 45-degree drop shadow and animated luminance wave."""
+    rows = ["", "", ""]
+    for i, ch in enumerate(word.upper()):
+        g = BLOCK_GLYPHS.get(ch, ["   ", "   ", "   "])
+        for r in range(3):
+            rows[r] += g[r]
+            if i < len(word) - 1:
+                rows[r] += " "
+
+    h = 3
+    w = len(rows[0])
+    shadow_base = lerp_color(acc_dim, "#0a0a0a", 0.65)
+
+    output_lines: list[str] = []
+    for r in range(h + 1):
+        line = ""
+        last_color: str | None = None
+        for c in range(w + 1):
+            is_fg = r < h and c < w and rows[r][c] != " "
+            is_sh = (
+                not is_fg
+                and r >= 1
+                and c >= 1
+                and (r - 1) < h
+                and (c - 1) < w
+                and rows[r - 1][c - 1] != " "
+            )
+
+            if is_fg:
+                ch = rows[r][c]
+                # Traveling wave luminance shader
+                phase = (c * 0.18) - (frame_idx * 0.28)
+                luminance = (math.sin(phase) + 1.0) / 2.0
+                if luminance < 0.5:
+                    col = lerp_color(acc_dim, acc, luminance * 2.0)
+                else:
+                    col = lerp_color(acc, acc_bright, (luminance - 0.5) * 2.0)
+            elif is_sh:
+                ch = shadow_char
+                # Subtle secondary harmonic for shadow glow
+                sh_phase = (c * 0.18) - (frame_idx * 0.28)
+                sh_lum = (math.sin(sh_phase) + 1.0) / 2.0
+                col = lerp_color(shadow_base, acc_dim, sh_lum * 0.35)
+            else:
+                ch = " "
+                col = None
+
+            if col != last_color:
+                if last_color is not None:
+                    line += "[/]"
+                if col is not None:
+                    line += f"[{col}]"
+                last_color = col
+            line += ch
+        if last_color is not None:
+            line += "[/]"
+        output_lines.append(line)
+    return output_lines
 
 
 class BootScreen(ResponsiveModalScreen[bool]):
@@ -23,20 +127,22 @@ class BootScreen(ResponsiveModalScreen[bool]):
         layers: base;
     }
     #boot_box {
-        width: 68;
+        width: 82;
+        max-width: 98%;
         height: auto;
-        max-height: 22;
+        max-height: 25;
         border: double red;
         background: #080808;
-        padding: 1 2;
+        padding: 1 1;
         align: center middle;
         content-align: center middle;
         text-align: center;
     }
     BootScreen.-mobile #boot_box {
-        width: 90%;
+        width: 96%;
         max-width: 50;
-        padding: 1 1;
+        max-height: 28;
+        padding: 0 1;
     }
     #boot_emblem {
         width: 100%;
@@ -184,24 +290,39 @@ class BootScreen(ResponsiveModalScreen[bool]):
             emblem_text = f"[{acc}]{wave}[/]"
             self.query_one("#boot_emblem", Static).update(emblem_text)
 
-            # 2. Main Title (Desktop vs Mobile break)
+            # 2. Main Title (Desktop single-line vs Mobile 2-tier block stack)
             if is_mobile:
-                # Centered on mobile:
-                # gemini
-                # integrated
+                gemini_lines = render_block_text_with_shadow(
+                    "GEMINI",
+                    self._frame_idx,
+                    acc,
+                    acc_bright,
+                    acc_dim,
+                )
+                integrated_lines = render_block_text_with_shadow(
+                    "INTEGRATED",
+                    self._frame_idx,
+                    acc,
+                    acc_bright,
+                    acc_dim,
+                )
                 title_markup = (
-                    f"[{acc}]╭──────────────────────────────╮[/]\n"
-                    f"[{acc}]│[/]            [bold {acc_bright}]gemini[/]            [{acc}]│[/]\n"
-                    f"[{acc}]│[/]          [bold {acc_bright}]integrated[/]          [{acc}]│[/]\n"
-                    f"[{acc}]╰──────────────────────────────╯[/]"
+                    "\n".join(gemini_lines)
+                    + "\n"
+                    + "\n".join(integrated_lines)
+                    + f"\n[{acc_dim}]◈ gemini ◈[/]\n[{acc_dim}]◈ integrated ◈[/]"
                 )
             else:
-                # Centered on desktop:
-                # gemini-integrated
+                desktop_lines = render_block_text_with_shadow(
+                    "GEMINI-INTEGRATED",
+                    self._frame_idx,
+                    acc,
+                    acc_bright,
+                    acc_dim,
+                )
                 title_markup = (
-                    f"[{acc}]╭──────────────────────────────────────────────╮[/]\n"
-                    f"[{acc}]│[/]          [bold {acc_bright}]gemini-integrated[/]          [{acc}]│[/]\n"
-                    f"[{acc}]╰──────────────────────────────────────────────╯[/]"
+                    "\n".join(desktop_lines)
+                    + f"\n[{acc_dim}]◈ gemini-integrated bilateral console ◈[/]"
                 )
             self.query_one("#boot_title_widget", Static).update(title_markup)
 

@@ -36,7 +36,6 @@ from textual.widgets import (
     Input,
     Label,
     Markdown,
-    OptionList,
     RadioButton,
     RadioSet,
     Static,
@@ -44,7 +43,6 @@ from textual.widgets import (
     Tree,
 )
 from textual.widgets.markdown import MarkdownFence
-from textual.widgets.option_list import Option
 from textual.widgets.text_area import Selection
 from textual.widgets.tree import TreeNode
 
@@ -108,10 +106,8 @@ from gemini_app.ui.widgets import (
     EmacsBaseTextArea,
     ExpandingInput,
     FeedArea,
-    HistoryList,
     NotesEditorArea,
     NotesPanel,
-    ParentNoteCard,
     SnippetPreview,
     TurnCard,
 )
@@ -146,25 +142,29 @@ class ChatApp(App):
         self.current_chat_working_dir: str | None = None
         self.current_chat_last_index: int = 0
         self.current_chat_center_marker: str = ""
-        self.current_chat_notes: str = ""
+        
+        # Unified Notes System (Gemini, Relational Turn, and Global)
+        self.gemini_notes: str = ""
         self.global_notes: str = ""
+        self.relational_notes: dict[str, str] = {}
+        self.active_notes_mode: str = "gemini"  # "gemini", "turn", "global"
+        self.current_focused_turn_id: str = ""
+        self.current_focused_turn_index: int = 0
+        self._notes_flush_timer: Timer | None = None
 
         # Cognitive Mind State & Topology Tracking
         self.is_legacy_chat: bool = False
-        self.current_gemini_state: str = ""
-        self.current_user_state: str = ""
-        self.current_tree_state: list[str | int] = []
-        self.current_tree_content: str = ""
+        self.active_task_title: str = "Unifying Notes System & Relational Anchors"
+        self.current_gemini_state: str = "Unifying Notes System & Relational Anchors"
+        self.current_user_state: str = "Collaborating on unified bilateral console session."
+        self.current_tree_state: list[str | int] = ["T1", "F:gemini_app/"]
+        self.current_tree_content: str = "└── Unified Stream [Active]"
         self.saved_prompt_draft: str = ""
 
         self.notes_open: bool = False
-        self.active_notes_mode: str = "chat"
         self._last_focused_input_id: str = "input"
         self._last_non_notes_input_id: str = "input"
         self._seen_chats_in_session: set[str] = set()
-
-        self._chat_notes_flush_timer: Timer | None = None
-        self._global_notes_flush_timer: Timer | None = None
 
         self.history: list[dict] = []
         self._server: asyncio.AbstractServer | None = None
@@ -186,25 +186,27 @@ class ChatApp(App):
             "restart": lambda arg: self.action_reboot(status_report=arg if arg else None),
         }
 
-    def schedule_chat_notes_flush(self) -> None:
-        if self._chat_notes_flush_timer:
-            self._chat_notes_flush_timer.stop()
-        self._chat_notes_flush_timer = self.set_timer(0.4, self._do_chat_notes_flush)
+    def schedule_notes_flush(self) -> None:
+        if self._notes_flush_timer:
+            self._notes_flush_timer.stop()
+        self._notes_flush_timer = self.set_timer(0.3, self._do_notes_flush)
 
-    def _do_chat_notes_flush(self) -> None:
-        self._chat_notes_flush_timer = None
-        if self.current_chat_id and self.active_notes_mode == "chat":
-            self._direct_flush_chat_to_disk(self.current_chat_id, self.current_chat_notes)
+    def _do_notes_flush(self) -> None:
+        self._notes_flush_timer = None
+        if self.current_chat_id:
+            notes_payload = {
+                "gemini_notes": self.gemini_notes or "",
+                "global_notes": self.global_notes or "",
+                "relational_notes": self.relational_notes or {},
+            }
+            self._direct_flush_chat_to_disk(self.current_chat_id, notes_payload)
+        self._save_to_state("global_notes", self.global_notes or "")
+
+    def schedule_chat_notes_flush(self) -> None:
+        self.schedule_notes_flush()
 
     def schedule_global_notes_flush(self) -> None:
-        if self._global_notes_flush_timer:
-            self._global_notes_flush_timer.stop()
-        self._global_notes_flush_timer = self.set_timer(0.4, self._do_global_notes_flush)
-
-    def _do_global_notes_flush(self) -> None:
-        self._global_notes_flush_timer = None
-        if self.active_notes_mode == "global":
-            self._save_to_state("global_notes", self.global_notes or "")
+        self.schedule_notes_flush()
 
     def clear_toasts(self) -> None:
         try:
@@ -303,7 +305,7 @@ class ChatApp(App):
             pass
 
     def is_history_open(self) -> bool:
-        return self.active_notes_mode == "global"
+        return False
 
     def flush_current_notes(self) -> None:
         try:
@@ -312,8 +314,20 @@ class ChatApp(App):
                 text_val = editors[0].text
                 if self.active_notes_mode == "global":
                     self.global_notes = text_val
-                else:
-                    self.current_chat_notes = text_val
+                elif self.active_notes_mode == "turn":
+                    if self.current_focused_turn_id:
+                        self.relational_notes[self.current_focused_turn_id] = text_val
+                else:  # "gemini"
+                    self.gemini_notes = text_val
+        except Exception:
+            pass
+
+    def on_feed_turn_focused(self, turn_idx: int, turn_id: str, sender: str = "") -> None:
+        self.current_focused_turn_index = turn_idx
+        self.current_focused_turn_id = turn_id
+        try:
+            notes_panel = self.query_one("#notes_panel", NotesPanel)
+            notes_panel.on_turn_changed(turn_idx, turn_id, sender)
         except Exception:
             pass
 
@@ -442,13 +456,17 @@ class ChatApp(App):
             self.action_yank_to_input()
             return True
         elif key in ("ctrl+t", "t") or char == "t":
-            self.notify("Feed section title is dynamically managed by Gemini based on active work.", timeout=3.0)
-            return True
-        elif key in ("ctrl+n", "n") or char == "n":
-            self.notify("Unified chat active. All conversation flows seamlessly in this session.", timeout=3.0)
-            return True
-        elif key in ("ctrl+b", "b") or char == "b":
-            self.notify("Unified chat active. Gemini autonomously archives and indexes past history.", timeout=3.0)
+            def on_title_entered(new_title: str | None) -> None:
+                if new_title and new_title.strip():
+                    self.set_feed_title(new_title.strip())
+                    self.notify(f"Feed active task title updated to: {new_title.strip()}")
+            self.push_screen(
+                TitlePromptModal(
+                    prompt="Set active work / feed section title:",
+                    default_title=getattr(self, "active_task_title", "") or self.current_gemini_state,
+                ),
+                callback=on_title_entered,
+            )
             return True
         elif key in ("ctrl+r", "r") or char == "r":
             self.action_save_snippet_to_disk()
@@ -650,20 +668,27 @@ class ChatApp(App):
         if self.intercept_c_c_key(event):
             return
 
+    def set_feed_title(self, title: str) -> None:
+        """Sets the active work title displayed on the feed border."""
+        clean = title.strip().replace("\n", " ")
+        if len(clean) > 70:
+            clean = clean[:67] + "..."
+        self.active_task_title = clean
+        self.current_gemini_state = clean
+        self.update_feed_title()
+
     def update_feed_title(self) -> None:
         """Dynamically updates the feed border title based on current work Gemini is doing."""
         try:
             feed = self.query_one("#feed", FeedArea)
-            work_desc = (self.current_gemini_state or "").strip()
-            if work_desc:
+            work_desc = (getattr(self, "active_task_title", "") or self.current_gemini_state or "").strip()
+            if work_desc and work_desc not in ("Legacy active session.", "None"):
                 clean_work = work_desc.replace("\n", " ").strip()
                 if len(clean_work) > 65:
                     clean_work = clean_work[:62] + "..."
                 feed.border_title = f" ⚡ {clean_work} "
-            elif self.current_chat_title:
-                feed.border_title = f" ⚡ {self.current_chat_title} "
             else:
-                feed.border_title = " ⚡ Unified Console | System Ready "
+                feed.border_title = " ⚡ Unified Console: Bilateral Mind & Notes Engine "
         except Exception:
             pass
 
@@ -982,7 +1007,7 @@ class ChatApp(App):
         entries.sort(key=lambda d: d.get("updated_at", 0), reverse=True)
         return entries
 
-    def _direct_flush_chat_to_disk(self, chat_id: str, notes_text: str) -> None:
+    def _direct_flush_chat_to_disk(self, chat_id: str, notes_payload: str | dict) -> None:
         if not chat_id:
             return
 
@@ -992,7 +1017,7 @@ class ChatApp(App):
             if meta_path.exists():
                 try:
                     data = json.loads(meta_path.read_text(encoding="utf-8"))
-                    data["notes"] = notes_text or ""
+                    data["notes"] = notes_payload
                     data["updated_at"] = time.time()
                     meta_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
                 except Exception:
@@ -1003,7 +1028,7 @@ class ChatApp(App):
         if legacy_path.exists():
             try:
                 data = json.loads(legacy_path.read_text(encoding="utf-8"))
-                data["notes"] = notes_text or ""
+                data["notes"] = notes_payload
                 data["updated_at"] = time.time()
                 legacy_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
             except Exception:
@@ -1013,10 +1038,8 @@ class ChatApp(App):
         """Saves current state and notes cleanly, restores terminal mode, and execs the application process."""
         try:
             self.flush_current_notes()
-            if self.current_chat_id and self.active_notes_mode == "chat":
-                self._direct_flush_chat_to_disk(self.current_chat_id, self.current_chat_notes)
-                self.save_current_chat()
-            self._flush_global_notes_to_state()
+            self._do_notes_flush()
+            self.save_current_chat()
             if self.current_chat_id:
                 self._save_to_state("active_chat", self.current_chat_id)
             report = status_report or "✓ Reboot complete: Console reloaded, session restored, UI operational."
@@ -1058,10 +1081,8 @@ class ChatApp(App):
 
     def action_quit(self) -> None:
         self.flush_current_notes()
-        if self.current_chat_id and self.active_notes_mode == "chat":
-            self._direct_flush_chat_to_disk(self.current_chat_id, self.current_chat_notes)
-            self.save_current_chat()
-        self._flush_global_notes_to_state()
+        self._do_notes_flush()
+        self.save_current_chat()
         self.exit()
 
     def on_unmount(self) -> None:
@@ -1075,11 +1096,8 @@ class ChatApp(App):
             self._nav_indicator_timer = None
 
         self.flush_current_notes()
-        if self.current_chat_id and self.active_notes_mode == "chat":
-            self._direct_flush_chat_to_disk(self.current_chat_id, self.current_chat_notes)
-            self.save_current_chat()
-
-        self._flush_global_notes_to_state()
+        self._do_notes_flush()
+        self.save_current_chat()
 
         if self._server:
             self._server.close()
@@ -1128,22 +1146,11 @@ class ChatApp(App):
         return ancestors
 
     def sync_notes_ui(self) -> None:
-        is_history = (self.active_notes_mode == "global")
         try:
             notes_panel = self.query_one("#notes_panel", NotesPanel)
+            notes_panel.switch_mode(self.active_notes_mode)
         except Exception:
-            return
-
-        if is_history:
-            text = self.global_notes or ""
-            lineage: list[dict] = []
-            cid = ""
-        else:
-            text = self.current_chat_notes or ""
-            lineage = self._get_ancestor_lineage(self.current_chat_parent_id)
-            cid = self.current_chat_id
-
-        self.call_after_refresh(lambda: notes_panel.update_notes_content(is_history, text, lineage, chat_id=cid))
+            pass
 
     def action_toggle_notes(self) -> None:
         if self.lock.is_locked or isinstance(self.screen, MindMapScreen):
@@ -1167,15 +1174,10 @@ class ChatApp(App):
                 notes_panel.styles.display = "block"
                 if self.screen:
                     self.screen.add_class("-notes-open")
-                self.sync_notes_ui()
+                notes_panel.switch_mode(self.active_notes_mode)
             else:
                 self.flush_current_notes()
-                if self.active_notes_mode == "global":
-                    self._flush_global_notes_to_state()
-                else:
-                    self._direct_flush_chat_to_disk(self.current_chat_id, self.current_chat_notes)
-                    self.save_current_chat()
-
+                self._do_notes_flush()
                 notes_panel.styles.display = "none"
                 if self.screen:
                     self.screen.remove_class("-notes-open")
@@ -1207,11 +1209,6 @@ class ChatApp(App):
                                     self.query_one("#input", ExpandingInput).focus()
                             except Exception:
                                 self.query_one("#input", ExpandingInput).focus()
-                        elif target_id == "history" and self.is_history_open():
-                            try:
-                                self.query_one("#history", HistoryList).focus()
-                            except Exception:
-                                self.query_one("#input", ExpandingInput).focus()
                         else:
                             try:
                                 self.query_one("#input", ExpandingInput).focus()
@@ -1237,22 +1234,17 @@ class ChatApp(App):
             input_widget = self.query_one("#input", ExpandingInput)
             snippet_widget = self.query_one("#snippet_preview", SnippetPreview)
             notes_panel = self.query_one("#notes_panel", NotesPanel)
-            history_widget = self.query_one("#history", HistoryList)
         except Exception:
             return
 
         ring.append(input_widget)
 
         if self.notes_open:
-            notes_editor = self.query_one("#notes_editor", NotesEditorArea)
-            ring.append(notes_editor)
-
-            if not escape_parents:
-                parent_cards = list(notes_panel.query(ParentNoteCard))
-                ring.extend(parent_cards)
-
-        if self.is_history_open() and history_widget.styles.display != "none":
-            ring.append(history_widget)
+            try:
+                notes_editor = self.query_one("#notes_editor", NotesEditorArea)
+                ring.append(notes_editor)
+            except Exception:
+                pass
 
         if snippet_widget.styles.display != "none":
             ring.append(snippet_widget)
@@ -1272,58 +1264,10 @@ class ChatApp(App):
         if curr_idx == -1:
             next_idx = 0 if direction > 0 else (len(ring) - 1)
         else:
-            if escape_parents and isinstance(current_focused, ParentNoteCard):
-                if self.is_history_open() and history_widget.styles.display != "none":
-                    history_widget.focus()
-                elif snippet_widget.styles.display != "none":
-                    snippet_widget.focus()
-                else:
-                    input_widget.focus()
-                return
-
             next_idx = (curr_idx + direction) % len(ring)
 
         target = ring[next_idx]
         target.focus()
-
-    def refresh_history_list(self) -> None:
-        history_widget = self.query_one("#history", HistoryList)
-        history_widget.clear_options()
-
-        entries = self._get_all_chat_entries()
-        chats_by_id = {e["id"]: e for e in entries}
-
-        children_map: dict[str, list[dict]] = {}
-        roots: list[dict] = []
-        for cid, data in chats_by_id.items():
-            parent_id = data.get("parent_id")
-            if parent_id and parent_id in chats_by_id and parent_id != cid:
-                children_map.setdefault(parent_id, []).append(data)
-            else:
-                roots.append(data)
-
-        roots.sort(key=lambda d: d.get("updated_at", 0), reverse=True)
-        for pid in children_map:
-            children_map[pid].sort(key=lambda d: d.get("updated_at", 0), reverse=False)
-
-        def add_chat_node(chat_data: dict, depth: int, index_label: str) -> None:
-            cid = chat_data["id"]
-            title = chat_data.get("title", cid)
-            active = " (Active)" if cid == self.current_chat_id else ""
-            if depth == 0:
-                prompt = f"{index_label}. {title}{active}"
-            else:
-                indent = "   " * depth + "└─ "
-                prompt = f"{indent}{title}{active}"
-            history_widget.add_option(Option(prompt=prompt, id=cid))
-
-            for child in children_map.get(cid, []):
-                add_chat_node(child, depth + 1, "")
-
-        root_counter = 1
-        for root in roots:
-            add_chat_node(root, depth=0, index_label=str(root_counter))
-            root_counter += 1
 
     async def load_chat(self, chat_id: str) -> None:
         self._stop_status_ticker()
@@ -1359,15 +1303,24 @@ class ChatApp(App):
             self.current_chat_title = data.get("title", "")
             self.current_chat_working_dir = data.get("working_dir")
             self.current_chat_parent_id = data.get("parent_id")
-            self.current_chat_notes = data.get("notes", "") or ""
+            
+            notes_raw = data.get("notes", "")
+            if isinstance(notes_raw, dict):
+                self.gemini_notes = notes_raw.get("gemini_notes", "") or ""
+                self.global_notes = notes_raw.get("global_notes", "") or self.global_notes or ""
+                self.relational_notes = dict(notes_raw.get("relational_notes", {}))
+            else:
+                self.gemini_notes = str(notes_raw or "")
+                self.relational_notes = {}
+
             saved_marker = data.get("center_marker", "")
             saved_turn_idx = data.get("last_turn_index")
 
-            # Fallbacks for legacy Mind Map
-            self.current_gemini_state = "Legacy active session."
-            self.current_user_state = "Continuing legacy chat."
-            self.current_tree_state = []
-            self.current_tree_content = "└── *[Legacy Session Active]*"
+            self.active_task_title = "Unifying Notes System & Relational Anchors"
+            self.current_gemini_state = "Unifying Notes System & Relational Anchors"
+            self.current_user_state = "Collaborating in unified bilateral console session."
+            self.current_tree_state = ["T100", "F:gemini_app/ui/widgets/notes.py", "F:gemini_app/ui/app.py"]
+            self.current_tree_content = "└── Unified Console [Active]\n    ├── Notes System [Tri-modal: Gemini / Relational Turn / Global]\n    └── Feed Stream [Dynamic Task Title & 10-Card Lockstep]"
 
         elif chat_dir.is_dir() and (chat_dir / "meta.json").exists():
             # Modern Sharded Directory Mode
@@ -1378,17 +1331,29 @@ class ChatApp(App):
             self.current_chat_title = meta_data.get("title", "")
             self.current_chat_working_dir = meta_data.get("working_dir")
             self.current_chat_parent_id = meta_data.get("parent_id")
-            self.current_chat_notes = meta_data.get("notes", "") or ""
+
+            notes_raw = meta_data.get("notes", "")
+            if isinstance(notes_raw, dict):
+                self.gemini_notes = notes_raw.get("gemini_notes", "") or ""
+                self.global_notes = notes_raw.get("global_notes", "") or self.global_notes or ""
+                self.relational_notes = dict(notes_raw.get("relational_notes", {}))
+            else:
+                self.gemini_notes = str(notes_raw or "")
+                self.relational_notes = {}
 
             viewport = meta_data.get("viewport", {})
             saved_marker = viewport.get("center_marker", "")
             saved_turn_idx = viewport.get("last_turn_index")
 
             mind_map = meta_data.get("mind_map", {})
-            self.current_gemini_state = mind_map.get("gemini_state", "")
-            self.current_user_state = mind_map.get("user_state", "")
-            self.current_tree_state = mind_map.get("tree_state", [])
-            self.current_tree_content = mind_map.get("tree_content", "")
+            gem_state = mind_map.get("gemini_state", "")
+            if not gem_state or gem_state == "Legacy active session.":
+                gem_state = "Unifying Notes System & Relational Anchors"
+            self.active_task_title = gem_state
+            self.current_gemini_state = gem_state
+            self.current_user_state = mind_map.get("user_state", "") or "Collaborating in unified bilateral console session."
+            self.current_tree_state = mind_map.get("tree_state", []) or ["T100", "F:gemini_app/ui/widgets/notes.py"]
+            self.current_tree_content = mind_map.get("tree_content", "") or "└── Unified Stream [Active]"
 
             # Load message segments in order
             self.history = []
@@ -1405,13 +1370,14 @@ class ChatApp(App):
             self.current_chat_title = ""
             self.current_chat_working_dir = None
             self.current_chat_parent_id = None
-            self.current_chat_notes = ""
+            self.gemini_notes = ""
+            self.relational_notes = {}
             self.current_chat_last_index = 0
             self.current_chat_center_marker = ""
-            self.current_gemini_state = ""
-            self.current_user_state = ""
-            self.current_tree_state = []
-            self.current_tree_content = ""
+            self.current_gemini_state = "Unified Console: Autonomous Relational Mind & Archival Engine"
+            self.current_user_state = "Collaborating in unified bilateral console session."
+            self.current_tree_state = ["T1", "F:gemini_app/"]
+            self.current_tree_content = "└── Unified Stream [Active]"
 
         if saved_marker:
             self.current_chat_center_marker = saved_marker
@@ -1444,14 +1410,9 @@ class ChatApp(App):
         if not self.current_chat_id:
             return
 
-        if self.active_notes_mode == "chat":
-            self.flush_current_notes()
+        self.flush_current_notes()
 
-        title = self.current_chat_title.strip()
-        if not title and self.history:
-            title = self.history[0]["text"][:28].replace("\n", " ")
-        if not title:
-            title = "New Chat"
+        title = (getattr(self, "active_task_title", "") or self.current_chat_title or "Unified Stream").strip()
         self.current_chat_title = title
         self.update_feed_title()
 
@@ -1464,6 +1425,12 @@ class ChatApp(App):
             final_marker = final_marker.split(":")[0] + ":0"
         elif not CENTER_SCREEN_MODE and ":" in final_marker:
             final_marker = final_marker.split(":")[0]
+
+        notes_payload = {
+            "gemini_notes": self.gemini_notes or "",
+            "global_notes": self.global_notes or "",
+            "relational_notes": self.relational_notes or {},
+        }
 
         if self.is_legacy_chat:
             # Save strictly to legacy flat JSON file
@@ -1484,7 +1451,7 @@ class ChatApp(App):
                 "working_dir": self.current_chat_working_dir,
                 "last_turn_index": self.current_chat_last_index,
                 "center_marker": final_marker,
-                "notes": self.current_chat_notes or "",
+                "notes": notes_payload,
                 "messages": self.history,
             }
             path.write_text(json.dumps(data, indent=2), encoding="utf-8")
@@ -1503,7 +1470,7 @@ class ChatApp(App):
                 "parent_id": self.current_chat_parent_id,
                 "updated_at": time.time(),
                 "working_dir": self.current_chat_working_dir,
-                "notes": self.current_chat_notes or "",
+                "notes": notes_payload,
                 "viewport": {
                     "last_turn_index": self.current_chat_last_index,
                     "center_marker": final_marker,
@@ -1548,113 +1515,6 @@ class ChatApp(App):
                 )
             except Exception:
                 pass
-
-    async def delete_highlighted_chat(self) -> None:
-        history_widget = self.query_one("#history", HistoryList)
-        if history_widget.highlighted is None or history_widget.option_count == 0:
-            return
-
-        option = history_widget.get_option_at_index(history_widget.highlighted)
-        target_id = str(option.id)
-
-        legacy_target = self._get_legacy_chat_file(target_id)
-        if legacy_target.exists():
-            legacy_target.unlink()
-
-        dir_target = self._get_chat_dir(target_id)
-        if dir_target.is_dir():
-            for child in dir_target.iterdir():
-                child.unlink()
-            dir_target.rmdir()
-
-        current_idx = history_widget.highlighted
-
-        if self.current_chat_id == target_id:
-            self.current_chat_id = ""
-            self.history = []
-            self.current_chat_notes = ""
-
-            feed = self.query_one("#feed", FeedArea)
-            all_entries = self._get_all_chat_entries()
-            if all_entries:
-                await self.load_chat(all_entries[0]["id"])
-            else:
-                self._start_new_chat(title="")
-
-            feed.styles.display = "none"
-            history_widget.styles.display = "block"
-            history_widget.focus()
-
-        self.refresh_history_list()
-        if history_widget.option_count > 0:
-            history_widget.highlighted = min(current_idx, history_widget.option_count - 1)
-        self.notify("Chat deleted.")
-
-    def rename_highlighted_chat(self) -> None:
-        history_widget = self.query_one("#history", HistoryList)
-        if history_widget.highlighted is None or history_widget.option_count == 0:
-            return
-
-        option = history_widget.get_option_at_index(history_widget.highlighted)
-        target_id = str(option.id)
-
-        legacy_target = self._get_legacy_chat_file(target_id)
-        dir_target = self._get_chat_dir(target_id)
-
-        current_title = ""
-        if legacy_target.exists():
-            data = json.loads(legacy_target.read_text(encoding="utf-8"))
-            current_title = data.get("title", "")
-        elif dir_target.is_dir() and (dir_target / "meta.json").exists():
-            data = json.loads((dir_target / "meta.json").read_text(encoding="utf-8"))
-            current_title = data.get("title", "")
-
-        def on_rename(new_title: str | None) -> None:
-            if new_title is not None and new_title.strip():
-                clean_title = new_title.strip()
-                if legacy_target.exists():
-                    d = json.loads(legacy_target.read_text(encoding="utf-8"))
-                    d["title"] = clean_title
-                    d["updated_at"] = time.time()
-                    legacy_target.write_text(json.dumps(d, indent=2))
-                elif dir_target.is_dir() and (dir_target / "meta.json").exists():
-                    d = json.loads((dir_target / "meta.json").read_text(encoding="utf-8"))
-                    d["title"] = clean_title
-                    d["updated_at"] = time.time()
-                    (dir_target / "meta.json").write_text(json.dumps(d, indent=2))
-
-                if target_id == self.current_chat_id:
-                    self.current_chat_title = clean_title
-                    try:
-                        self.query_one("#feed", FeedArea).border_title = f" {self.current_chat_title} "
-                    except Exception:
-                        pass
-                self.refresh_history_list()
-                self.notify("Chat renamed.")
-
-        self.push_screen(
-            TitlePromptModal(prompt="Edit chat title:", default_title=current_title),
-            callback=on_rename,
-        )
-
-    def action_rename_chat(self) -> None:
-        def on_renamed(new_title: str | None) -> None:
-            if new_title is not None and new_title.strip():
-                self.current_chat_title = new_title.strip()
-                self.save_current_chat()
-                try:
-                    self.query_one("#feed", FeedArea).border_title = f" {self.current_chat_title} "
-                except Exception:
-                    pass
-                self.notify(f"Renamed chat to: {self.current_chat_title}")
-
-        self.push_screen(
-            TitlePromptModal(
-                prompt="Edit chat title:",
-                default_title=self.current_chat_title,
-            ),
-            callback=on_renamed,
-        )
 
     def action_fork_chat(self) -> None:
         feed = self.query_one("#feed", FeedArea)
@@ -1745,8 +1605,7 @@ class ChatApp(App):
         input_widget.reset_snippets()
         self.query_one("#snippet_preview", SnippetPreview).hide_preview()
 
-        display_title = self.current_chat_title or "Untitled Chat"
-        feed.border_title = f" {display_title} "
+        self.update_feed_title()
 
         notes_panel = self.query_one("#notes_panel", NotesPanel)
         notes_panel.clear_session_expansion_states()
@@ -1754,128 +1613,36 @@ class ChatApp(App):
 
         input_widget.focus()
         self.update_feed_nav_banner()
-        self.refresh_history_list()
         self.notify(f"Fork created: '{self.current_chat_title}' (Awaiting response)", timeout=4.0)
-
-    def action_toggle_history(self) -> None:
-        if isinstance(self.screen, MindMapScreen):
-            return
-
-        feed = self.query_one("#feed", FeedArea)
-        history_widget = self.query_one("#history", HistoryList)
-        input_widget = self.query_one("#input", ExpandingInput)
-
-        self.flush_current_notes()
-
-        if self.active_notes_mode == "chat":
-            if self.current_chat_id and feed._all_messages and feed.styles.display != "none":
-                self._direct_flush_chat_to_disk(self.current_chat_id, self.current_chat_notes)
-                self.save_current_chat()
-
-            self.active_notes_mode = "global"
-            self.refresh_history_list()
-            self.hide_status()
-            feed.styles.display = "none"
-            history_widget.styles.display = "block"
-
-            if history_widget.option_count > 0:
-                current_idx = 0
-                for idx in range(history_widget.option_count):
-                    opt = history_widget.get_option_at_index(idx)
-                    if opt.id == self.current_chat_id:
-                        current_idx = idx
-                        break
-                history_widget.highlighted = current_idx
-
-            self.sync_notes_ui()
-            history_widget.focus()
-        else:
-            self._flush_global_notes_to_state()
-            self.active_notes_mode = "chat"
-
-            history_widget.styles.display = "none"
-            feed.styles.display = "block"
-            feed.refresh(layout=True)
-
-            display_title = self.current_chat_title or "Untitled Chat"
-            feed.border_title = f" {display_title} "
-
-            self.sync_notes_ui()
-
-            marker = self.current_chat_center_marker
-            target_w = None
-            line_offset = None
-
-            if marker == "end":
-                feed.call_after_refresh(lambda: feed.scroll_end(animate=False))
-            else:
-                if ":" in marker:
-                    tid, offset_str = marker.split(":", 1)
-                    if CENTER_SCREEN_MODE:
-                        try:
-                            line_offset = int(offset_str)
-                        except Exception:
-                            line_offset = None
-                    else:
-                        line_offset = None
-                    target_w = feed._get_target_widget_by_id(tid)
-                elif marker:
-                    target_w = feed._get_target_widget_by_id(marker)
-
-                if not target_w:
-                    target_w = feed._get_target_widget(self.current_chat_last_index)
-
-                if target_w:
-                    feed.call_after_refresh(
-                        lambda: feed._scroll_to_turn_widget(
-                            target_w,
-                            center=CENTER_SCREEN_MODE and (line_offset is not None),
-                            line_offset=line_offset,
-                        )
-                    )
-            input_widget.focus()
-
-    def action_new_chat(self) -> None:
-        def on_title_chosen(chosen_title: str | None) -> None:
-            if chosen_title is None:
-                return
-            self._start_new_chat(title=chosen_title)
-
-        self.push_screen(
-            TitlePromptModal(prompt="Enter topic for new chat:"),
-            callback=on_title_chosen,
-        )
 
     def _start_new_chat(self, title: str) -> None:
         self._stop_status_ticker()
         self.hide_status()
 
         self.flush_current_notes()
-        if self.current_chat_id and self.active_notes_mode == "chat":
-            self._direct_flush_chat_to_disk(self.current_chat_id, self.current_chat_notes)
-            self.save_current_chat()
+        self.save_current_chat()
 
         self.is_legacy_chat = False
-        self.active_notes_mode = "chat"
-        self.query_one("#history").styles.display = "none"
-        self.query_one("#feed").styles.display = "block"
+        self.active_notes_mode = "gemini"
 
         self.current_chat_id = uuid4().hex[:8]
-        self.current_chat_title = title
+        self.current_chat_title = title or "Unified Stream"
         self.current_chat_parent_id = None
         self.current_chat_working_dir = None
         self.current_chat_last_index = 0
         self.current_chat_center_marker = ""
-        self.current_chat_notes = ""
-        self.current_gemini_state = ""
-        self.current_user_state = ""
-        self.current_tree_state = []
-        self.current_tree_content = ""
+        self.gemini_notes = ""
+        self.relational_notes = {}
+        self.active_task_title = "Unifying Notes System & Relational Anchors"
+        self.current_gemini_state = "Unifying Notes System & Relational Anchors"
+        self.current_user_state = "Collaborating on unified bilateral console session."
+        self.current_tree_state = ["T100", "F:gemini_app/ui/widgets/notes.py"]
+        self.current_tree_content = "└── Unified Console [Active]"
         self.history = []
 
         feed = self.query_one("#feed", FeedArea)
         feed.clear()
-        feed.border_title = f" {title or 'New Chat'} "
+        self.update_feed_title()
 
         notes_panel = self.query_one("#notes_panel", NotesPanel)
         notes_panel.clear_session_expansion_states()
@@ -2189,19 +1956,6 @@ class ChatApp(App):
         except Exception as e:
             self.notify(f"Clipboard paste error: {e}", severity="error")
 
-    @on(OptionList.OptionSelected, "#history")
-    async def on_history_selected(self, event: OptionList.OptionSelected) -> None:
-        if event.option_id:
-            chat_id = str(event.option_id)
-            self.flush_current_notes()
-            self._flush_global_notes_to_state()
-            self.active_notes_mode = "chat"
-
-            self.query_one("#history").styles.display = "none"
-            self.query_one("#feed").styles.display = "block"
-            await self.load_chat(chat_id)
-            self.query_one("#input").focus()
-
     async def append_to_feed(self, sender: str, text: str, jump_to_start: bool = False) -> None:
         feed = self.query_one("#feed", FeedArea)
         await feed.append_message(sender, text, jump_to_start=jump_to_start)
@@ -2228,6 +1982,15 @@ class ChatApp(App):
         elif verb == "themes":
             all_themes = ", ".join(THEMES.keys())
             self.notify(f"Available themes: {all_themes} (Active: {self.active_palette_name})", timeout=5.0)
+            return True
+
+        elif verb in ("title", "task"):
+            if not arg:
+                curr = getattr(self, "active_task_title", "") or self.current_gemini_state
+                self.notify(f"Current active work title: {curr}", timeout=3.5)
+                return True
+            self.set_feed_title(arg)
+            self.notify(f"Feed active task title updated to: {arg}", timeout=2.5)
             return True
 
         elif verb == "diff":
@@ -2399,6 +2162,32 @@ class ChatApp(App):
                 "message": f"Snapshot #{entry.get('index')} captured and held successfully on Gemini's end."
             }
 
+        def _manage_notes(action: str = "get", mode: str = "gemini", content: str = "", turn_id: str = "") -> dict:
+            mode_clean = mode.lower().strip()
+            if action in ("set_title", "title") or mode_clean == "title":
+                self.app.call_from_thread(self.set_feed_title, content)
+                return {"status": "success", "message": f"Updated feed active task title to '{content}'."}
+            if action == "set":
+                if mode_clean == "global":
+                    self.global_notes = content
+                elif mode_clean == "turn":
+                    tid = turn_id or self.current_focused_turn_id or (self.history[-1].get("turn_id") if self.history else "")
+                    if tid:
+                        self.relational_notes[tid] = content
+                else:  # gemini
+                    self.gemini_notes = content
+                self.app.call_from_thread(self.schedule_notes_flush)
+                return {"status": "success", "message": f"Updated {mode_clean} notes."}
+            else:  # get
+                if mode_clean == "global":
+                    text = self.global_notes
+                elif mode_clean == "turn":
+                    tid = turn_id or self.current_focused_turn_id or (self.history[-1].get("turn_id") if self.history else "")
+                    text = self.relational_notes.get(tid, "")
+                else:
+                    text = self.gemini_notes
+                return {"status": "success", "mode": mode_clean, "content": text}
+
         tool_reg = ToolRegistry(
             working_dir=working_dir_snapshot,
             history=self.history,
@@ -2406,6 +2195,7 @@ class ChatApp(App):
             reboot_callback=_schedule_reboot,
             snapshot_callback=_schedule_snapshot,
             memory_index=self.memory_index,
+            notes_callback=_manage_notes,
         )
         tools_list, available_tools = tool_reg.get_tool_callables()
 
@@ -2465,7 +2255,8 @@ class ChatApp(App):
             f"7. `execute_shell(command='...', timeout_seconds=60)`: Run shell commands (e.g. tests, linters, python scripts).\n"
             f"8. `reboot_console(delay_seconds=1.5, status_report='...')`: Restarts the console application cleanly in place when requested by the user or following code updates.\n"
             f"9. `take_snapshot(label='...')`: Captures a live UI snapshot of the console application on Gemini's end, indexed and held.\n"
-            f"10. `review_snapshots(snapshot_ids=[...], only_held=True, count=5)`: Reviews UI snapshots captured by the user or Gemini, returning reconstructed screen text and layout metadata.\n\n"
+            f"10. `review_snapshots(snapshot_ids=[...], only_held=True, count=5)`: Reviews UI snapshots captured by the user or Gemini, returning reconstructed screen text and layout metadata.\n"
+            f"11. `manage_notes(action='get'|'set', mode='gemini'|'turn'|'global', content='...', turn_id='...')`: Access and update Gemini active work notes, relational turn notes, and global scratchpads.\n\n"
             f"### UI SNAPSHOT RETENTION & VALIDATION PROTOCOL\n"
             f"• Snapshot Retention Rules:\n"
             f"  - Snapshots captured via command with a name (`/snapshot <name>`) are saved permanently to disk without deleting them.\n"
@@ -2518,9 +2309,12 @@ class ChatApp(App):
             response = chat_session.send_message(first_user_content)
 
             # Tool Loop (Handling Autonomous Mind Expansions)
-            while response.candidates and response.candidates[0].content.parts:
+            tool_iterations = 0
+            max_tool_iterations = 10
+            while response.candidates and response.candidates[0].content.parts and tool_iterations < max_tool_iterations:
                 part = response.candidates[0].content.parts[0]
                 if part.function_call:
+                    tool_iterations += 1
                     fn_name = part.function_call.name
                     fn_args = dict(part.function_call.args) if part.function_call.args else {}
 
@@ -2612,8 +2406,14 @@ class ChatApp(App):
         except Exception as e:
             if self.current_chat_id != chat_id_snapshot:
                 return
+            err_str = str(e)
+            if "ResourceExhausted" in err_str or "429" in err_str or "quota" in err_str.lower():
+                user_msg = "API Quota Limit reached (ResourceExhausted). Please wait a moment before sending another prompt."
+            else:
+                user_msg = err_str
+
             def _handle_err():
                 self._stop_status_ticker()
                 self.hide_status()
-                self.post_message(RequestFailed(str(e)))
+                self.post_message(RequestFailed(user_msg))
             self.app.call_from_thread(_handle_err)

@@ -1,5 +1,6 @@
 """Workspace tools: directory tree inspection, file writing, patching, and codebase search."""
 
+import fnmatch
 import os
 from pathlib import Path
 import re
@@ -84,33 +85,12 @@ def search_codebase(
     try:
         base = Path(os.path.expanduser(str(working_dir).strip())).resolve()
 
-        # Attempt fast search with ripgrep
-        rg_cmd = [
-            "rg",
-            "--line-number",
-            "--no-heading",
-            "--color=never",
-            "-m",
-            str(max_matches),
-            "-g",
-            path_pattern,
-            query,
-            ".",
-        ]
+        # Compile regex safely with literal escape fallback
         try:
-            res = subprocess.run(rg_cmd, cwd=str(base), capture_output=True, text=True, timeout=10)
-            if res.returncode in (0, 1):
-                raw_lines = [line.strip() for line in res.stdout.splitlines() if line.strip()]
-                return {
-                    "status": "success",
-                    "total_matches": len(raw_lines),
-                    "matches": raw_lines[:max_matches],
-                }
-        except (FileNotFoundError, subprocess.SubprocessError):
-            pass
+            compiled_re = re.compile(query, re.IGNORECASE)
+        except re.error:
+            compiled_re = re.compile(re.escape(query), re.IGNORECASE)
 
-        # Pure Python fallback
-        compiled_re = re.compile(query, re.IGNORECASE)
         matches: List[str] = []
         ignored_dirs = {".git", ".venv", "__pycache__", "node_modules", ".pytest_cache", ".mypy_cache"}
 
@@ -121,13 +101,23 @@ def search_codebase(
                     continue
                 file_path = Path(root) / f
                 rel_path = file_path.relative_to(base)
-                if not rel_path.match(path_pattern):
-                    continue
+                rel_str = str(rel_path)
+
+                if path_pattern and path_pattern != "*":
+                    pattern_clean = path_pattern.rstrip("/*")
+                    if not (
+                        fnmatch.fnmatch(rel_str, path_pattern)
+                        or fnmatch.fnmatch(f, path_pattern)
+                        or fnmatch.fnmatch(rel_str, f"{pattern_clean}/*")
+                        or fnmatch.fnmatch(rel_str, f"*{path_pattern}*")
+                    ):
+                        continue
+
                 try:
                     with open(file_path, "r", encoding="utf-8", errors="ignore") as fh:
                         for line_no, line in enumerate(fh, 1):
                             if compiled_re.search(line):
-                                matches.append(f"{rel_path}:{line_no}: {line.rstrip()}")
+                                matches.append(f"{rel_str}:{line_no}: {line.rstrip()}")
                                 if len(matches) >= max_matches:
                                     break
                 except Exception:

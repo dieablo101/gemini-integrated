@@ -683,6 +683,19 @@ class FeedArea(VerticalScroll):
         self.highlight_card(last_idx, scroll=False)
         self._run_target_mutation("jump_end")
 
+    def jump_to_turn(self, turn_idx: int) -> None:
+        """Navigates the 10-card slider directly to the specified turn index."""
+        total = len(self._all_messages)
+        if not (0 <= turn_idx < total) or self.is_locked():
+            return
+        if self._win_start <= turn_idx < self._win_end:
+            card = self._get_target_widget(turn_idx)
+            if card:
+                self.highlight_card(turn_idx, scroll=False)
+                self._scroll_to_turn_widget(card, center=CENTER_SCREEN_MODE)
+        else:
+            self.request_wall_shift(turn_idx, discrete_dock=True)
+
     async def append_message(self, sender: str, text: str, jump_to_start: bool = False) -> None:
         new_idx = len(self._all_messages)
         turn_data = {
@@ -819,6 +832,13 @@ class FeedArea(VerticalScroll):
                 card.remove_class("card-active")
                 if card.turn_index == prev_idx:
                     card.update_display()
+
+        if 0 <= turn_idx < len(self._all_messages):
+            turn_msg = self._all_messages[turn_idx]
+            turn_id = turn_msg.get("turn_id", f"turn_{turn_idx}")
+            sender = CURRENT_USER if turn_msg.get("role") == "user" else "gemini"
+            if hasattr(self.app, "on_feed_turn_focused"):
+                self.app.on_feed_turn_focused(turn_idx, turn_id, sender)
 
     def toggle_current_card_selection(self) -> None:
         target_card = self._get_target_widget(self.active_turn_index)

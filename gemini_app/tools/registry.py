@@ -29,6 +29,7 @@ class ToolRegistry:
         reboot_callback: Optional[Callable[..., Dict[str, Any]]] = None,
         snapshot_callback: Optional[Callable[[str], Dict[str, Any]]] = None,
         memory_index: Optional[MemoryIndex] = None,
+        notes_callback: Optional[Callable[..., Dict[str, Any]]] = None,
     ) -> None:
         self.working_dir = working_dir
         self.history = history
@@ -36,6 +37,7 @@ class ToolRegistry:
         self.reboot_callback = reboot_callback
         self.snapshot_callback = snapshot_callback
         self.memory_index = memory_index or MemoryIndex()
+        self.notes_callback = notes_callback
 
     def get_tool_callables(self) -> Tuple[List[Callable], Dict[str, Callable]]:
         """Returns SDK-compatible function callables and a lookup dictionary."""
@@ -122,6 +124,17 @@ class ToolRegistry:
                 count=count,
             )
 
+        def manage_notes(
+            action: str = "get",
+            mode: str = "gemini",
+            content: str = "",
+            turn_id: str = "",
+        ) -> Dict[str, Any]:
+            """Reads or updates Gemini working notes, relational turn notes, or global notes."""
+            if self.notes_callback:
+                return self.notes_callback(action=action, mode=mode, content=content, turn_id=turn_id)
+            return {"status": "error", "message": "Notes management callback unavailable in this context."}
+
         tools_list = [
             scan_workspace_tree,
             expand_mind,
@@ -133,6 +146,7 @@ class ToolRegistry:
             reboot_console,
             take_snapshot,
             review_snapshots,
+            manage_notes,
         ]
 
         tools_dict = {
@@ -146,6 +160,7 @@ class ToolRegistry:
             "reboot_console": reboot_console,
             "take_snapshot": take_snapshot,
             "review_snapshots": review_snapshots,
+            "manage_notes": manage_notes,
         }
 
         return tools_list, tools_dict

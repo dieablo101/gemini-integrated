@@ -59,14 +59,6 @@ Screen {
         padding: 0 1;
         background: #000000;
     }
-    #history {
-        height: 100%;
-        width: 1fr;
-        border: solid red;
-        background: #000000;
-        color: #ffffff;
-        display: none;
-    }
     #notes_panel {
         height: 100%;
         width: 40%;
@@ -76,12 +68,10 @@ Screen {
         display: none;
         padding: 0;
     }
-    Screen.-notes-open #feed,
-    Screen.-notes-open #history {
+    Screen.-notes-open #feed {
         width: 60%;
     }
-    Screen.-mobile #feed,
-    Screen.-mobile #history {
+    Screen.-mobile #feed {
         width: 100%;
         height: 1fr;
     }
@@ -89,14 +79,67 @@ Screen {
         width: 100%;
         height: 1fr;
     }
-    Screen.-mobile.-notes-open #feed,
-    Screen.-mobile.-notes-open #history {
+    Screen.-mobile.-notes-open #feed {
         width: 100%;
         height: 1fr;
     }
     Screen.-mobile.-notes-open #notes_panel {
         width: 100%;
         height: 1fr;
+    }
+    #notes_tabs_row {
+        width: 100%;
+        height: 1;
+        background: #141414;
+        layout: horizontal;
+    }
+    .notes_tab {
+        padding: 0 1;
+        color: #888888;
+        text-style: bold;
+    }
+    .notes_tab:hover {
+        color: #ffffff;
+        background: #252525;
+    }
+    .notes_tab.tab-active {
+        color: #ffffff;
+        background: #8b0000;
+    }
+    #notes_header_info {
+        width: 100%;
+        height: 1;
+        padding: 0 1;
+        color: #888888;
+        background: #0a0a0a;
+        text-style: italic;
+    }
+    #notes_chips_row {
+        width: 100%;
+        height: 1;
+        background: #0e0e0e;
+        layout: horizontal;
+        padding: 0 1;
+        display: none;
+    }
+    .notes_chips_title {
+        color: #666666;
+        margin-right: 1;
+        text-style: bold;
+    }
+    .note_chip {
+        color: #ffaa33;
+        padding: 0 1;
+        margin-right: 1;
+        text-style: bold;
+    }
+    .note_chip:hover {
+        background: #252525;
+        color: #ffffff;
+    }
+    .note_chip.chip-active {
+        background: #332200;
+        color: #ffcc00;
     }
     #notes_parents_container {
         width: 100%;

@@ -104,6 +104,7 @@ class CommandsModal(ResponsiveModalScreen[None]):
             yield Label("[bold]C-c c[/]            : Open this Commands reference window", classes="cmd_row")
             yield Label("[bold]C-c m[/]            : Open Cognitive Mind Map Screen", classes="cmd_row")
             yield Label(r"[bold]C-c \[[/]          : Toggle notes editor panel", classes="cmd_row")
+            yield Label("[bold]C-c t[/]          : Set active work / task title for feed border", classes="cmd_row")
             yield Label("[bold]C-c e[/]          : Send selected snippet to Emacs buffer", classes="cmd_row")
             yield Label("[bold]C-c w[/]          : Copy selected code snippet to clipboard", classes="cmd_row")
             yield Label("[bold]C-c y[/]          : Yank system clipboard into prompt input", classes="cmd_row")
@@ -113,7 +114,13 @@ class CommandsModal(ResponsiveModalScreen[None]):
             yield Label("[bold]C-c .[/]          : Toggle Fork mode to fork turns", classes="cmd_row")
             yield Label("[bold]C-c `[/]          : Take ephemeral UI snapshot (auto-deleted after review)", classes="cmd_row")
 
+            yield Label("Notes System:", classes="cmd_section_title")
+            yield Label("[bold]Alt+1 / Alt+2 / Alt+3[/] : Switch between Gemini / Turn / Global notes", classes="cmd_row")
+            yield Label("[bold]Alt+Left / Alt+Right[/]  : Cycle through related turns with notes", classes="cmd_row")
+            yield Label("Clicking any [bold]T#<num>[/] chip jumps 10-card slider directly to that note", classes="cmd_row")
+
             yield Label("Slash Commands:", classes="cmd_section_title")
+            yield Label("[bold]/title <task>[/]   : Set active work title dynamically", classes="cmd_row")
             yield Label("[bold]/snapshot <name>[/] : Take permanent named UI snapshot (saved to disk)", classes="cmd_row")
             yield Label("[bold]/snapshots[/]        : View count and list of held snapshots", classes="cmd_row")
             yield Label("[bold]/theme <color>[/]    : Switch color theme instantly", classes="cmd_row")

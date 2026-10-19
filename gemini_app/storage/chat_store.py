@@ -104,21 +104,38 @@ class ChatStore:
                     m_copy["turn_id"] = f"turn_{uuid4().hex[:8]}"
                 history.append(m_copy)
 
+            notes_raw = data.get("notes", "")
+            if isinstance(notes_raw, dict):
+                notes_bundle = {
+                    "gemini_notes": notes_raw.get("gemini_notes", ""),
+                    "global_notes": notes_raw.get("global_notes", ""),
+                    "relational_notes": notes_raw.get("relational_notes", {}),
+                }
+                notes_text = notes_raw.get("gemini_notes", "") or notes_raw.get("global_notes", "")
+            else:
+                notes_text = str(notes_raw or "")
+                notes_bundle = {
+                    "gemini_notes": notes_text,
+                    "global_notes": "",
+                    "relational_notes": {},
+                }
+
             return {
                 "id": chat_id,
                 "is_legacy": True,
                 "title": data.get("title", ""),
                 "working_dir": data.get("working_dir"),
                 "parent_id": data.get("parent_id"),
-                "notes": data.get("notes", "") or "",
+                "notes": notes_text,
+                "notes_bundle": notes_bundle,
                 "last_turn_index": data.get("last_turn_index"),
                 "center_marker": data.get("center_marker", ""),
                 "history": history,
                 "mind_map": {
-                    "gemini_state": "Legacy active session.",
-                    "user_state": "Continuing legacy chat.",
-                    "tree_state": [],
-                    "tree_content": "└── *[Legacy Session Active]*",
+                    "gemini_state": "Unified Console: Autonomous Relational Mind & Archival Engine",
+                    "user_state": "Continuing unified session.",
+                    "tree_state": ["T1", "F:gemini_app/"],
+                    "tree_content": "└── Unified Stream [Active]",
                 },
             }
 
@@ -143,22 +160,47 @@ class ChatStore:
                 except Exception:
                     pass
 
+            notes_raw = meta_data.get("notes", "")
+            if isinstance(notes_raw, dict):
+                notes_bundle = {
+                    "gemini_notes": notes_raw.get("gemini_notes", ""),
+                    "global_notes": notes_raw.get("global_notes", ""),
+                    "relational_notes": notes_raw.get("relational_notes", {}),
+                }
+                notes_text = notes_raw.get("gemini_notes", "") or notes_raw.get("global_notes", "")
+            else:
+                notes_text = str(notes_raw or "")
+                notes_bundle = {
+                    "gemini_notes": notes_text,
+                    "global_notes": "",
+                    "relational_notes": {},
+                }
+
+            stored_mind = meta_data.get("mind_map", {})
+            gem_state = stored_mind.get("gemini_state")
+            if not gem_state or gem_state == "Legacy active session.":
+                gem_state = "Unified Console: Autonomous Relational Mind & Archival Engine"
+            usr_state = stored_mind.get("user_state") or "Continuing unified session."
+            tree_content = stored_mind.get("tree_content") or "└── Unified Stream [Active]"
+            tree_state = stored_mind.get("tree_state", ["T1", "F:gemini_app/"])
+
             return {
                 "id": chat_id,
                 "is_legacy": False,
                 "title": meta_data.get("title", ""),
                 "working_dir": meta_data.get("working_dir"),
                 "parent_id": meta_data.get("parent_id"),
-                "notes": meta_data.get("notes", "") or "",
+                "notes": notes_text,
+                "notes_bundle": notes_bundle,
                 "last_turn_index": viewport.get("last_turn_index"),
                 "center_marker": viewport.get("center_marker", ""),
                 "history": history,
-                "mind_map": meta_data.get("mind_map", {
-                    "gemini_state": "",
-                    "user_state": "",
-                    "tree_state": [],
-                    "tree_content": "",
-                }),
+                "mind_map": {
+                    "gemini_state": gem_state,
+                    "user_state": usr_state,
+                    "tree_state": tree_state,
+                    "tree_content": tree_content,
+                },
             }
 
         # Return empty record if chat does not exist
@@ -185,7 +227,7 @@ class ChatStore:
         chat_id: str,
         title: str,
         history: list[dict[str, Any]],
-        notes: str = "",
+        notes: str | dict[str, Any] = "",
         working_dir: str | None = None,
         parent_id: str | None = None,
         last_turn_index: int = 0,
@@ -268,7 +310,7 @@ class ChatStore:
 
         self.save_state_key("active_chat", chat_id)
 
-    def flush_chat_notes(self, chat_id: str, notes_text: str) -> None:
+    def flush_chat_notes(self, chat_id: str, notes_text: str | dict[str, Any]) -> None:
         """Flushes chat notes directly to disk without rewriting entire message history."""
         if not chat_id:
             return

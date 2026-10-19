@@ -161,20 +161,20 @@ def generate_theme_css_rules() -> str:
         .theme-{name} #feed MarkdownFence.active-snippet {{
             border: solid {acc} !important;
         }}
-        .theme-{name} #history {{
-            border: solid {acc};
-            scrollbar-color: {acc} #181818;
-            scrollbar-color-hover: {acc_bright} #252525;
-        }}
-        .theme-{name} #history > .option-list--option-highlighted {{
-            background: {active_card};
-            color: {acc_bright};
-            text-style: bold;
-        }}
-        .theme-{name} #history:focus > .option-list--option-highlighted {{
+        .theme-{name} .notes_tab.tab-active {{
             background: {banner};
             color: #ffffff;
-            text-style: bold;
+        }}
+        .theme-{name} .notes_tab:hover {{
+            color: {acc_bright};
+        }}
+        .theme-{name} .note_chip.chip-active {{
+            background: {active_card};
+            color: {acc_bright};
+        }}
+        .theme-{name} .note_chip:hover {{
+            color: {acc_bright};
+            background: #252525;
         }}
         .theme-{name} #notes_panel {{
             border: round {acc};

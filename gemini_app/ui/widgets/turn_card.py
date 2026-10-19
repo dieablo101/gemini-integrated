@@ -43,11 +43,17 @@ class TurnCard(Vertical):
 
         fork_active = getattr(feed, "fork_ui_active", False) if feed else False
 
+        app = getattr(self, "app", None)
+        has_note = False
+        if app and hasattr(app, "relational_notes") and self.turn_id:
+            has_note = bool((app.relational_notes.get(self.turn_id) or "").strip())
+        note_badge = " [📝 Note]" if has_note else ""
+
         if fork_active:
             box = "[X]" if self.is_selected else "[ ]"
-            return f"{box} {self.sender} (#{self.turn_index + 1})"
+            return f"{box} {self.sender} (#{self.turn_index + 1}){note_badge}"
         else:
-            return f"{self.sender} (#{self.turn_index + 1})"
+            return f"{self.sender} (#{self.turn_index + 1}){note_badge}"
 
     def update_display(self) -> None:
         try:

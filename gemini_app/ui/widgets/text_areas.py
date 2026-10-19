@@ -17,7 +17,6 @@ from textual.widgets.text_area import Selection
 from gemini_app.config import GATED_NAV_KEYS
 from gemini_app.events import RemoteInsert
 from gemini_app.ui.widgets.feed import FeedArea
-from gemini_app.ui.widgets.history import HistoryList
 
 if TYPE_CHECKING:
     from gemini_app.ui.app import ChatApp
@@ -312,36 +311,6 @@ class SnippetPreview(EmacsBaseTextArea):
             self.app.action_quit()
             return
 
-        if self.app.is_history_open():
-            try:
-                history_list = self.app.query_one("#history", HistoryList)
-                if event.key in ("up", "ctrl+p", "k"):
-                    event.prevent_default(); event.stop()
-                    history_list.action_cursor_up()
-                    return
-                elif event.key in ("down", "ctrl+n", "j"):
-                    event.prevent_default(); event.stop()
-                    history_list.action_cursor_down()
-                    return
-                elif event.key in ("pageup",):
-                    event.prevent_default(); event.stop()
-                    history_list.action_cursor_page_up()
-                    return
-                elif event.key in ("pagedown",):
-                    event.prevent_default(); event.stop()
-                    history_list.action_cursor_page_down()
-                    return
-                elif event.key == "home":
-                    event.prevent_default(); event.stop()
-                    history_list.action_first()
-                    return
-                elif event.key == "end":
-                    event.prevent_default(); event.stop()
-                    history_list.action_last()
-                    return
-            except Exception:
-                pass
-
         now = time.monotonic()
         if event.key in ("down", "up", "shift+up", "shift+down"):
             if now - self._last_nav_time < self._nav_cooldown:
@@ -394,9 +363,7 @@ class SnippetPreview(EmacsBaseTextArea):
 
         if event.key in ("escape", "ctrl+g"):
             event.prevent_default(); event.stop()
-            if self.app.is_history_open():
-                self.app.action_toggle_history()
-            elif self._mark_point is not None or self.selected_text:
+            if self._mark_point is not None or self.selected_text:
                 self._clear_mark()
                 self.app.notify("Quit", timeout=1.0)
             else:
@@ -526,36 +493,6 @@ class ExpandingInput(EmacsBaseTextArea):
             self.app.action_quit()
             return
 
-        if self.app.is_history_open():
-            try:
-                history_list = self.app.query_one("#history", HistoryList)
-                if event.key in ("up", "ctrl+p", "k"):
-                    event.prevent_default(); event.stop()
-                    history_list.action_cursor_up()
-                    return
-                elif event.key in ("down", "ctrl+n", "j"):
-                    event.prevent_default(); event.stop()
-                    history_list.action_cursor_down()
-                    return
-                elif event.key in ("pageup",):
-                    event.prevent_default(); event.stop()
-                    history_list.action_cursor_page_up()
-                    return
-                elif event.key in ("pagedown",):
-                    event.prevent_default(); event.stop()
-                    history_list.action_cursor_page_down()
-                    return
-                elif event.key == "home":
-                    event.prevent_default(); event.stop()
-                    history_list.action_first()
-                    return
-                elif event.key == "end":
-                    event.prevent_default(); event.stop()
-                    history_list.action_last()
-                    return
-            except Exception:
-                pass
-
         now = time.monotonic()
         if event.key in ("down", "up", "shift+up", "shift+down"):
             if now - self._last_nav_time < self._nav_cooldown:
@@ -638,9 +575,7 @@ class ExpandingInput(EmacsBaseTextArea):
 
         if event.key in ("ctrl+g", "escape"):
             event.prevent_default(); event.stop()
-            if self.app.is_history_open():
-                self.app.action_toggle_history()
-            elif self._mark_point is not None or self.selected_text:
+            if self._mark_point is not None or self.selected_text:
                 self._clear_mark()
                 self.app.notify("Quit", timeout=1.0)
             return

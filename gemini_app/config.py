@@ -19,6 +19,9 @@ ARCHIVE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
 SCREENSHOTS_DIR: Path = GEMINI_HOME / "screenshots"
 SCREENSHOTS_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
 
+VAULT_DIR: Path = GEMINI_HOME / "vault"
+VAULT_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+
 PROJECTS_DIR: Path = Path.home() / "Projects"
 PROJECTS_DIR.mkdir(mode=0o755, parents=True, exist_ok=True)
 

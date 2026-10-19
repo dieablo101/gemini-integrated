@@ -73,6 +73,25 @@ def normalize_note_text(text: str) -> str:
     return s.strip()
 
 
+def infer_note_status(content: str) -> str:
+    """Thoughtfully infers note status (get_back_to, working, reference, think_about) from content semantics."""
+    cl = (content or "").lower()
+    # Action items / todos / follow-ups
+    if re.search(r"\b(todo|must|get\s*back|fix|remember\s*to|need\s*to|action(?:\s*item)?|follow-?up|verify)\b", cl):
+        return "get_back_to"
+    # Working / active development scratchpad items
+    elif re.search(r"\b(working\s*on|in\s*progress|current\s*task|implementing|active:|scratchpad|wip)\b", cl):
+        return "working"
+    # Informational reference / lookup / general notes / docs
+    elif re.search(r"\b(fyi|ref:|reference:|info:|docs:|documentation:|general\s*note|lookup:)\b", cl):
+        return "reference"
+    # Brainstorming / thoughts
+    elif re.search(r"\b(think(?:\s*about)?|idea:|consider|ponder|brainstorm|maybe|what\s*if)\b", cl):
+        return "think_about"
+    # Thoughtful default for general notes / observations
+    return "think_about"
+
+
 @dataclass
 class NoteItem:
     """Represents a single atomic note managed by Gemini."""
@@ -506,12 +525,7 @@ class NotesManager:
                         continue
 
                     # Infer status
-                    status = "think_about"
-                    cl_lower = clean_line.lower()
-                    if any(w in cl_lower for w in ("todo", "must", "get back", "fix", "remember to", "need to", "action:")):
-                        status = "get_back_to"
-                    elif any(w in cl_lower for w in ("working on", "in progress", "current task", "implementing")):
-                        status = "working"
+                    status = infer_note_status(clean_line)
 
                     item = self.record_note(
                         content=clean_line,
@@ -534,15 +548,36 @@ class NotesManager:
             target_topic = topic_match.group(1).strip().lower()
             text = re.sub(r"(?:^|\n)(?:#\s*topic:|\bTopic:)\s*[a-zA-Z0-9_\-]+", "", text, flags=re.IGNORECASE).strip()
 
-        # Infer status from text semantics
-        status = "think_about"
-        text_lower = text.lower()
-        if any(w in text_lower for w in ("todo", "must", "get back", "fix", "remember to", "need to", "action:")):
-            status = "get_back_to"
-        elif any(w in text_lower for w in ("working on", "in progress", "current task", "implementing")):
-            status = "working"
+        # Check if the input is a bullet list or numbered list with multiple items
+        raw_lines = [l.strip() for l in text.splitlines() if l.strip()]
+        is_bullet_list = len(raw_lines) > 1 and all(re.match(r"^(?:[•\-\*]|\d+[\.\)])\s+", l) for l in raw_lines)
 
+        if is_bullet_list:
+            consumed_items: list[NoteItem] = []
+            for line in raw_lines:
+                clean_line = re.sub(r"^(?:[•\-\*]|\d+[\.\)])\s+", "", line).strip()
+                clean_line = normalize_note_text(clean_line)
+                if not clean_line or len(clean_line) < 2:
+                    continue
+                line_status = infer_note_status(clean_line)
+                line_tags = re.findall(r"#([a-zA-Z0-9_\-]+)", clean_line)
+                item = self.record_note(
+                    content=clean_line,
+                    topic=target_topic,
+                    status=line_status,
+                    author="user",
+                    relevant=True,
+                    turn_id=turn_id,
+                    tags=line_tags,
+                )
+                if item:
+                    consumed_items.append(item)
+            self.deduplicate_notes()
+            return consumed_items
+
+        # Single note item or cohesive multiline note
         extracted_tags = re.findall(r"#([a-zA-Z0-9_\-]+)", text)
+        status = infer_note_status(text)
 
         item = self.record_note(
             content=text,
@@ -562,7 +597,7 @@ class NotesManager:
         base_topic = (default_topic or self.current_topic or "general").strip().lower()
 
         directive_regex = re.compile(
-            r"(?:^|\n)((?:NOTE|Note|note|REMEMBER TO|Remember to|REMEMBER|Remember|TODO|Todo|todo|FIX|Fix|NEED TO|Need to|MUST|Must|THINK ABOUT|Think about|GET BACK TO|Get back to|ACTION|Action)s?):\s*(.+?)(?=\n(?:[A-Z#•\*-]|\Z)|\Z)",
+            r"(?:^|\n)((?:NOTE|Note|note|REMEMBER TO|Remember to|REMEMBER|Remember|TODO|Todo|todo|FIX|Fix|NEED TO|Need to|MUST|Must|THINK ABOUT|Think about|GET BACK TO|Get back to|ACTION|Action|FYI|Fyi|fyi|GENERAL NOTE|General note|GENERAL|General|REF|Ref|REFERENCE|Reference)s?):\s*(.+?)(?=\n(?:[A-Z#•\*-]|\Z)|\Z)",
             re.MULTILINE,
         )
 
@@ -588,11 +623,13 @@ class NotesManager:
                 p_lower = prefix.lower()
                 c_lower = content.lower()
 
-                # Infer status from directive prefix and content
+                # Infer status thoughtfully from directive prefix and content
                 if any(w in p_lower or w in c_lower for w in ("todo", "must", "get back", "fix", "remember", "need to", "action")):
                     status = "get_back_to"
                 elif any(w in p_lower or w in c_lower for w in ("think", "consider", "ponder", "idea", "brainstorm")):
                     status = "think_about"
+                elif any(w in p_lower or w in c_lower for w in ("fyi", "ref", "reference", "general")):
+                    status = "reference"
                 else:
                     status = "working"
 
@@ -846,17 +883,22 @@ class NotesManager:
 
     @classmethod
     def from_data(cls, data: Any) -> NotesManager:
-        """Constructs NotesManager from arbitrary raw storage data (str, dict, or None)."""
+        """Constructs NotesManager dynamically from arbitrary raw storage data (str, dict, list, or None)."""
         if not data:
             return cls()
 
-        # Handle plain string from old saves
+        # 1. Plain string (e.g. legacy saves or direct text)
         if isinstance(data, str):
             clean_str = sanitize_working_notes(data)
-            return cls(working_notes=clean_str)
+            mgr = cls(working_notes=clean_str)
+            if clean_str:
+                mgr.consume_user_input(raw_text=data, active_topic="general")
+                if clean_str and not mgr.working_notes:
+                    mgr.working_notes = clean_str
+            return mgr
 
         if isinstance(data, dict):
-            # Nested managed_notes dict
+            # 2. Nested managed_notes dict
             if "managed_notes" in data and isinstance(data["managed_notes"], dict):
                 inner = data["managed_notes"]
                 w_notes = sanitize_working_notes(str(inner.get("working_notes", "") or ""))
@@ -864,38 +906,72 @@ class NotesManager:
                 items = [NoteItem.from_dict(d) for d in inner.get("notes", []) if isinstance(d, dict)]
                 return cls(working_notes=w_notes, current_topic=c_topic, notes=items)
 
-            # Direct manager dict
-            if "working_notes" in data or "notes" in data:
-                raw_w = str(data.get("working_notes") or data.get("gemini_notes") or "")
-                w_notes = sanitize_working_notes(raw_w)
-                c_topic = str(data.get("current_topic", "general") or "general")
-                items = [NoteItem.from_dict(d) for d in data.get("notes", []) if isinstance(d, dict)]
+            # 3. Direct manager dict or legacy chat payload
+            raw_w = str(data.get("working_notes") or data.get("gemini_notes") or "")
+            w_notes = sanitize_working_notes(raw_w)
+            c_topic = str(data.get("current_topic", "general") or data.get("topic", "general") or "general")
 
-                # Ingest legacy relational_notes if notes list was empty
-                if not items and "relational_notes" in data and isinstance(data["relational_notes"], dict):
-                    for tid, text in data["relational_notes"].items():
-                        if text and str(text).strip():
+            items: list[NoteItem] = []
+            notes_field = data.get("notes")
+
+            if isinstance(notes_field, list):
+                for d in notes_field:
+                    if isinstance(d, dict):
+                        items.append(NoteItem.from_dict(d))
+                    elif isinstance(d, str) and d.strip():
+                        clean_d = normalize_note_text(d)
+                        if clean_d:
                             items.append(NoteItem(
                                 id=f"n_{uuid4().hex[:6]}",
-                                topic="conversation",
-                                content=str(text).strip(),
-                                status="working",
-                                author="gemini",
-                                relevant=True,
-                                turn_id=str(tid),
+                                topic=c_topic,
+                                content=clean_d,
+                                status=infer_note_status(clean_d),
+                                author="user",
                             ))
+            elif isinstance(notes_field, dict):
+                nested_mgr = cls.from_data(notes_field)
+                if nested_mgr.working_notes and not w_notes:
+                    w_notes = nested_mgr.working_notes
+                items.extend(nested_mgr.notes)
+            elif isinstance(notes_field, str) and notes_field.strip():
+                clean_str = sanitize_working_notes(notes_field)
+                if clean_str and not w_notes:
+                    w_notes = clean_str
+                temp_mgr = cls(working_notes=w_notes, current_topic=c_topic)
+                temp_mgr.consume_user_input(raw_text=notes_field, active_topic=c_topic)
+                items.extend(temp_mgr.notes)
 
-                # Ingest legacy global_notes if notes list was empty
-                if "global_notes" in data and data["global_notes"] and str(data["global_notes"]).strip():
-                    items.append(NoteItem(
-                        id=f"n_{uuid4().hex[:6]}",
-                        topic="global",
-                        content=str(data["global_notes"]).strip(),
-                        status="reference",
-                        author="user",
-                        relevant=False,
-                    ))
+            # Ingest legacy relational_notes
+            if "relational_notes" in data and isinstance(data["relational_notes"], dict):
+                for tid, text in data["relational_notes"].items():
+                    if text and str(text).strip():
+                        items.append(NoteItem(
+                            id=f"n_{uuid4().hex[:6]}",
+                            topic="conversation",
+                            content=str(text).strip(),
+                            status="working",
+                            author="gemini",
+                            relevant=True,
+                            turn_id=str(tid),
+                        ))
 
-                return cls(working_notes=w_notes, current_topic=c_topic, notes=items)
+            # Ingest legacy global_notes
+            if "global_notes" in data and data["global_notes"] and str(data["global_notes"]).strip():
+                items.append(NoteItem(
+                    id=f"n_{uuid4().hex[:6]}",
+                    topic="global",
+                    content=str(data["global_notes"]).strip(),
+                    status="reference",
+                    author="user",
+                    relevant=False,
+                ))
+
+            # If raw_w has content but no items were created, thoughtfully consume raw_w as note(s)
+            if raw_w and not items and not notes_field:
+                temp_mgr = cls(working_notes=raw_w, current_topic=c_topic)
+                temp_mgr.consume_user_input(raw_text=raw_w, active_topic=c_topic)
+                items.extend(temp_mgr.notes)
+
+            return cls(working_notes=w_notes, current_topic=c_topic, notes=items)
 
         return cls()

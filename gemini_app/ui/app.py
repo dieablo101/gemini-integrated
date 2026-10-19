@@ -870,7 +870,7 @@ class ChatApp(App):
                 )
                 self.set_timer(0.4, lambda: self.notify(rep, title="Update Notes", timeout=8.0))
 
-            self.set_timer(2.1, _post_boot_notify)
+            self.set_timer(0.3, _post_boot_notify)
 
     def show_loader_banner(self) -> None:
         try:
@@ -1568,6 +1568,8 @@ class ChatApp(App):
             "global_notes": self.global_notes or "",
             "relational_notes": self.relational_notes or {},
         }
+        if hasattr(self, "notes_manager") and self.notes_manager:
+            notes_payload.update(self.notes_manager.to_dict())
 
         if self.is_legacy_chat:
             # Save strictly to legacy flat JSON file
@@ -2475,6 +2477,14 @@ class ChatApp(App):
                 items = [n.to_dict() for n in self.notes_manager.get_notes_by_topic(target_topic)]
                 return {"status": "success", "topic": target_topic, "count": len(items), "notes": items}
 
+            elif act in ("all", "list", "notes"):
+                items = [n.to_dict() for n in self.notes_manager.get_notes(include_archived=False)]
+                return {"status": "success", "count": len(items), "notes": items}
+
+            elif act in ("search", "find", "query"):
+                items = [n.to_dict() for n in self.notes_manager.search_notes(content, include_archived=True)]
+                return {"status": "success", "query": content, "count": len(items), "notes": items}
+
             elif act in ("scan_chat", "scan"):
                 added = self.notes_manager.scan_chat_for_notes(self.history)
                 self.app.call_from_thread(self.schedule_notes_flush)
@@ -2758,7 +2768,10 @@ class ChatApp(App):
                     fn_name = part.function_call.name
                     fn_args = dict(part.function_call.args) if part.function_call.args else {}
 
-                    self.app.call_from_thread(self.post_message, RequestPhaseUpdate("probing"))
+                    self.app.call_from_thread(
+                        self.post_message,
+                        RequestPhaseUpdate("probing", f"Running {fn_name}"),
+                    )
 
                     # Execute local tool
                     if fn_name in available_tools:
@@ -2770,7 +2783,10 @@ class ChatApp(App):
                         fn_result = {"error": f"Tool '{fn_name}' not recognized."}
 
                     # Transition status UI back to waiting before sending the tool result back across the wire
-                    self.app.call_from_thread(self.post_message, RequestPhaseUpdate("waiting", "waiting on Gemini response"))
+                    self.app.call_from_thread(
+                        self.post_message,
+                        RequestPhaseUpdate("waiting", f"Analyzed {fn_name} — consulting Gemini"),
+                    )
 
                     # Feed tool response back into the active thought process with silent quota retry
                     part_resp = types.Part.from_function_response(

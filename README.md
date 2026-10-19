@@ -43,10 +43,10 @@ Install the required dependencies:
 pip install textual google-genai rich pyperclip
 ```
 
-Ensure `gemini.py` is executable:
+Ensure `gemini-integrated.py` is executable:
 
 ```bash
-chmod +x gemini.py
+chmod +x gemini-integrated.py
 ```
 
 ---
@@ -57,7 +57,7 @@ Set your Gemini API key and run the script:
 
 ```bash
 export GEMINI_API_KEY="your-api-key-here"
-./gemini.py
+./gemini-integrated.py
 ```
 
 ### Remote Code Insertion (from Bash / External Tools)
@@ -88,7 +88,7 @@ s.close()
 ## File Structure
 
 ```text
-├── gemini.py             # Main application executable
+├── gemini-integrated.py  # Main application executable
 └── chats/                # Conversation sessions stored as JSON
     ├── <id>.json
     └── ...

@@ -1200,10 +1200,23 @@ class ChatApp(App):
         except Exception:
             pass
 
+        reboot_argv = list(sys.argv)
+        if reboot_argv:
+            target = reboot_argv[0]
+            if not os.path.exists(target) or os.path.basename(target) in ("modular_runner.py", "gemini.py"):
+                for cand in (
+                    os.path.join(os.path.dirname(target), "gemini-integrated.py"),
+                    "gemini-integrated.py",
+                    "/opt/gemini/gemini-integrated.py",
+                ):
+                    if cand and os.path.exists(cand):
+                        reboot_argv[0] = cand
+                        break
+
         try:
-            os.execv(sys.executable, [sys.executable] + sys.argv)
+            os.execv(sys.executable, [sys.executable] + reboot_argv)
         except Exception:
-            subprocess.Popen([sys.executable] + sys.argv)
+            subprocess.Popen([sys.executable] + reboot_argv)
             sys.exit(0)
 
     def _read_and_clear_reboot_report(self) -> str | None:

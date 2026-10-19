@@ -83,7 +83,7 @@ def infer_note_status(content: str) -> str:
     elif re.search(r"\b(working\s*on|in\s*progress|current\s*task|implementing|active:|scratchpad|wip)\b", cl):
         return "working"
     # Informational reference / lookup / general notes / docs
-    elif re.search(r"\b(fyi|ref:|reference:|info:|docs:|documentation:|general\s*note|lookup:)\b", cl):
+    elif re.search(r"\b(fyi|ref|reference|info|docs|documentation|general\s*note|lookup)\b", cl):
         return "reference"
     # Brainstorming / thoughts
     elif re.search(r"\b(think(?:\s*about)?|idea:|consider|ponder|brainstorm|maybe|what\s*if)\b", cl):

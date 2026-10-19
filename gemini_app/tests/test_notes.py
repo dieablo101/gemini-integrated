@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 from gemini_app.storage.notes_manager import (
     NoteItem,
     NotesManager,
+    infer_note_status,
     normalize_note_text,
     sanitize_working_notes,
 )
@@ -106,6 +107,62 @@ class TestNotesManager(unittest.TestCase):
         self.assertEqual(self.mgr.working_notes, "Active task: tuning socket heartbeat")
         rel_notes = self.mgr.get_relevant_notes("network")
         self.assertTrue(any("latency" in n.content.lower() for n in rel_notes))
+
+    def test_infer_note_status(self):
+        self.assertEqual(infer_note_status("TODO: refactor database queries"), "get_back_to")
+        self.assertEqual(infer_note_status("Must verify TLS handshake timeout"), "get_back_to")
+        self.assertEqual(infer_note_status("Working on canvas shader effects"), "working")
+        self.assertEqual(infer_note_status("FYI: API endpoints moved to /v2"), "reference")
+        self.assertEqual(infer_note_status("Documentation: see /docs/architecture.md"), "reference")
+        self.assertEqual(infer_note_status("Consider using reactive stream buffering"), "think_about")
+        self.assertEqual(infer_note_status("NOTES TEST"), "think_about")
+
+    def test_consume_bullet_list_general_notes(self):
+        bullet_input = (
+            "• Fix audio clipping on iOS #audio\n"
+            "• FYI: default buffer is 4096 samples\n"
+            "• Think about 96kHz resampling"
+        )
+        items = self.mgr.consume_user_input(bullet_input, default_topic="sound")
+        self.assertEqual(len(items), 3)
+        self.assertEqual(items[0].status, "get_back_to")
+        self.assertIn("audio", items[0].tags)
+        self.assertEqual(items[1].status, "reference")
+        self.assertEqual(items[2].status, "think_about")
+
+    def test_from_data_legacy_and_unstructured(self):
+        # 1. Plain string notes (e.g. from data["notes"] = "NOTES TEST")
+        mgr1 = NotesManager.from_data("NOTES TEST")
+        self.assertEqual(mgr1.working_notes, "NOTES TEST")
+        self.assertEqual(len(mgr1.notes), 1)
+        self.assertEqual(mgr1.notes[0].content, "NOTES TEST")
+        self.assertEqual(mgr1.notes[0].author, "user")
+
+        # 2. Dict with unstructured string in data["notes"]
+        mgr2 = NotesManager.from_data({"title": "Test Chat", "notes": "NOTES TEST"})
+        self.assertEqual(mgr2.working_notes, "NOTES TEST")
+        self.assertEqual(len(mgr2.notes), 1)
+        self.assertEqual(mgr2.notes[0].content, "NOTES TEST")
+
+        # 3. Dict with legacy dictionary in data["notes"]
+        legacy_dict = {
+            "title": "Old chat",
+            "notes": {
+                "gemini_notes": "Calibrate frame timings",
+                "global_notes": "System config: 8 cores",
+                "relational_notes": {"turn_1": "Discussed initial layout"},
+            },
+        }
+        mgr3 = NotesManager.from_data(legacy_dict)
+        self.assertEqual(mgr3.working_notes, "Calibrate frame timings")
+        self.assertTrue(any("System config" in n.content for n in mgr3.notes))
+        self.assertTrue(any("Discussed initial layout" in n.content for n in mgr3.notes))
+
+        # 4. Dict with list of plain string notes
+        mgr4 = NotesManager.from_data({"notes": ["Note one", "Note two"]})
+        self.assertEqual(len(mgr4.notes), 2)
+        self.assertEqual(mgr4.notes[0].content, "Note one")
+        self.assertEqual(mgr4.notes[1].content, "Note two")
 
     def test_consume_user_input_no_duplicates_on_resave(self):
         # Initial note in manager

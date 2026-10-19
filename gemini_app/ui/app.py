@@ -837,6 +837,18 @@ class ChatApp(App):
 
         reboot_report = self._read_and_clear_reboot_report()
         if reboot_report:
+            # Post post-reboot message directly into the chat feed
+            try:
+                feed = self.query_one("#feed", FeedArea)
+                await feed.append_message("gemini", reboot_report, jump_to_start=True)
+                new_turn_id = f"turn_{uuid4().hex[:8]}"
+                self.history.append({"turn_id": new_turn_id, "role": "model", "text": reboot_report})
+                self.current_chat_last_index = max(0, len(self.history) - 1)
+                self.current_chat_center_marker = new_turn_id
+                self.save_current_chat()
+            except Exception:
+                pass
+
             snap_idx = 1
             try:
                 snap_entry = capture_ui_snapshot(
@@ -847,14 +859,9 @@ class ChatApp(App):
                     persistent=True,
                 )
                 snap_idx = snap_entry.get("index", 1)
-                self.notify(
-                    f"📸 Snapshot #{snap_idx} captured: Post-reboot visual layout audited.",
-                    title="Visual Audit",
-                    timeout=4.0,
-                )
             except Exception:
                 pass
-            self.set_timer(0.4, lambda: self.notify(reboot_report, title="Update Notes", timeout=8.0))
+
             def _post_boot_notify(idx=snap_idx, rep=reboot_report):
                 self.notify(
                     f"📸 Snapshot #{idx} captured: Post-reboot visual layout audited.",
@@ -862,6 +869,7 @@ class ChatApp(App):
                     timeout=4.0,
                 )
                 self.set_timer(0.4, lambda: self.notify(rep, title="Update Notes", timeout=8.0))
+
             self.set_timer(2.1, _post_boot_notify)
 
     def show_loader_banner(self) -> None:

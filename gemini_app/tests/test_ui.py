@@ -137,3 +137,7 @@ class TestUIApp(unittest.IsolatedAsyncioTestCase):
             index = get_snapshot_index()
             audit_entries = [e for e in index if e.get("label") == "post_reboot_audit"]
             self.assertTrue(len(audit_entries) >= 1, "Expected post_reboot_audit snapshot entry")
+            # Verify post-reboot status message was injected directly into active chat feed
+            self.assertEqual(len(app.history), 1)
+            self.assertEqual(app.history[0]["role"], "model")
+            self.assertIn("✓ Test Reboot Complete: 100% operational.", app.history[0]["text"])

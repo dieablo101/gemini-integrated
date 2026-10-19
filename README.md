@@ -103,8 +103,8 @@ gemini
 ### 6. Crash Guardian & Autonomous Git Rollback
 - Self-healing supervision wraps the Textual event loop. If an unhandled exception or bad patch occurs during a reboot or migration, the Guardian automatically performs a git rollback to the last verified stable commit and restarts cleanly.
 
-### 7. Conversational Branching (Forking `C-c .`)
-- Select any subset of messages from a conversation and fork them into a brand-new chat branch with ancestor tracking.
+### 7. Conversational Branching (Autonomous Exploration Engine)
+- Background conversational branching with ancestor tracking reserved for autonomous exploration by Gemini.
 
 ### 8. Emacs Client & Unix Socket IPC
 - **Unix Domain Socket** (`~/.gemini/gemini_textual.sock`): External tools, scripts, or IDEs can inject code snippets directly into the active prompt buffer.
@@ -119,7 +119,7 @@ gemini
 | `C-c c` | Open Keyboard Shortcuts Cheat Sheet |
 | `C-c m` | Open Cognitive Mind Map & Steering Screen |
 | `C-c [` | Toggle Tri-Modal Notes Panel |
-| `C-c .` | Toggle Chat Forking / Branching Selection |
+| `Alt + n` / `Alt + p` | Navigate Snippets (Next / Previous) |
 | `C-c r` | Save Active Snippet to Disk |
 | `C-c f` | Insert File from Disk into Prompt |
 | `C-c g` | Open Git Tree Explorer & File Multi-Selector |

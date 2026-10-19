@@ -616,9 +616,10 @@ class ChatApp(App):
         elif key in ("ctrl+g", "g") or char == "g":
             self.action_open_git_tree()
             return True
-        elif key in ("period", "full_stop", ".") or char == ".":
-            self.action_fork_chat()
-            return True
+        # for later exploration by gemini
+        # elif key in ("period", "full_stop", ".") or char == ".":
+        #     self.action_fork_chat()
+        #     return True
         elif key in ("grave", "backtick", "`") or char == "`":
             self.action_take_snapshot(label="", taken_by="user", source="shortcut")
             return True
@@ -789,11 +790,12 @@ class ChatApp(App):
                     if self._nav_indicator_action == "mind"
                     else "C-c m: Mind"
                 )
-                fork_item = (
-                    f"[bold {indicator_accent} reverse] C-c .: Fork [/]"
-                    if self._nav_indicator_action == "fork"
-                    else "C-c .: Fork"
-                )
+                # for later exploration by gemini
+                # fork_item = (
+                #     f"[bold {indicator_accent} reverse] C-c .: Fork [/]"
+                #     if self._nav_indicator_action == "fork"
+                #     else "C-c .: Fork"
+                # )
 
                 items = [
                     f"{up_scroll}/{dn_scroll}: Scroll",
@@ -802,7 +804,6 @@ class ChatApp(App):
                     edge_item,
                     snippets_item,
                     mind_item,
-                    fork_item,
                 ]
                 content = self._render_flow_nav_banner(items, sep_markup, sep_plain, avail_w)
 
@@ -1793,6 +1794,7 @@ class ChatApp(App):
             except Exception:
                 pass
 
+    # for later exploration by gemini
     def action_fork_chat(self) -> None:
         feed = self.query_one("#feed", FeedArea)
 

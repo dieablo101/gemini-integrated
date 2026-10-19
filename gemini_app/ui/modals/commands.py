@@ -111,7 +111,9 @@ class CommandsModal(ResponsiveModalScreen[None]):
             yield Label("[bold]C-c r[/]          : Save selected code snippet directly to disk", classes="cmd_row")
             yield Label("[bold]C-c f[/]          : Insert file content from disk as snippet", classes="cmd_row")
             yield Label("[bold]C-c g[/]          : Scan repository & open Git tree selector", classes="cmd_row")
-            yield Label("[bold]C-c .[/]          : Toggle Fork mode to fork turns", classes="cmd_row")
+            # for later exploration by gemini
+            # yield Label("[bold]C-c .[/]          : Toggle Fork mode to fork turns", classes="cmd_row")
+            yield Label("[bold]Alt+n / Alt+p[/]  : Navigate next / previous snippet", classes="cmd_row")
             yield Label("[bold]C-c `[/]          : Take ephemeral UI snapshot (auto-deleted after review)", classes="cmd_row")
 
             yield Label("Notes System:", classes="cmd_section_title")

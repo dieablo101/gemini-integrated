@@ -11,6 +11,7 @@ from gemini_app.ui.modals.inputs import (
     FilePathInput,
     TitlePromptModal,
 )
+from gemini_app.ui.modals.password import PasswordModal, PasswordPromptModal
 from gemini_app.ui.modals.snippets import (
     FrameSelectModal,
     GitTreeModal,
@@ -21,6 +22,8 @@ from gemini_app.ui.modals.snippets import (
 __all__ = [
     "ApiKeyModal",
     "GitSetupModal",
+    "PasswordModal",
+    "PasswordPromptModal",
     "ResponsiveModalScreen",
     "CommandsModal",
     "ConfirmModal",

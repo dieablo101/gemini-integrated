@@ -120,6 +120,7 @@ from gemini_app.ui.modals import (
     GitSetupModal,
     GitTreeModal,
     InsertFileModal,
+    PasswordModal,
     ResponsiveModalScreen,
     TitlePromptModal,
     WriteSnippetModal,
@@ -225,6 +226,9 @@ class ChatApp(App):
             "api-key": lambda _: self.action_configure_api_key(),
             "git-setup": lambda _: self.action_configure_git(),
             "credentials": lambda _: self.action_configure_git(),
+            "vault": lambda _: self.action_vault_passkey(),
+            "passkey": lambda _: self.action_vault_passkey(),
+            "password": lambda _: self.action_vault_passkey(),
             "scaffold": self._cmd_scaffold_project,
             "new-project": self._cmd_scaffold_project,
             "sys-deps": lambda _: self._cmd_sys_deps(),
@@ -251,6 +255,54 @@ class ChatApp(App):
                     self.user_real_name = name
                 self.notify("Git credentials and project author updated!", title="Git Setup Complete")
         self.push_screen(GitSetupModal(), _on_git_done)
+
+    def prompt_password(
+        self,
+        title: str = "🔐 Password Required",
+        message: str = "Please enter your password or passkey:",
+        placeholder: str = "••••••••",
+        submit_label: str = "Confirm",
+        allow_empty: bool = False,
+        callback: Callable[[str | None], None] | None = None,
+    ) -> None:
+        """Opens PasswordModal to securely prompt for a passkey or password without exposing it in the input field."""
+        self.push_screen(
+            PasswordModal(
+                title=title,
+                message=message,
+                placeholder=placeholder,
+                submit_label=submit_label,
+                allow_empty=allow_empty,
+            ),
+            callback,
+        )
+
+    def action_vault_passkey(self) -> None:
+        """Opens PasswordModal to securely verify or configure vault passkey."""
+        from gemini_app.vault import is_vault_configured, set_vault_passkey, verify_vault_passkey
+        is_cfg = is_vault_configured()
+        title = "🔐 Vault Passkey Verification" if is_cfg else "🔐 Set Vault Passkey"
+        msg = "Enter your vault passkey to verify credentials:" if is_cfg else "Enter a new passkey to encrypt and protect your ~/.gemini/vault:"
+
+        def _on_entered(pswrd: str | None) -> None:
+            if not pswrd:
+                self.notify("Vault passkey entry cancelled.", severity="warning")
+                return
+            if is_cfg:
+                if verify_vault_passkey(pswrd):
+                    self.notify("✓ Vault passkey verified successfully.", timeout=3.5)
+                else:
+                    self.notify("Incorrect vault passkey.", severity="error")
+            else:
+                set_vault_passkey(pswrd)
+                self.notify("✓ Vault passkey set and secured.", timeout=3.5)
+
+        self.prompt_password(
+            title=title,
+            message=msg,
+            submit_label="Unlock" if is_cfg else "Set Passkey",
+            callback=_on_entered,
+        )
 
     def _cmd_scaffold_project(self, arg: str) -> None:
         """Scaffolds a new project in ~/Projects with Git, README.md, and MIT LICENSE."""
@@ -2493,6 +2545,20 @@ class ChatApp(App):
                 self.call_after_refresh(lambda: self.append_to_feed("system", "\n".join(lines), jump_to_start=False))
             return True
 
+        elif verb in ("vault", "passkey", "password"):
+            if arg:
+                self.notify("⚠️ Passwords should never be typed into the input field! Opening secure modal...", severity="warning", timeout=4.0)
+            self.action_vault_passkey()
+            return True
+
+        elif verb == "api-key":
+            self.action_configure_api_key()
+            return True
+
+        elif verb in ("git-setup", "git_setup"):
+            self.action_configure_git()
+            return True
+
         elif verb == "clear":
             self.history = []
             feed = self.query_one("#feed", FeedArea)
@@ -2504,6 +2570,9 @@ class ChatApp(App):
         elif verb == "help":
             help_text = (
                 "### Console Slash Commands\n"
+                "- `/vault`: Open secure password modal for vault passkey\n"
+                "- `/api-key`: Update Google Gemini API key via modal\n"
+                "- `/git-setup`: Configure Real Name & Git credentials\n"
                 "- `/theme <name>`: Switch color theme (e.g. `/theme amber`, `/theme hacker`)\n"
                 "- `/themes`: List all available color themes\n"
                 "- `/project <name> [desc]`: Scaffold a new project in ~/Projects (Git, README, LICENSE)\n"

@@ -37,6 +37,8 @@ class ToolRegistry:
         snapshot_callback: Optional[Callable[[str], Dict[str, Any]]] = None,
         memory_index: Optional[MemoryIndex] = None,
         notes_callback: Optional[Callable[..., Dict[str, Any]]] = None,
+        introspection_callback: Optional[Callable[[str], Dict[str, Any]]] = None,
+        ui_interact_callback: Optional[Callable[..., Dict[str, Any]]] = None,
     ) -> None:
         self.working_dir = working_dir
         self.history = history
@@ -45,6 +47,8 @@ class ToolRegistry:
         self.snapshot_callback = snapshot_callback
         self.memory_index = memory_index or MemoryIndex()
         self.notes_callback = notes_callback
+        self.introspection_callback = introspection_callback
+        self.ui_interact_callback = ui_interact_callback
 
     def _notify_phase(self, phase: str, details: str = "") -> None:
         if self.phase_callback:
@@ -210,6 +214,34 @@ class ToolRegistry:
                 "dependencies": _check_system_deps(commands=packages),
             }
 
+        def introspect_console(tier: str = "all") -> Dict[str, Any]:
+            """Introspects bilateral application state across Tier 1 (visual/layout), Tier 2 (runtime/environment), and Tier 3 (workflow/anchors)."""
+            self._notify_phase("introspecting", f"introspecting app state ({tier})")
+            if self.introspection_callback:
+                return self.introspection_callback(tier)
+            return {"status": "error", "message": "Introspection callback unavailable in this context."}
+
+        def interact_ui(
+            action: str = "accent_talk",
+            target: str = "all",
+            palette: str = "",
+            effect: str = "none",
+            duration: float = 3.0,
+            message: str = "",
+        ) -> Dict[str, Any]:
+            """Interacts with the console UI: alters accent colors on the fly, switches themes, or triggers playful reactive animations in the Mind view."""
+            self._notify_phase("animating", f"UI interaction ({action} on {target})")
+            if self.ui_interact_callback:
+                return self.ui_interact_callback(
+                    action=action,
+                    target=target,
+                    palette=palette,
+                    effect=effect,
+                    duration=duration,
+                    message=message,
+                )
+            return {"status": "error", "message": "UI interaction callback unavailable in this context."}
+
         tools_list = [
             scan_workspace_tree,
             expand_mind,
@@ -224,6 +256,8 @@ class ToolRegistry:
             manage_notes,
             scaffold_project,
             manage_system_dependencies,
+            introspect_console,
+            interact_ui,
         ]
 
         tools_dict = {
@@ -240,6 +274,8 @@ class ToolRegistry:
             "manage_notes": manage_notes,
             "scaffold_project": scaffold_project,
             "manage_system_dependencies": manage_system_dependencies,
+            "introspect_console": introspect_console,
+            "interact_ui": interact_ui,
         }
 
         return tools_list, tools_dict

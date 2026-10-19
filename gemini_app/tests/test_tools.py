@@ -185,7 +185,7 @@ class TestTools(unittest.TestCase):
         )
         tools_list, tools_dict = registry.get_tool_callables()
 
-        self.assertEqual(len(tools_list), 13)
+        self.assertEqual(len(tools_list), 15)
         self.assertIn("scan_workspace_tree", tools_dict)
         self.assertIn("expand_mind", tools_dict)
         self.assertIn("recall_memory", tools_dict)
@@ -199,6 +199,8 @@ class TestTools(unittest.TestCase):
         self.assertIn("manage_notes", tools_dict)
         self.assertIn("scaffold_project", tools_dict)
         self.assertIn("manage_system_dependencies", tools_dict)
+        self.assertIn("introspect_console", tools_dict)
+        self.assertIn("interact_ui", tools_dict)
 
         # Call apply_patch through dict
         p_res = tools_dict["apply_patch"](
@@ -245,6 +247,40 @@ class TestTools(unittest.TestCase):
         # Call execute_shell
         tools_dict["execute_shell"](command="echo 'phase test'")
         self.assertTrue(any(p[0] == "executing" and "echo" in p[1] for p in phase_records))
+
+    def test_introspection_and_ui_interaction_tools(self):
+        def dummy_intro(tier: str):
+            return {"status": "success", "tier": tier, "active_theme": "blue"}
+
+        def dummy_ui(action: str, target: str = "all", palette: str = "", effect: str = "none", duration: float = 3.0, message: str = ""):
+            return {"status": "success", "action": action, "target": target, "palette": palette, "effect": effect}
+
+        registry = ToolRegistry(
+            working_dir=self.work_dir,
+            history=[],
+            introspection_callback=dummy_intro,
+            ui_interact_callback=dummy_ui,
+        )
+        _, tools_dict = registry.get_tool_callables()
+
+        # Call introspect_console
+        intro_res = tools_dict["introspect_console"](tier="visual")
+        self.assertEqual(intro_res["status"], "success")
+        self.assertEqual(intro_res["tier"], "visual")
+        self.assertEqual(intro_res["active_theme"], "blue")
+
+        # Call interact_ui
+        ui_res = tools_dict["interact_ui"](
+            action="accent_talk",
+            target="feed",
+            palette="purple",
+            duration=4.0,
+            message="Testing UI talk",
+        )
+        self.assertEqual(ui_res["status"], "success")
+        self.assertEqual(ui_res["action"], "accent_talk")
+        self.assertEqual(ui_res["target"], "feed")
+        self.assertEqual(ui_res["palette"], "purple")
 
 
 if __name__ == "__main__":

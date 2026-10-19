@@ -100,6 +100,12 @@ from gemini_app.storage.rollback import (
     perform_git_rollback,
     record_stable_commit,
 )
+from gemini_app.introspection import (
+    apply_accent_talk,
+    format_introspection_summary,
+    get_console_state,
+    start_mind_animation,
+)
 from gemini_app.tools.registry import ToolRegistry
 from gemini_app.tools.snapshots import capture_ui_snapshot, cleanup_stale_ephemerals, list_held_snapshots
 from gemini_app.ui.boot import BootScreen
@@ -185,6 +191,7 @@ class ChatApp(App):
         self.current_tree_state: list[str | int] = ["T1", "F:gemini_app/"]
         self.current_tree_content: str = "└── Unified Stream [Active]"
         self.saved_prompt_draft: str = ""
+        self._active_mind_animation: dict | None = None
 
         self.notes_open: bool = False
         self._last_focused_input_id: str = "input"
@@ -2180,6 +2187,45 @@ class ChatApp(App):
             self.notify(f"Available themes: {all_themes} (Active: {self.active_palette_name})", timeout=5.0)
             return True
 
+        elif verb in ("accent", "accent-talk"):
+            parts = arg.split(None, 3)
+            if len(parts) < 2:
+                self.notify("Usage: /accent <feed|notes|input|footer|all> <color> [seconds] [message]", severity="warning")
+                return True
+            target = parts[0]
+            color = parts[1]
+            dur = float(parts[2]) if len(parts) > 2 and parts[2].replace(".", "", 1).isdigit() else 3.0
+            msg = parts[3] if len(parts) > 3 else ""
+            res = apply_accent_talk(self, target=target, palette=color, duration=dur, message=msg)
+            if res.get("status") == "success":
+                self.notify(res.get("message", "Accent updated."), timeout=3.0)
+            else:
+                self.notify(res.get("message", "Failed to set accent."), severity="warning")
+            return True
+
+        elif verb == "pulse":
+            parts = arg.split(None, 1)
+            color = parts[0] if parts else self.active_palette_name
+            dur = float(parts[1]) if len(parts) > 1 and parts[1].replace(".", "", 1).isdigit() else 2.5
+            apply_accent_talk(self, target="all", palette=color, duration=dur, message=f"Pulsing theme accent '{color}'!")
+            return True
+
+        elif verb in ("mind-anim", "anim", "animation"):
+            parts = arg.split(None, 3)
+            effect = parts[0] if parts else "sparkle"
+            color = parts[1] if len(parts) > 1 else ""
+            dur = float(parts[2]) if len(parts) > 2 and parts[2].replace(".", "", 1).isdigit() else 4.0
+            msg = parts[3] if len(parts) > 3 else ""
+            start_mind_animation(self, effect=effect, palette=color, duration=dur, message=msg)
+            return True
+
+        elif verb in ("state", "status-state", "introspect"):
+            t = arg.strip().lower() or "all"
+            state_data = get_console_state(self, tier=t)
+            formatted = json.dumps(state_data, indent=2)
+            self.call_after_refresh(lambda: self.append_to_feed("system", f"### Introspected App State (Tier: {t})\n```json\n{formatted}\n```", jump_to_start=False))
+            return True
+
         elif verb in ("title", "task"):
             if not arg:
                 curr = getattr(self, "active_task_title", "") or self.current_gemini_state
@@ -2647,6 +2693,39 @@ class ChatApp(App):
                     "relevant_notes": [n.to_dict() for n in self.notes_manager.get_relevant_notes()],
                 }
 
+        def _introspect_console(tier: str = "all") -> dict:
+            return get_console_state(self, tier=tier)
+
+        def _interact_ui(
+            action: str = "accent_talk",
+            target: str = "all",
+            palette: str = "",
+            effect: str = "none",
+            duration: float = 3.0,
+            message: str = "",
+        ) -> dict:
+            act = (action or "accent_talk").lower().strip()
+            if act in ("theme", "set_theme"):
+                def _do_theme():
+                    self.set_theme(palette, notify_user=bool(message))
+                    if message:
+                        self.notify(message, timeout=3.5)
+                self.app.call_from_thread(_do_theme)
+                return {"status": "success", "palette": palette, "message": f"Global theme set to '{palette}'."}
+            elif act in ("accent_talk", "accent", "pulse"):
+                def _do_accent():
+                    apply_accent_talk(self, target=target, palette=palette, duration=duration, message=message)
+                self.app.call_from_thread(_do_accent)
+                return {"status": "success", "target": target, "palette": palette, "duration": duration}
+            elif act in ("animate_mind", "mind_anim", "mind"):
+                def _do_anim():
+                    start_mind_animation(self, effect=effect, palette=palette, duration=duration, message=message)
+                self.app.call_from_thread(_do_anim)
+                return {"status": "success", "effect": effect, "palette": palette, "duration": duration}
+            elif act in ("inspect", "introspect"):
+                return get_console_state(self, tier="all")
+            return {"status": "error", "message": f"Unknown UI interaction action '{action}'."}
+
         tool_reg = ToolRegistry(
             working_dir=working_dir_snapshot,
             history=self.history,
@@ -2655,6 +2734,8 @@ class ChatApp(App):
             snapshot_callback=_schedule_snapshot,
             memory_index=self.memory_index,
             notes_callback=_manage_notes,
+            introspection_callback=_introspect_console,
+            ui_interact_callback=_interact_ui,
         )
         tools_list, available_tools = tool_reg.get_tool_callables()
 
@@ -2691,13 +2772,16 @@ class ChatApp(App):
         if payload and payload[0]["role"] != "user":
             payload.insert(0, {"role": "user", "parts": [{"text": WIRE_CONTINUATION_PROMPT}]})
 
-        # 3. System Instruction Packaging (Injecting Mind State & 4 Anchors)
+        # 3. System Instruction Packaging (Injecting Mind State, Live Introspection & Anchors)
         tree_state_str = ", ".join(str(x) for x in self.current_tree_state) if self.current_tree_state else "None"
         notes_summary = self.notes_manager.format_prompt_summary() if hasattr(self, "notes_manager") else ""
+        intro_summary = format_introspection_summary(self)
+
         system_instruction = (
             f"You are Gemini running inside a bilateral terminal console.\n"
             f"Working directory: {working_dir_snapshot}\n"
             f"Total conversation turns on record: {len(self.history)}\n\n"
+            f"{intro_summary}\n\n"
             f"### CURRENT COGNITIVE MIND MAP (PERSISTENT ANCHORS)\n"
             f"• GEMINI MIND STATE: {self.current_gemini_state or 'None'}\n"
             f"• USER MIND STATE: {self.current_user_state or 'None'}\n"
@@ -2713,8 +2797,8 @@ class ChatApp(App):
             f"• When the user asks about notes they should think about, notes to get back to, or notes related to a topic, answer directly from the notes context or use `manage_notes`.\n"
             f"• Autonomously bring up relevant notes when they connect to the current topic being discussed.\n"
             f"• Use `manage_notes(action='record', topic='...', content='...', status='working'|'think_about'|'get_back_to')` to record topical notes.\n\n"
-            f"### EXPANSION CAPABILITIES\n"
-            f"You have tools available to inspect the environment, write files, and execute commands:\n"
+            f"### EXPANSION & INTERACTION CAPABILITIES\n"
+            f"You have tools available to inspect the environment, interact with the UI, write files, and execute commands:\n"
             f"1. `scan_workspace_tree(include_ignored=True, max_depth=None)`: Survey directory structure and dependencies.\n"
             f"2. `expand_mind(turn_numbers=[...], file_paths=[...], turn_ids=[...])`: Pull up to 50 items (turns or files/slices/outlines) into thought memory.\n"
             f"3. `recall_memory(query='...', max_results=10)`: Fast indexed retrieval across entire conversational history, archived projects, and past discussions.\n"
@@ -2725,7 +2809,11 @@ class ChatApp(App):
             f"8. `reboot_console(delay_seconds=1.5, status_report='...')`: Restarts the console application cleanly in place when requested by the user or following code updates.\n"
             f"9. `take_snapshot(label='...')`: Captures a live UI snapshot of the console application on Gemini's end, indexed and held.\n"
             f"10. `review_snapshots(snapshot_ids=[...], only_held=True, count=5)`: Reviews UI snapshots captured by the user or Gemini, returning reconstructed screen text and layout metadata.\n"
-            f"11. `manage_notes(action='record'|'get'|'think_about'|'get_back_to'|'relevant'|'topic'|'scan_chat'|'set_working', topic='...', content='...', status='...', turn_id='...'): Access, record, and query Gemini-managed topical notes.\n\n"
+            f"11. `manage_notes(action='record'|'get'|'think_about'|'get_back_to'|'relevant'|'topic'|'scan_chat'|'set_working', topic='...', content='...', status='...', turn_id='...'): Access, record, and query Gemini-managed topical notes.\n"
+            f"12. `scaffold_project(project_name='...', description='...', author='...'): Scaffolds a new project directory in ~/Projects.\n"
+            f"13. `manage_system_dependencies(action='check'|'install'|'ensure'|'detect', packages=[...]): Inspects and manages system packages.\n"
+            f"14. `introspect_console(tier='all'|'visual'|'runtime'|'workflow'): Inspects live console state across visual layout, runtime environment, and workflow anchors.\n"
+            f"15. `interact_ui(action='set_theme'|'accent_talk'|'animate_mind'|'inspect', target='feed'|'mind'|'notes'|'input'|'footer'|'all', palette='...', effect='sparkle'|'pulse'|'wave'|'synapse'|'glow', duration=3.0, message='...'): Talk through theme accents on the fly or animate the Mind screen.\n\n"
             f"### UI SNAPSHOT RETENTION & VALIDATION PROTOCOL\n"
             f"• Snapshot Retention Rules:\n"
             f"  - Snapshots captured via command with a name (`/snapshot <name>`) are saved permanently to disk without deleting them.\n"

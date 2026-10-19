@@ -87,6 +87,7 @@ from gemini_app.events import (
 )
 from gemini_app.mind.screen import MindMapScreen
 from gemini_app.storage.memory_index import MemoryIndex
+from gemini_app.storage.notes_manager import NoteItem, NotesManager
 from gemini_app.storage.rollback import (
     mark_reboot_in_progress,
     mark_startup_successful,
@@ -150,7 +151,7 @@ class ChatApp(App):
         self.current_chat_last_index: int = 0
         self.current_chat_center_marker: str = ""
         
-        # Unified Notes System (Gemini, Relational Turn, and Global)
+        # Unified Notes System (Gemini Managed Notes)
         self.gemini_notes: str = ""
         self.global_notes: str = ""
         self.relational_notes: dict[str, str] = {}
@@ -158,6 +159,7 @@ class ChatApp(App):
         self.current_focused_turn_id: str = ""
         self.current_focused_turn_index: int = 0
         self._notes_flush_timer: Timer | None = None
+        self.notes_manager: NotesManager = NotesManager(working_notes="", active_topic="General")
 
         # Cognitive Mind State & Topology Tracking
         self.is_legacy_chat: bool = False
@@ -194,6 +196,31 @@ class ChatApp(App):
             "restart": lambda arg: self.action_reboot(status_report=arg if arg else None),
         }
 
+    def consume_notes_editor(self) -> None:
+        """Consumes text typed into the notes editor by the user into Gemini-managed notes."""
+        try:
+            editor = self.query_one("#notes_editor", NotesEditorArea)
+            raw_text = editor.text
+            if not raw_text.strip():
+                return
+            curr_topic = getattr(self, "active_task_title", "") or self.notes_manager.active_topic
+            added = self.notes_manager.consume_user_input(
+                raw_text=raw_text,
+                active_topic=curr_topic,
+                turn_id=getattr(self, "current_focused_turn_id", ""),
+            )
+            self.gemini_notes = self.notes_manager.working_notes
+            self.schedule_notes_flush()
+            notes_panel = self.query_one("#notes_panel", NotesPanel)
+            notes_panel.refresh_display()
+            if added:
+                topics_str = ", ".join(set(n.topic for n in added))
+                self.notify(f"✓ Note consumed & indexed under topic: '{topics_str}'", timeout=3.5)
+            else:
+                self.notify("✓ Working notes updated.", timeout=2.0)
+        except Exception as e:
+            self.notify(f"Error consuming note: {e}", severity="error")
+
     def schedule_notes_flush(self) -> None:
         if self._notes_flush_timer:
             self._notes_flush_timer.stop()
@@ -202,7 +229,7 @@ class ChatApp(App):
     def _do_notes_flush(self) -> None:
         self._notes_flush_timer = None
         if self.current_chat_id:
-            notes_payload = {
+            notes_payload = self.notes_manager.to_dict() if hasattr(self, "notes_manager") else {
                 "gemini_notes": self.gemini_notes or "",
                 "global_notes": self.global_notes or "",
                 "relational_notes": self.relational_notes or {},
@@ -315,18 +342,17 @@ class ChatApp(App):
     def is_history_open(self) -> bool:
         return False
 
-    def flush_current_notes(self) -> None:
+    def flush_current_notes(self, consume_input: bool = False) -> None:
+        if consume_input:
+            self.consume_notes_editor()
+            return
         try:
             editors = list(self.query("#notes_editor"))
             if editors and editors[0].has_focus:
                 text_val = editors[0].text
-                if self.active_notes_mode == "global":
-                    self.global_notes = text_val
-                elif self.active_notes_mode == "turn":
-                    if self.current_focused_turn_id:
-                        self.relational_notes[self.current_focused_turn_id] = text_val
-                else:  # "gemini"
-                    self.gemini_notes = text_val
+                self.gemini_notes = text_val
+                if hasattr(self, "notes_manager"):
+                    self.notes_manager.working_notes = text_val
         except Exception:
             pass
 
@@ -758,12 +784,12 @@ class ChatApp(App):
                     pass
 
             notes_raw = prev_meta.get("notes", "")
-            if isinstance(notes_raw, dict):
-                self.gemini_notes = notes_raw.get("gemini_notes", "") or ""
-                self.global_notes = notes_raw.get("global_notes", "") or self.global_notes or ""
-                self.relational_notes = dict(notes_raw.get("relational_notes", {}))
-            elif isinstance(notes_raw, str) and notes_raw.strip():
-                self.gemini_notes = notes_raw
+            self.notes_manager = NotesManager.from_dict(notes_raw)
+            self.gemini_notes = self.notes_manager.working_notes
+            self.global_notes = ""
+            self.relational_notes = {}
+            if self.history:
+                self.notes_manager.scan_chat_for_notes(self.history)
 
             mind_map = prev_meta.get("mind_map", {})
             if mind_map:
@@ -877,6 +903,8 @@ class ChatApp(App):
 
         if self._request_details:
             status_text = f"{frame} {self._request_details}... ({elapsed:.1f}s)"
+        elif self._request_phase == "reconnecting":
+            status_text = f"{frame} {self._request_details or 'Quota limit reached — reconnecting silently'}... ({elapsed:.1f}s)"
         elif self._request_phase == "connecting":
             status_text = f"{frame} Connecting / Sending request... ({elapsed:.1f}s)"
         elif self._request_phase == "waiting":
@@ -1374,13 +1402,11 @@ class ChatApp(App):
             self.current_chat_parent_id = data.get("parent_id")
             
             notes_raw = data.get("notes", "")
-            if isinstance(notes_raw, dict):
-                self.gemini_notes = notes_raw.get("gemini_notes", "") or ""
-                self.global_notes = notes_raw.get("global_notes", "") or self.global_notes or ""
-                self.relational_notes = dict(notes_raw.get("relational_notes", {}))
-            else:
-                self.gemini_notes = str(notes_raw or "")
-                self.relational_notes = {}
+            self.notes_manager = NotesManager.from_dict(notes_raw)
+            self.gemini_notes = self.notes_manager.working_notes
+            self.relational_notes = {}
+            if self.history:
+                self.notes_manager.scan_chat_for_notes(self.history)
 
             saved_marker = data.get("center_marker", "")
             saved_turn_idx = data.get("last_turn_index")
@@ -1402,13 +1428,9 @@ class ChatApp(App):
             self.current_chat_parent_id = meta_data.get("parent_id")
 
             notes_raw = meta_data.get("notes", "")
-            if isinstance(notes_raw, dict):
-                self.gemini_notes = notes_raw.get("gemini_notes", "") or ""
-                self.global_notes = notes_raw.get("global_notes", "") or self.global_notes or ""
-                self.relational_notes = dict(notes_raw.get("relational_notes", {}))
-            else:
-                self.gemini_notes = str(notes_raw or "")
-                self.relational_notes = {}
+            self.notes_manager = NotesManager.from_dict(notes_raw)
+            self.gemini_notes = self.notes_manager.working_notes
+            self.relational_notes = {}
 
             viewport = meta_data.get("viewport", {})
             saved_marker = viewport.get("center_marker", "")
@@ -1433,6 +1455,8 @@ class ChatApp(App):
                     self.history.extend(seg_turns)
                 except Exception:
                     pass
+            if self.history:
+                self.notes_manager.scan_chat_for_notes(self.history)
         else:
             self.is_legacy_chat = False
             self.history = []
@@ -2173,6 +2197,12 @@ class ChatApp(App):
         self.history.append({"turn_id": new_turn_id, "role": "user", "text": user_msg})
         self.current_chat_last_index = max(0, len(self.history) - 1)
         self.current_chat_center_marker = new_turn_id
+
+        # Auto-scan submitted user message for topical notes
+        if hasattr(self, "notes_manager"):
+            self.notes_manager.scan_chat_for_notes([{"role": "user", "text": user_msg, "turn_id": new_turn_id}])
+            self.gemini_notes = self.notes_manager.working_notes
+
         self.save_current_chat()
 
         self.ask_gemini()
@@ -2233,31 +2263,102 @@ class ChatApp(App):
                 "message": f"Snapshot #{entry.get('index')} captured and held successfully on Gemini's end."
             }
 
-        def _manage_notes(action: str = "get", mode: str = "gemini", content: str = "", turn_id: str = "") -> dict:
-            mode_clean = mode.lower().strip()
-            if action in ("set_title", "title") or mode_clean == "title":
+        def _manage_notes(
+            action: str = "get",
+            topic: str = "",
+            content: str = "",
+            status: str = "working",
+            turn_id: str = "",
+            mode: str = "gemini",
+        ) -> dict:
+            act = (action or "get").lower().strip()
+            mode_clean = (mode or "gemini").lower().strip()
+            target_topic = (topic or getattr(self.notes_manager, "active_topic", "general") or "general").strip().lower()
+
+            if act in ("set_title", "title") or mode_clean == "title":
                 self.app.call_from_thread(self.set_feed_title, content)
                 return {"status": "success", "message": f"Updated feed active task title to '{content}'."}
-            if action == "set":
+
+            if act in ("record", "add"):
+                item = self.notes_manager.record_note(
+                    content=content,
+                    topic=target_topic,
+                    status=status or "working",
+                    author="gemini",
+                    turn_id=turn_id,
+                )
+                self.gemini_notes = self.notes_manager.working_notes
+                self.app.call_from_thread(self.schedule_notes_flush)
+                return {
+                    "status": "success",
+                    "message": f"Recorded note under topic '{item.topic}' with status '{item.status}'.",
+                    "note": item.to_dict(),
+                }
+
+            elif act in ("set_working", "working"):
+                self.notes_manager.set_working_notes(content)
+                self.gemini_notes = content
+                self.app.call_from_thread(self.schedule_notes_flush)
+                return {"status": "success", "message": "Updated Gemini working notes."}
+
+            elif act in ("think_about", "think"):
+                items = [n.to_dict() for n in self.notes_manager.get_notes_to_think_about()]
+                return {"status": "success", "category": "think_about", "count": len(items), "notes": items}
+
+            elif act in ("get_back_to", "get_back", "todo"):
+                items = [n.to_dict() for n in self.notes_manager.get_notes_to_get_back_to()]
+                return {"status": "success", "category": "get_back_to", "count": len(items), "notes": items}
+
+            elif act in ("relevant",):
+                items = [n.to_dict() for n in self.notes_manager.get_relevant_notes(topic=target_topic)]
+                return {"status": "success", "topic": target_topic, "count": len(items), "notes": items}
+
+            elif act in ("topic", "by_topic"):
+                items = [n.to_dict() for n in self.notes_manager.get_notes_by_topic(target_topic)]
+                return {"status": "success", "topic": target_topic, "count": len(items), "notes": items}
+
+            elif act in ("scan_chat", "scan"):
+                added = self.notes_manager.scan_chat_for_notes(self.history)
+                self.app.call_from_thread(self.schedule_notes_flush)
+                return {"status": "success", "scanned_turns": len(self.history), "added_count": len(added), "notes": [n.to_dict() for n in added]}
+
+            elif act in ("set_topic",):
+                self.notes_manager.set_current_topic(target_topic)
+                return {"status": "success", "active_topic": self.notes_manager.active_topic}
+
+            elif act in ("delete", "remove"):
+                deleted = self.notes_manager.delete_note(content or turn_id)
+                self.app.call_from_thread(self.schedule_notes_flush)
+                return {"status": "success" if deleted else "not_found", "deleted": deleted}
+
+            elif act == "set":
                 if mode_clean == "global":
-                    self.global_notes = content
+                    self.notes_manager.record_note(content=content, topic="global", status="reference", author="user")
                 elif mode_clean == "turn":
                     tid = turn_id or self.current_focused_turn_id or (self.history[-1].get("turn_id") if self.history else "")
                     if tid:
-                        self.relational_notes[tid] = content
+                        self.notes_manager.record_note(content=content, topic=target_topic, status="working", turn_id=tid)
                 else:  # gemini
+                    self.notes_manager.set_working_notes(content)
                     self.gemini_notes = content
                 self.app.call_from_thread(self.schedule_notes_flush)
                 return {"status": "success", "message": f"Updated {mode_clean} notes."}
+
             else:  # get
                 if mode_clean == "global":
-                    text = self.global_notes
+                    text = self.notes_manager.get_global_notes_text()
                 elif mode_clean == "turn":
                     tid = turn_id or self.current_focused_turn_id or (self.history[-1].get("turn_id") if self.history else "")
-                    text = self.relational_notes.get(tid, "")
+                    text = self.notes_manager.get_relational_notes_dict().get(tid, "")
                 else:
-                    text = self.gemini_notes
-                return {"status": "success", "mode": mode_clean, "content": text}
+                    text = self.notes_manager.working_notes
+                return {
+                    "status": "success",
+                    "mode": mode_clean,
+                    "content": text,
+                    "active_topic": self.notes_manager.active_topic,
+                    "relevant_notes": [n.to_dict() for n in self.notes_manager.get_relevant_notes()],
+                }
 
         tool_reg = ToolRegistry(
             working_dir=working_dir_snapshot,
@@ -2305,6 +2406,7 @@ class ChatApp(App):
 
         # 3. System Instruction Packaging (Injecting Mind State & 4 Anchors)
         tree_state_str = ", ".join(str(x) for x in self.current_tree_state) if self.current_tree_state else "None"
+        notes_summary = self.notes_manager.format_prompt_summary() if hasattr(self, "notes_manager") else ""
         system_instruction = (
             f"You are Gemini running inside a bilateral terminal console.\n"
             f"Working directory: {working_dir_snapshot}\n"
@@ -2315,6 +2417,15 @@ class ChatApp(App):
             f"• TREE ANCHOR STATE: [{tree_state_str}]\n\n"
             f"### VISUAL RELATION TREE:\n"
             f"```text\n{self.current_tree_content or '└── *[Session Start]*'}\n```\n\n"
+            f"### UNIFIED GEMINI-MANAGED NOTES CONTEXT\n"
+            f"{notes_summary}\n\n"
+            f"### NOTES & TOPIC PROTOCOL\n"
+            f"• You autonomously manage all project notes, organized strictly by topics.\n"
+            f"• Automatically scan chat turns and associate notes with their relevant topics.\n"
+            f"• When the user places or submits a note, consume it and display your current working notes, or their notes if relevant in relation to your work.\n"
+            f"• When the user asks about notes they should think about, notes to get back to, or notes related to a topic, answer directly from the notes context or use `manage_notes`.\n"
+            f"• Autonomously bring up relevant notes when they connect to the current topic being discussed.\n"
+            f"• Use `manage_notes(action='record', topic='...', content='...', status='working'|'think_about'|'get_back_to')` to record topical notes.\n\n"
             f"### EXPANSION CAPABILITIES\n"
             f"You have tools available to inspect the environment, write files, and execute commands:\n"
             f"1. `scan_workspace_tree(include_ignored=True)`: Survey directory structure and dependencies.\n"
@@ -2327,7 +2438,7 @@ class ChatApp(App):
             f"8. `reboot_console(delay_seconds=1.5, status_report='...')`: Restarts the console application cleanly in place when requested by the user or following code updates.\n"
             f"9. `take_snapshot(label='...')`: Captures a live UI snapshot of the console application on Gemini's end, indexed and held.\n"
             f"10. `review_snapshots(snapshot_ids=[...], only_held=True, count=5)`: Reviews UI snapshots captured by the user or Gemini, returning reconstructed screen text and layout metadata.\n"
-            f"11. `manage_notes(action='get'|'set', mode='gemini'|'turn'|'global', content='...', turn_id='...')`: Access and update Gemini active work notes, relational turn notes, and global scratchpads.\n\n"
+            f"11. `manage_notes(action='record'|'get'|'think_about'|'get_back_to'|'relevant'|'topic'|'scan_chat'|'set_working', topic='...', content='...', status='...', turn_id='...'): Access, record, and query Gemini-managed topical notes.\n\n"
             f"### UI SNAPSHOT RETENTION & VALIDATION PROTOCOL\n"
             f"• Snapshot Retention Rules:\n"
             f"  - Snapshots captured via command with a name (`/snapshot <name>`) are saved permanently to disk without deleting them.\n"
@@ -2375,9 +2486,51 @@ class ChatApp(App):
                 ),
             )
 
-            # Send the latest turn
+            # Helper for silent reconnection and resume on quota limit / ResourceExhausted
+            def _send_with_silent_quota_retry(send_call: Callable[[], Any], max_retries: int = 5, base_delay: float = 3.0) -> Any:
+                attempt = 0
+                while True:
+                    try:
+                        return send_call()
+                    except Exception as call_err:
+                        err_text = str(call_err)
+                        is_quota = (
+                            "ResourceExhausted" in err_text
+                            or "429" in err_text
+                            or "quota" in err_text.lower()
+                            or "rate limit" in err_text.lower()
+                            or "resource has been exhausted" in err_text.lower()
+                        )
+                        if not is_quota or attempt >= max_retries:
+                            raise call_err
+
+                        attempt += 1
+                        wait_sec = base_delay * (2 ** (attempt - 1))
+                        for rem in range(int(wait_sec), 0, -1):
+                            if self.current_chat_id != chat_id_snapshot:
+                                return None
+                            self.app.call_from_thread(
+                                self.post_message,
+                                RequestPhaseUpdate(
+                                    "reconnecting",
+                                    f"Quota reached — reconnecting silently in {rem}s (retry {attempt}/{max_retries})"
+                                )
+                            )
+                            time.sleep(1.0)
+
+                        if self.current_chat_id != chat_id_snapshot:
+                            return None
+
+                        self.app.call_from_thread(
+                            self.post_message,
+                            RequestPhaseUpdate("waiting", f"Reconnected — resuming where left off (attempt {attempt})")
+                        )
+
+            # Send the latest turn with silent quota retry
             first_user_content = payload[-1]["parts"][0]["text"] if payload else ""
-            response = chat_session.send_message(first_user_content)
+            response = _send_with_silent_quota_retry(lambda: chat_session.send_message(first_user_content))
+            if response is None:
+                return
 
             # Tool Loop (Handling Autonomous Mind Expansions)
             tool_iterations = 0
@@ -2403,13 +2556,14 @@ class ChatApp(App):
                     # Transition status UI back to waiting before sending the tool result back across the wire
                     self.app.call_from_thread(self.post_message, RequestPhaseUpdate("waiting", "waiting on Gemini response"))
 
-                    # Feed tool response back into the active thought process
-                    response = chat_session.send_message(
-                        types.Part.from_function_response(
-                            name=fn_name,
-                            response={"result": fn_result},
-                        )
+                    # Feed tool response back into the active thought process with silent quota retry
+                    part_resp = types.Part.from_function_response(
+                        name=fn_name,
+                        response={"result": fn_result},
                     )
+                    response = _send_with_silent_quota_retry(lambda: chat_session.send_message(part_resp))
+                    if response is None:
+                        return
                 else:
                     break
 

@@ -147,14 +147,23 @@ class ToolRegistry:
 
         def manage_notes(
             action: str = "get",
-            mode: str = "gemini",
+            topic: str = "",
             content: str = "",
+            status: str = "active",
             turn_id: str = "",
+            mode: str = "gemini",
         ) -> Dict[str, Any]:
-            """Reads or updates Gemini working notes, relational turn notes, or global notes."""
-            self._notify_phase("notes", f"syncing {mode} notes ({action})")
+            """Reads or updates Gemini-managed topical notes, records topic associations, and manages revisit queues."""
+            self._notify_phase("notes", f"syncing notes ({action})")
             if self.notes_callback:
-                return self.notes_callback(action=action, mode=mode, content=content, turn_id=turn_id)
+                return self.notes_callback(
+                    action=action,
+                    topic=topic,
+                    content=content,
+                    status=status,
+                    turn_id=turn_id,
+                    mode=mode,
+                )
             return {"status": "error", "message": "Notes management callback unavailable in this context."}
 
         tools_list = [

@@ -1,4 +1,8 @@
-"""Notes panel components supporting Gemini Work Notes, Relational Turn Notes, and Global Notes."""
+"""Unified Gemini-Managed Notes Panel.
+
+Displays Gemini working notes, relevant user & topic notes, follow-ups (get back to),
+brainstorms (think about), and topics catalog. Automatically consumes user-submitted notes.
+"""
 
 from __future__ import annotations
 
@@ -18,6 +22,8 @@ if TYPE_CHECKING:
 
 
 class NotesEditorArea(EmacsBaseTextArea):
+    """Editor area displaying Gemini managed notes and receiving user note directives."""
+
     can_focus = True
 
     def __init__(self, **kwargs) -> None:
@@ -25,106 +31,50 @@ class NotesEditorArea(EmacsBaseTextArea):
         self._last_nav_time: float = 0.0
         self._nav_cooldown: float = 0.022
         self._suppress_change_sync: bool = False
+        self._initial_rendered_text: str = ""
 
     def on_mount(self) -> None:
         super().on_mount()
         self.show_line_numbers = False
-
-    def _cycle_relational_note(self, delta: int) -> None:
-        app: ChatApp = self.app  # type: ignore
-        feed = app.query_one("#feed", FeedArea)
-        all_turns = getattr(feed, "_all_messages", [])
-        rel_dict = getattr(app, "relational_notes", {})
-        id_to_idx = {t.get("turn_id"): i for i, t in enumerate(all_turns) if t.get("turn_id")}
-        noted_indices = sorted([id_to_idx[tid] for tid, c in rel_dict.items() if c and c.strip() and tid in id_to_idx])
-        if not noted_indices:
-            app.notify("No relational notes in session yet.", timeout=2.0)
-            return
-        curr = getattr(app, "current_focused_turn_index", 0)
-        if curr in noted_indices:
-            idx_in_list = noted_indices.index(curr)
-            next_idx = noted_indices[(idx_in_list + delta) % len(noted_indices)]
-        else:
-            next_idx = noted_indices[0] if delta > 0 else noted_indices[-1]
-        feed.jump_to_turn(next_idx)
-        try:
-            panel = app.query_one("#notes_panel", NotesPanel)
-            if getattr(app, "active_notes_mode", "") != "turn":
-                panel.switch_mode("turn")
-        except Exception:
-            pass
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         if self._suppress_change_sync or not self.has_focus:
             return
 
         app: ChatApp = self.app  # type: ignore
-        mode = getattr(app, "active_notes_mode", "gemini")
-
-        if mode == "global":
-            app.global_notes = self.text
-            app.schedule_notes_flush()
-        elif mode == "turn":
-            active_tid = getattr(app, "current_focused_turn_id", "")
-            if active_tid:
-                app.relational_notes[active_tid] = self.text
-                app.schedule_notes_flush()
-                # Update visual note badge on active turn card
-                try:
-                    feed = app.query_one("#feed", FeedArea)
-                    card = feed._get_target_widget_by_id(active_tid)
-                    if card:
-                        card.update_display()
-                except Exception:
-                    pass
-                try:
-                    notes_panel = app.query_one("#notes_panel", NotesPanel)
-                    notes_panel.refresh_related_chips()
-                except Exception:
-                    pass
-        else:  # "gemini"
-            app.gemini_notes = self.text
-            app.schedule_notes_flush()
+        app.schedule_notes_flush()
 
     def _on_key(self, event: events.Key) -> None:
         if self.app.intercept_c_c_key(event):
             return
 
-        # Fast mode switching shortcuts: Alt+1 / Alt+2 / Alt+3
+        # Fast filter shortcuts: Alt+1..5
+        panel: NotesPanel = self.app.query_one("#notes_panel", NotesPanel)  # type: ignore
+
         if event.key in ("alt+1", "meta+1"):
             event.prevent_default()
             event.stop()
-            try:
-                self.app.query_one("#notes_panel", NotesPanel).switch_mode("gemini")
-            except Exception:
-                pass
+            panel.switch_filter("working")
             return
         elif event.key in ("alt+2", "meta+2"):
             event.prevent_default()
             event.stop()
-            try:
-                self.app.query_one("#notes_panel", NotesPanel).switch_mode("turn")
-            except Exception:
-                pass
+            panel.switch_filter("relevant")
             return
         elif event.key in ("alt+3", "meta+3"):
             event.prevent_default()
             event.stop()
-            try:
-                self.app.query_one("#notes_panel", NotesPanel).switch_mode("global")
-            except Exception:
-                pass
+            panel.switch_filter("get_back_to")
             return
-
-        if event.key in ("alt+left", "meta+left"):
+        elif event.key in ("alt+4", "meta+4"):
             event.prevent_default()
             event.stop()
-            self._cycle_relational_note(-1)
+            panel.switch_filter("think_about")
             return
-        elif event.key in ("alt+right", "meta+right"):
+        elif event.key in ("alt+5", "meta+5"):
             event.prevent_default()
             event.stop()
-            self._cycle_relational_note(1)
+            panel.switch_filter("topics")
             return
 
         if event.key in ("ctrl+j", "shift+enter", "shift+return"):
@@ -136,7 +86,7 @@ class NotesEditorArea(EmacsBaseTextArea):
         if event.key in ("enter", "return"):
             event.prevent_default()
             event.stop()
-            self.app.flush_current_notes()
+            self.app.flush_current_notes(consume_input=True)
             self.app.action_toggle_notes()
             return
 
@@ -147,7 +97,7 @@ class NotesEditorArea(EmacsBaseTextArea):
                 self._clear_mark()
                 self.app.notify("Quit", timeout=1.0)
             else:
-                self.app.flush_current_notes()
+                self.app.flush_current_notes(consume_input=True)
                 self.app.action_toggle_notes()
             return
 
@@ -219,182 +169,200 @@ class NotesEditorArea(EmacsBaseTextArea):
 
 
 class NotesPanel(Vertical):
-    """Tri-modal Notes Panel supporting Gemini Notes, Contextual Turn Notes, and Global Notes."""
+    """Unified Gemini-Managed Notes Panel with topic association and cognitive view filters."""
+
+    FILTER_MODES = ("working", "relevant", "get_back_to", "think_about", "topics")
 
     def __init__(self, **kwargs) -> None:
         super().__init__(id="notes_panel", **kwargs)
-        self.border_title = " 🧠 Gemini Notes "
+        self.border_title = " 🧠 Gemini Managed Notes "
+        self.active_filter: str = "working"
 
     def clear_session_expansion_states(self) -> None:
         """Compatibility helper for session reset."""
         pass
 
+    def refresh_display(self) -> None:
+        """Refreshes the rendered Markdown notes in the editor based on current filter."""
+        self.switch_filter(self.active_filter)
+
     def compose(self) -> ComposeResult:
         with Horizontal(id="notes_tabs_row"):
-            yield Static("🧠 Gemini", id="tab_gemini", classes="notes_tab tab-active")
-            yield Static("🎯 Turn Note", id="tab_turn", classes="notes_tab")
-            yield Static("🌐 Global", id="tab_global", classes="notes_tab")
+            yield Static("⚡ Working", id="tab_working", classes="notes_tab tab-active")
+            yield Static("📌 Relevant", id="tab_relevant", classes="notes_tab")
+            yield Static("⏳ Get Back", id="tab_get_back_to", classes="notes_tab")
+            yield Static("💡 Think", id="tab_think_about", classes="notes_tab")
+            yield Static("📚 Topics", id="tab_topics", classes="notes_tab")
         with Horizontal(id="notes_chips_row"):
-            yield Static("Related Notes:", id="notes_chips_title", classes="notes_chips_title")
-        yield Static("Mode: 🧠 Gemini Work Notes | Alt+1: Gemini | Alt+2: Turn | Alt+3: Global", id="notes_header_info")
+            yield Static("Topics:", id="notes_chips_title", classes="notes_chips_title")
+        yield Static("🧠 Gemini Managed Notes | Alt+1..5 to filter | Enter: Save note & close", id="notes_header_info")
         yield NotesEditorArea(id="notes_editor")
 
-    def refresh_related_chips(self) -> None:
-        """Refreshes the horizontal chip row of all turns in this session that possess relational notes."""
+    def refresh_topic_chips(self) -> None:
+        """Refreshes horizontal topic filter chips from the notes catalog."""
         app: ChatApp = self.app  # type: ignore
         try:
             chips_row = self.query_one("#notes_chips_row", Horizontal)
         except Exception:
             return
 
-        rel_dict = getattr(app, "relational_notes", {})
-        active_t_id = getattr(app, "current_focused_turn_id", "")
-        feed = app.query_one("#feed", FeedArea)
-        all_turns = getattr(feed, "_all_messages", [])
+        manager = getattr(app, "notes_manager", None)
+        if not manager:
+            chips_row.styles.display = "none"
+            return
 
-        id_to_idx = {t.get("turn_id"): i for i, t in enumerate(all_turns) if t.get("turn_id")}
-
-        noted_indices: list[tuple[int, str]] = []
-        for tid, content in rel_dict.items():
-            if content and content.strip() and tid in id_to_idx:
-                noted_indices.append((id_to_idx[tid], tid))
-
-        noted_indices.sort(key=lambda x: x[0])
-
+        topics = manager.get_all_topics()
         # Remove existing chips
         for child in list(chips_row.children):
             if "note_chip" in child.classes:
                 child.remove()
 
-        if not noted_indices:
+        if not topics:
             chips_row.styles.display = "none"
             return
 
         chips_row.styles.display = "block"
-        for t_idx, tid in noted_indices:
-            is_active = (tid == active_t_id)
+        for t_name, count in topics[:6]:
+            is_active = (t_name == manager.current_topic)
             active_class = " chip-active" if is_active else ""
-            chip = Static(f"T#{t_idx + 1}", id=f"chip_turn_{t_idx}", classes=f"note_chip{active_class}")
+            chip = Static(f"{t_name} ({count})", id=f"chip_topic_{t_name}", classes=f"note_chip{active_class}")
             chips_row.mount(chip)
 
-    def switch_mode(self, new_mode: str) -> None:
+    def refresh_related_chips(self) -> None:
+        """Compatibility alias for refresh_topic_chips."""
+        self.refresh_topic_chips()
+
+    def switch_mode(self, mode: str) -> None:
+        """Compatibility method for legacy callers."""
+        mode_clean = mode.lower().strip()
+        mapping = {
+            "gemini": "working",
+            "turn": "relevant",
+            "global": "topics",
+            "working": "working",
+            "relevant": "relevant",
+            "get_back_to": "get_back_to",
+            "think_about": "think_about",
+            "topics": "topics",
+        }
+        self.switch_filter(mapping.get(mode_clean, "working"))
+
+    def switch_filter(self, new_filter: str) -> None:
         app: ChatApp = self.app  # type: ignore
-        old_mode = getattr(app, "active_notes_mode", "gemini")
+        manager = getattr(app, "notes_manager", None)
 
-        # 1. Flush current editor content to appropriate buffer
-        app.flush_current_notes()
+        # 1. Flush any existing editor changes first
+        app.flush_current_notes(consume_input=True)
 
-        # 2. Update active mode
-        app.active_notes_mode = new_mode
+        # 2. Update active filter state
+        self.active_filter = new_filter
+        app.active_notes_mode = new_filter
 
-        # 3. Update tab highlighting
-        for tab_id, m in (("tab_gemini", "gemini"), ("tab_turn", "turn"), ("tab_global", "global")):
+        # 3. Update tab active highlight
+        for tab_id, f in (
+            ("tab_working", "working"),
+            ("tab_relevant", "relevant"),
+            ("tab_get_back_to", "get_back_to"),
+            ("tab_think_about", "think_about"),
+            ("tab_topics", "topics"),
+        ):
             try:
                 w = self.query_one(f"#{tab_id}", Static)
-                if m == new_mode:
+                if f == new_filter:
                     w.add_class("tab-active")
                 else:
                     w.remove_class("tab-active")
             except Exception:
                 pass
 
-        # 4. Load corresponding content into editor
+        # 4. Render and load content into editor
         editor = self.query_one("#notes_editor", NotesEditorArea)
         hint = self.query_one("#notes_header_info", Static)
 
+        current_topic = manager.current_topic if manager else "general"
+
+        if new_filter == "working":
+            self.border_title = f" 🧠 Working Notes [{current_topic}] "
+            hint.update(f"Active Topic: {current_topic} | Working & Relevant Notes | Enter: Save")
+        elif new_filter == "relevant":
+            self.border_title = f" 📌 Relevant Notes [{current_topic}] "
+            hint.update(f"Relevant notes in relation to '{current_topic}' | Enter: Save")
+        elif new_filter == "get_back_to":
+            self.border_title = " ⏳ Notes to Get Back To "
+            hint.update("Action items & follow-ups to get back to | Enter: Save")
+        elif new_filter == "think_about":
+            self.border_title = " 💡 Notes to Think About "
+            hint.update("Brainstorms & considerations to think about | Enter: Save")
+        else:  # topics
+            self.border_title = " 📚 All Notes by Topic "
+            hint.update("Unified notes organized across all project topics | Enter: Save")
+
         editor._suppress_change_sync = True
         try:
-            if new_mode == "gemini":
-                self.border_title = " 🧠 Gemini Notes "
-                hint.update("Mode: 🧠 Gemini Work Notes | Alt+1: Gemini | Alt+2: Turn | Alt+3: Global")
-                editor.load_text(getattr(app, "gemini_notes", "") or "")
-            elif new_mode == "turn":
-                turn_idx = getattr(app, "current_focused_turn_index", 0)
-                turn_id = getattr(app, "current_focused_turn_id", "")
-                turn_label = f"Turn #{turn_idx + 1}" if turn_idx >= 0 else "Active Turn"
-                self.border_title = f" 🎯 Relational Note ({turn_label}) "
-                hint.update(f"Attached to {turn_label} | Alt+1: Gemini | Alt+2: Turn | Alt+3: Global")
-                note_text = app.relational_notes.get(turn_id, "") if turn_id else ""
-                editor.load_text(note_text)
-            else:  # "global"
-                self.border_title = " 🌐 Global Notes "
-                hint.update("Mode: 🌐 Global Persistent Notes | Alt+1: Gemini | Alt+2: Turn | Alt+3: Global")
-                editor.load_text(getattr(app, "global_notes", "") or "")
-
+            rendered = manager.format_working_view(view_mode=new_filter) if manager else ""
+            editor._initial_rendered_text = rendered
+            editor.load_text(rendered)
             editor.move_cursor(editor.document.end, select=False)
         finally:
             editor._suppress_change_sync = False
 
-        self.refresh_related_chips()
+        self.refresh_topic_chips()
 
     def on_turn_changed(self, turn_idx: int, turn_id: str, sender: str = "") -> None:
-        """Called whenever the active card in the 10-card feed slider changes."""
+        """Called whenever the active card in the feed changes."""
         app: ChatApp = self.app  # type: ignore
+        manager = getattr(app, "notes_manager", None)
+        app.current_focused_turn_index = turn_idx
+        app.current_focused_turn_id = turn_id
 
-        # Update the turn tab label to indicate which turn is centered
-        try:
-            tab_turn = self.query_one("#tab_turn", Static)
-            tab_turn.update(f"🎯 Turn #{turn_idx + 1}")
-        except Exception:
-            pass
-
-        # If currently in turn mode, seamlessly switch the note to the newly centered turn
-        if getattr(app, "active_notes_mode", "gemini") == "turn":
+        # If notes panel is open and in relevant filter, update display
+        if self.active_filter == "relevant" and manager:
             editor = self.query_one("#notes_editor", NotesEditorArea)
-            hint = self.query_one("#notes_header_info", Static)
+            if not editor.has_focus:
+                editor._suppress_change_sync = True
+                try:
+                    rendered = manager.format_working_view(view_mode="relevant")
+                    editor.load_text(rendered)
+                finally:
+                    editor._suppress_change_sync = False
 
-            # Flush current editor to previous turn_id if different
-            old_tid = getattr(app, "current_focused_turn_id", "")
-            if old_tid and old_tid != turn_id and editor.has_focus:
-                app.relational_notes[old_tid] = editor.text
+        self.refresh_topic_chips()
 
-            app.current_focused_turn_index = turn_idx
-            app.current_focused_turn_id = turn_id
-
-            sender_info = f" ({sender})" if sender else ""
-            self.border_title = f" 🎯 Relational Note (Turn #{turn_idx + 1}{sender_info}) "
-            hint.update(f"Attached to Turn #{turn_idx + 1}{sender_info} | Alt+1: Gemini | Alt+2: Turn | Alt+3: Global")
-
-            editor._suppress_change_sync = True
-            try:
-                note_text = app.relational_notes.get(turn_id, "")
-                editor.load_text(note_text)
-                editor.move_cursor(editor.document.end, select=False)
-            finally:
-                editor._suppress_change_sync = False
-        else:
-            app.current_focused_turn_index = turn_idx
-            app.current_focused_turn_id = turn_id
-
-        self.refresh_related_chips()
-
-    @on(events.Click, "#tab_gemini")
-    def on_gemini_tab_click(self) -> None:
-        self.switch_mode("gemini")
+    @on(events.Click, "#tab_working")
+    def on_working_tab_click(self) -> None:
+        self.switch_filter("working")
         self.query_one("#notes_editor", NotesEditorArea).focus()
 
-    @on(events.Click, "#tab_turn")
-    def on_turn_tab_click(self) -> None:
-        self.switch_mode("turn")
+    @on(events.Click, "#tab_relevant")
+    def on_relevant_tab_click(self) -> None:
+        self.switch_filter("relevant")
         self.query_one("#notes_editor", NotesEditorArea).focus()
 
-    @on(events.Click, "#tab_global")
-    def on_global_tab_click(self) -> None:
-        self.switch_mode("global")
+    @on(events.Click, "#tab_get_back_to")
+    def on_get_back_to_tab_click(self) -> None:
+        self.switch_filter("get_back_to")
+        self.query_one("#notes_editor", NotesEditorArea).focus()
+
+    @on(events.Click, "#tab_think_about")
+    def on_think_about_tab_click(self) -> None:
+        self.switch_filter("think_about")
+        self.query_one("#notes_editor", NotesEditorArea).focus()
+
+    @on(events.Click, "#tab_topics")
+    def on_topics_tab_click(self) -> None:
+        self.switch_filter("topics")
         self.query_one("#notes_editor", NotesEditorArea).focus()
 
     @on(events.Click, ".note_chip")
-    def on_chip_click(self, event: events.Click) -> None:
+    def on_topic_chip_click(self, event: events.Click) -> None:
         chip = event.widget
         chip_id = getattr(chip, "id", "")
-        if chip_id and chip_id.startswith("chip_turn_"):
-            try:
-                target_idx = int(chip_id.split("_")[-1])
-                app: ChatApp = self.app  # type: ignore
-                feed = app.query_one("#feed", FeedArea)
-                feed.jump_to_turn(target_idx)
-                if app.active_notes_mode != "turn":
-                    self.switch_mode("turn")
+        if chip_id and chip_id.startswith("chip_topic_"):
+            target_topic = chip_id.replace("chip_topic_", "").strip()
+            app: ChatApp = self.app  # type: ignore
+            manager = getattr(app, "notes_manager", None)
+            if manager:
+                manager.set_current_topic(target_topic)
+                self.switch_filter(self.active_filter)
                 self.query_one("#notes_editor", NotesEditorArea).focus()
-            except Exception:
-                pass
+                app.notify(f"Active notes topic set to: {target_topic}", timeout=2.0)

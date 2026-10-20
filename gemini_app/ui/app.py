@@ -221,8 +221,8 @@ class ChatApp(App):
 
         # Cognitive Mind State & Topology Tracking
         self.is_legacy_chat: bool = False
-        self.active_task_title: str = "Unifying Notes System & Relational Anchors"
-        self.current_gemini_state: str = "Unifying Notes System & Relational Anchors"
+        self.active_task_title: str = "Fleet & Satellite Nodes"
+        self.current_gemini_state: str = "Fleet & Satellite Nodes"
         self.current_user_state: str = "Collaborating on unified bilateral console session."
         self.current_tree_state: list[str | int] = ["T1", "F:gemini_app/"]
         self.current_tree_content: str = "└── Unified Stream [Active]"
@@ -1047,19 +1047,28 @@ class ChatApp(App):
         self.active_task_title = clean
         self.current_gemini_state = clean
         self.update_feed_title()
+        try:
+            from gemini_app.fleet.telemetry import update_cognitive_state
+            active_topic = getattr(self.notes_manager, "active_topic", "general") if hasattr(self, "notes_manager") else "general"
+            update_cognitive_state(task=clean, topic=active_topic)
+        except Exception:
+            pass
 
     def update_feed_title(self) -> None:
         """Dynamically updates the feed border title based on current work Gemini is doing."""
         try:
             feed = self.query_one("#feed", FeedArea)
+            active_topic = getattr(self.notes_manager, "active_topic", "general") if hasattr(self, "notes_manager") else "general"
             work_desc = (getattr(self, "active_task_title", "") or self.current_gemini_state or "").strip()
-            if work_desc and work_desc not in ("Legacy active session.", "None"):
-                clean_work = work_desc.replace("\n", " ").strip()
-                if len(clean_work) > 65:
-                    clean_work = clean_work[:62] + "..."
-                feed.border_title = f" ⚡ {clean_work} "
+            if not work_desc or work_desc in ("Unifying Notes System & Relational Anchors", "Legacy active session.", "None"):
+                clean_work = f"Topic: {active_topic}"
             else:
-                feed.border_title = " ⚡ Unified Console: Bilateral Mind & Notes Engine "
+                clean_work = work_desc.replace("\n", " ").strip()
+                if not clean_work.lower().startswith("topic:") and active_topic and active_topic.lower() != "general":
+                    clean_work = f"Topic: {active_topic} • {clean_work}"
+            if len(clean_work) > 65:
+                clean_work = clean_work[:62] + "..."
+            feed.border_title = f" ⚡ {clean_work} "
         except Exception:
             pass
 
@@ -1201,6 +1210,19 @@ class ChatApp(App):
 
             self.set_timer(0.3, _post_boot_notify)
 
+        try:
+            from gemini_app.fleet.telemetry import update_cognitive_state
+            update_cognitive_state(
+                state_desc="Bilateral Console Online",
+                task=self.current_user_state or "Awaiting instruction",
+                thought="Connected and monitoring bilateral telemetry stream.",
+                tool="idle",
+                turn_number=self.total_conversation_turns,
+                topic=getattr(self, "current_topic", "general"),
+            )
+        except Exception:
+            pass
+
     def show_loader_banner(self) -> None:
         try:
             banner = self.query_one("#feed_loader_banner", Static)
@@ -1290,15 +1312,42 @@ class ChatApp(App):
         self._request_phase = event.phase
         self._request_details = getattr(event, "details", "") or ""
         self._tick_status()
+        try:
+            from gemini_app.fleet.telemetry import update_cognitive_state
+            tool_name = "none"
+            if "Running " in self._request_details:
+                tool_name = self._request_details.split("Running ", 1)[1].strip().split()[0]
+            elif self._request_phase in ("probing", "executing", "patching", "writing", "searching"):
+                tool_name = self._request_phase
+            update_cognitive_state(
+                thought=self._request_details or f"Phase: {self._request_phase}",
+                tool=tool_name,
+            )
+        except Exception:
+            pass
 
     @on(MindMapRecalibrated)
     def on_mind_map_recalibrated(self, event: MindMapRecalibrated) -> None:
         self.current_gemini_state = event.gemini_state
+        self.active_task_title = event.gemini_state
         self.current_user_state = event.user_state
         self.current_tree_content = event.tree_content
         self.current_tree_state = event.tree_state
         self.save_current_chat()
         self.update_feed_title()
+
+        try:
+            from gemini_app.fleet.telemetry import update_cognitive_state
+            active_topic = getattr(self.notes_manager, "active_topic", "general") if hasattr(self, "notes_manager") else "general"
+            update_cognitive_state(
+                state_desc=event.gemini_state,
+                task=event.gemini_state,
+                thought="Mind map synchronized.",
+                tool="none",
+                topic=active_topic,
+            )
+        except Exception:
+            pass
 
         try:
             self.memory_index.save_mind_map(
@@ -1850,11 +1899,12 @@ class ChatApp(App):
             saved_marker = data.get("center_marker", "")
             saved_turn_idx = data.get("last_turn_index")
 
-            self.active_task_title = "Unifying Notes System & Relational Anchors"
-            self.current_gemini_state = "Unifying Notes System & Relational Anchors"
+            curr_top = getattr(self.notes_manager, "active_topic", "general")
+            self.active_task_title = f"Topic: {curr_top}"
+            self.current_gemini_state = f"Topic: {curr_top}"
             self.current_user_state = "Collaborating in unified bilateral console session."
-            self.current_tree_state = ["T100", "F:gemini_app/ui/widgets/notes.py", "F:gemini_app/ui/app.py"]
-            self.current_tree_content = "└── Unified Console [Active]\n    ├── Notes System [Tri-modal: Gemini / Relational Turn / Global]\n    └── Feed Stream [Dynamic Task Title & 10-Card Lockstep]"
+            self.current_tree_state = ["T1", "F:gemini_app/"]
+            self.current_tree_content = "└── Unified Console [Active]"
 
         elif chat_dir.is_dir() and (chat_dir / "meta.json").exists():
             # Modern Sharded Directory Mode
@@ -1878,8 +1928,9 @@ class ChatApp(App):
 
             mind_map = meta_data.get("mind_map", {})
             gem_state = mind_map.get("gemini_state", "")
-            if not gem_state or gem_state == "Legacy active session.":
-                gem_state = "Unifying Notes System & Relational Anchors"
+            curr_top = getattr(self.notes_manager, "active_topic", "general")
+            if not gem_state or gem_state in ("Legacy active session.", "Unifying Notes System & Relational Anchors"):
+                gem_state = f"Topic: {curr_top}"
             self.active_task_title = gem_state
             self.current_gemini_state = gem_state
             self.current_user_state = mind_map.get("user_state", "") or "Collaborating in unified bilateral console session."
@@ -1945,7 +1996,12 @@ class ChatApp(App):
 
         self.flush_current_notes()
 
-        title = (getattr(self, "active_task_title", "") or self.current_chat_title or "Unified Stream").strip()
+        active_topic = getattr(self.notes_manager, "active_topic", "general") if hasattr(self, "notes_manager") else "general"
+        raw_title = (getattr(self, "active_task_title", "") or self.current_chat_title or "").strip()
+        if not raw_title or raw_title in ("Unifying Notes System & Relational Anchors", "Legacy active session.", "None"):
+            title = f"Topic: {active_topic}"
+        else:
+            title = raw_title
         self.current_chat_title = title
         self.update_feed_title()
 
@@ -2903,6 +2959,27 @@ class ChatApp(App):
         self.app.call_from_thread(_begin_request)
         start_time = time.monotonic()
 
+        turn_number = (len(self.history) // 2) + 1 if hasattr(self, "history") else 1
+        last_user_msg = ""
+        for h in reversed(self.history):
+            if h.get("role") == "user":
+                last_user_msg = h.get("text", "")
+                break
+        task_summary = (last_user_msg.splitlines()[0][:60] if last_user_msg else "Awaiting instruction").strip()
+
+        try:
+            from gemini_app.fleet.telemetry import update_cognitive_state
+            update_cognitive_state(
+                state_desc="Thinking & analyzing request",
+                task=task_summary,
+                thought="Analyzing prompt and formulating execution plan...",
+                tool="thinking",
+                turn_number=turn_number,
+                topic=getattr(self, "current_topic", "general"),
+            )
+        except Exception:
+            pass
+
         # 1. Initialize Bilateral Tools via ToolRegistry
         def _schedule_reboot(delay_seconds: float = 1.5, status_report: str = "") -> dict:
             can_reboot, reason = check_reboot_guard()
@@ -3347,6 +3424,38 @@ class ChatApp(App):
                         RequestPhaseUpdate("probing", f"Running {fn_name}"),
                     )
 
+                    # Build intuitive thought summary based on tool and args
+                    thought_summary = f"Executing {fn_name}..."
+                    if fn_name == "execute_shell":
+                        cmd_line = str(fn_args.get("command", "")).strip().splitlines()[0][:50]
+                        thought_summary = f"Shell: {cmd_line}"
+                    elif fn_name == "apply_patch":
+                        thought_summary = f"Patching {Path(str(fn_args.get('path', ''))).name}"
+                    elif fn_name == "write_file":
+                        thought_summary = f"Writing {Path(str(fn_args.get('path', ''))).name}"
+                    elif fn_name == "search_codebase":
+                        thought_summary = f"Searching for '{str(fn_args.get('query', ''))[:30]}'"
+                    elif fn_name == "expand_mind":
+                        thought_summary = f"Reading {len(fn_args.get('file_paths', []))} file(s)"
+                    elif fn_name == "manage_notes":
+                        thought_summary = f"Notes: {fn_args.get('action', '')} ({fn_args.get('topic', '')})"
+                    elif fn_name == "manage_fleet_nodes":
+                        thought_summary = f"Fleet: {fn_args.get('action', '')} {fn_args.get('node_id', '')}"
+
+                    # Broadcast active tool execution to Mothership / Satellite HUD
+                    try:
+                        from gemini_app.fleet.telemetry import update_cognitive_state
+                        update_cognitive_state(
+                            state_desc=f"Running {fn_name}",
+                            task=task_summary,
+                            thought=thought_summary,
+                            tool=fn_name,
+                            turn_number=turn_number,
+                            topic=getattr(self, "current_topic", "general"),
+                        )
+                    except Exception:
+                        pass
+
                     # Execute local tool
                     if fn_name in available_tools:
                         try:
@@ -3361,6 +3470,20 @@ class ChatApp(App):
                         self.post_message,
                         RequestPhaseUpdate("waiting", f"Analyzed {fn_name} — consulting Gemini"),
                     )
+
+                    # Broadcast tool completion to Mothership / Satellite HUD
+                    try:
+                        from gemini_app.fleet.telemetry import update_cognitive_state
+                        update_cognitive_state(
+                            state_desc=f"Reasoning with {fn_name} output",
+                            task=task_summary,
+                            thought=f"Analyzed {fn_name} — consulting Gemini...",
+                            tool=f"{fn_name} [done]",
+                            turn_number=turn_number,
+                            topic=getattr(self, "current_topic", "general"),
+                        )
+                    except Exception:
+                        pass
 
                     # Feed tool response back into the active thought process with silent quota retry
                     part_resp = types.Part.from_function_response(
@@ -3426,6 +3549,19 @@ class ChatApp(App):
             total_words = len(clean_reply.split())
 
             # 5. Dispatch completion to UI
+            try:
+                from gemini_app.fleet.telemetry import update_cognitive_state
+                update_cognitive_state(
+                    state_desc=gemini_state or "Mothership Standing By",
+                    task=user_state or task_summary or "Awaiting instruction",
+                    thought="Standing by for bilateral prompt or system instruction.",
+                    tool="idle",
+                    turn_number=turn_number,
+                    topic=getattr(self, "current_topic", "general"),
+                )
+            except Exception:
+                pass
+
             if is_mind_steer:
                 def _finalize_steer():
                     self._stop_status_ticker()

@@ -6,12 +6,14 @@ and constrained mobile environments (Alpine iSH, Android Termux).
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import platform
 import shutil
 import socket
 import subprocess
+import threading
 import time
 from typing import Any, Dict, List, Optional
 
@@ -187,6 +189,85 @@ def get_git_vitals(repo_dir: Optional[Path] = None) -> Dict[str, Any]:
     }
 
 
+def get_persisted_cognitive_state() -> Dict[str, Any]:
+    """Reads persistent live cognitive state if available."""
+    try:
+        from gemini_app.config import COGNITIVE_STATE_FILE
+        if COGNITIVE_STATE_FILE.exists():
+            data = json.loads(COGNITIVE_STATE_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+    except Exception:
+        pass
+    return {}
+
+
+def update_cognitive_state(
+    state_desc: Optional[str] = None,
+    task: Optional[str] = None,
+    thought: Optional[str] = None,
+    tool: Optional[str] = None,
+    turn_number: Optional[int] = None,
+    topic: Optional[str] = None,
+    notify_mothership: bool = True,
+) -> Dict[str, Any]:
+    """Updates persistent cognitive state file and broadcasts to active Mothership."""
+    from gemini_app.config import COGNITIVE_STATE_FILE, GEMINI_HOME
+    try:
+        GEMINI_HOME.mkdir(mode=0o700, parents=True, exist_ok=True)
+    except Exception:
+        pass
+
+    current = get_persisted_cognitive_state()
+    if state_desc is not None:
+        current["state_desc"] = state_desc
+    if task is not None:
+        current["task"] = task
+    if thought is not None:
+        current["thought"] = thought
+    if tool is not None:
+        current["tool"] = tool
+    if turn_number is not None:
+        current["turn_number"] = turn_number
+    if topic is not None:
+        current["topic"] = topic
+    current["timestamp"] = time.time()
+
+    # Atomic write to COGNITIVE_STATE_FILE
+    try:
+        tmp_file = COGNITIVE_STATE_FILE.with_suffix(".tmp")
+        tmp_file.write_text(json.dumps(current, indent=2), encoding="utf-8")
+        tmp_file.replace(COGNITIVE_STATE_FILE)
+    except Exception:
+        try:
+            COGNITIVE_STATE_FILE.write_text(json.dumps(current, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+    # Non-blocking notification to local Mothership TCP port if requested
+    if notify_mothership:
+        def _notify():
+            try:
+                from gemini_app.fleet.protocol import DEFAULT_PORT, FleetMessage
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(0.2)
+                s.connect(("127.0.0.1", DEFAULT_PORT))
+                cmd = FleetMessage(
+                    msg_type=FleetMessage.TYPE_COMMAND,
+                    node_id="console",
+                    payload={"action": "update_cognitive", "cognitive": current},
+                )
+                s.sendall(cmd.serialize())
+                s.close()
+            except Exception:
+                pass
+
+        t = threading.Thread(target=_notify, daemon=True)
+        t.start()
+
+    return current
+
+
 def collect_mothership_telemetry(
     cognitive_override: Optional[Dict[str, Any]] = None,
     satellites_info: Optional[List[Dict[str, Any]]] = None,
@@ -200,10 +281,13 @@ def collect_mothership_telemetry(
         "state_desc": "Mothership Active | Telemetry Service",
         "task": "Distributed Node Telemetry & Auto-Update HUD",
         "topic": "fleet & satellite nodes",
-        "thought": "Streaming real-time telemetry and cognitive state to connected nodes...",
+        "thought": "Standing by and monitoring bilateral telemetry stream.",
         "tool": "none",
-        "turn_number": 19,
+        "turn_number": 1,
     }
+    persisted = get_persisted_cognitive_state()
+    if persisted:
+        cognitive.update(persisted)
     if cognitive_override:
         cognitive.update(cognitive_override)
 

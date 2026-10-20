@@ -56,6 +56,19 @@ class ToolRegistry:
                 self.phase_callback(phase, details)
             except TypeError:
                 self.phase_callback(phase)
+        try:
+            from gemini_app.fleet.telemetry import update_cognitive_state
+            tool_name = "none"
+            if phase in ("scanning", "reading", "probing", "recalling", "writing", "patching",
+                         "searching", "executing", "rebooting", "snapshotting", "reviewing",
+                         "notes", "scaffolding", "system", "introspecting", "animating", "fleet"):
+                tool_name = phase
+            update_cognitive_state(
+                thought=details or f"Running {phase}...",
+                tool=tool_name,
+            )
+        except Exception:
+            pass
 
     def get_tool_callables(self) -> Tuple[List[Callable], Dict[str, Callable]]:
         """Returns SDK-compatible function callables and a lookup dictionary."""

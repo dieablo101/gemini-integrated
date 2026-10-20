@@ -10,7 +10,13 @@ from gemini_app.fleet.protocol import FleetMessage
 from gemini_app.fleet.satellite import SatelliteNode, collect_telemetry, execute_fleet_upgrade
 from gemini_app.fleet.mothership import MothershipServer
 from gemini_app.fleet.hud import SatelliteHUD, clip_str, render_meter_bar
-from gemini_app.fleet.telemetry import collect_mothership_telemetry, get_cpu_and_mem_vitals, get_git_vitals
+from gemini_app.fleet.telemetry import (
+    collect_mothership_telemetry,
+    get_cpu_and_mem_vitals,
+    get_git_vitals,
+    get_persisted_cognitive_state,
+    update_cognitive_state,
+)
 from gemini_app.fleet.nodes import (
     execute_ssh_rescue,
     get_dieablo_ssh_key,
@@ -108,6 +114,26 @@ class TestFleetTelemetryAndHUD(unittest.TestCase):
         self.assertIn("cpu_pct", telem["vitals"])
         self.assertIn("branch", telem["git"])
 
+    def test_update_and_persist_cognitive_state(self) -> None:
+        st = update_cognitive_state(
+            state_desc="Running test_suite",
+            task="Validating HUD telemetry",
+            thought="Testing dynamic cognitive updates",
+            tool="execute_shell",
+            turn_number=42,
+            notify_mothership=False,
+        )
+        self.assertEqual(st.get("tool"), "execute_shell")
+        self.assertEqual(st.get("turn_number"), 42)
+        persisted = get_persisted_cognitive_state()
+        self.assertEqual(persisted.get("tool"), "execute_shell")
+        self.assertEqual(persisted.get("thought"), "Testing dynamic cognitive updates")
+
+        telem = collect_mothership_telemetry()
+        self.assertEqual(telem["cognitive"]["tool"], "execute_shell")
+        self.assertEqual(telem["cognitive"]["thought"], "Testing dynamic cognitive updates")
+        self.assertEqual(telem["cognitive"]["turn_number"], 42)
+
 
 class TestFleetNetwork(unittest.TestCase):
     @classmethod
@@ -170,6 +196,30 @@ class TestFleetNetwork(unittest.TestCase):
         # Test push cognitive event
         event_count = self.server.push_cognitive_event("Test cognitive event")
         self.assertEqual(event_count, 1)
+
+        # Test Mothership receiving update_cognitive command over socket
+        cmd_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        cmd_sock.connect(("127.0.0.1", self.test_port))
+        cmd = FleetMessage(
+            msg_type=FleetMessage.TYPE_COMMAND,
+            node_id="console",
+            payload={
+                "action": "update_cognitive",
+                "cognitive": {
+                    "state_desc": "Patching files",
+                    "task": "Dynamic HUD",
+                    "thought": "Live tool stream test",
+                    "tool": "apply_patch",
+                    "turn_number": 99,
+                },
+            },
+        )
+        cmd_sock.sendall(cmd.serialize())
+        time.sleep(0.15)
+        cmd_sock.close()
+        self.assertEqual(self.server._cognitive_override.get("tool"), "apply_patch")
+        self.assertEqual(self.server._cognitive_override.get("thought"), "Live tool stream test")
+        self.assertEqual(self.server._cognitive_override.get("turn_number"), 99)
 
         # Stop satellite cleanly
         satellite.stop()

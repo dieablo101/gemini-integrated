@@ -203,6 +203,11 @@ class MothershipServer:
                             resp_payload: Dict[str, Any] = {"status": "ok", "action": action}
                             if action == "ping":
                                 resp_payload["pong"] = time.time()
+                            elif action == "update_cognitive":
+                                cog_data = msg.payload.get("cognitive", {})
+                                if cog_data:
+                                    self._cognitive_override.update(cog_data)
+                                    self.broadcast_telemetry()
                             elif action == "list_nodes":
                                 resp_payload["nodes"] = self.list_nodes()
                             elif action == "rescue_node":
@@ -214,6 +219,16 @@ class MothershipServer:
                                     cognitive_override=self._cognitive_override,
                                     satellites_info=self.list_nodes(),
                                 )
+                            elif action == "update_cognitive":
+                                cog = msg.payload.get("cognitive", {})
+                                self.set_cognitive_state(
+                                    state_desc=cog.get("state_desc", ""),
+                                    task=cog.get("task", ""),
+                                    thought=cog.get("thought", ""),
+                                    tool=cog.get("tool", "none"),
+                                    turn_number=cog.get("turn_number"),
+                                )
+                                resp_payload["status"] = "ok"
                             reply = FleetMessage(
                                 msg_type=FleetMessage.TYPE_RESPONSE,
                                 node_id="mothership",
@@ -282,14 +297,27 @@ class MothershipServer:
         )
         return self.broadcast(msg)
 
-    def set_cognitive_state(self, state_desc: str, task: str, thought: str = "", tool: str = "none") -> None:
+    def set_cognitive_state(
+        self,
+        state_desc: str = "",
+        task: str = "",
+        thought: str = "",
+        tool: str = "none",
+        turn_number: Optional[int] = None,
+    ) -> None:
         """Updates internal cognitive state and broadcasts immediately."""
-        self._cognitive_override.update({
-            "state_desc": state_desc,
-            "task": task,
-            "thought": thought,
-            "tool": tool,
-        })
+        updates: Dict[str, Any] = {}
+        if state_desc:
+            updates["state_desc"] = state_desc
+        if task:
+            updates["task"] = task
+        if thought:
+            updates["thought"] = thought
+        if tool:
+            updates["tool"] = tool
+        if turn_number is not None:
+            updates["turn_number"] = turn_number
+        self._cognitive_override.update(updates)
         self.broadcast_telemetry()
 
     def list_nodes(self) -> List[Dict[str, Any]]:

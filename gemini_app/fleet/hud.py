@@ -184,13 +184,19 @@ class SatelliteHUD:
         task_desc = cognitive.get("task", "Awaiting active task")
         thought = cognitive.get("thought", "Connected and monitoring bilateral stream.")
         tool = cognitive.get("tool", "none")
-        turn_num = cognitive.get("turn_number", 1)
-
-        c_line1 = f"{BOLD}Turn:{RESET} {PURPLE}#{turn_num}{RESET}  {BOLD}State:{RESET} {WHITE}{clip_str(state_desc, w - 25)}{RESET}"
+        topic_str = cognitive.get("topic") or "fleet & satellite nodes"
+        topic_clipped = clip_str(topic_str, 24)
+        rem_state_w = max(10, w - len(topic_clipped) - 18)
+        c_line1 = f"{BOLD}Topic:{RESET} {PURPLE}{topic_clipped}{RESET}  {BOLD}State:{RESET} {WHITE}{clip_str(state_desc, rem_state_w)}{RESET}"
         c_line2 = f"{BOLD}Task:{RESET}  {YELLOW}{clip_str(task_desc, w - 14)}{RESET}"
         c_line3 = f"{BOLD}Think:{RESET} {GRAY}\"{clip_str(thought, w - 15)}\"{RESET}"
-        tool_color = PURPLE if tool != "none" else DARK_GRAY
-        c_line4 = f"{BOLD}Tool:{RESET}  {tool_color}[{tool}]{RESET}"
+        if tool in ("none", "idle", ""):
+            tool_pill = f"{DARK_GRAY}[idle]{RESET}"
+        elif "[done]" in tool:
+            tool_pill = f"{BLUE}[{tool}]{RESET}"
+        else:
+            tool_pill = f"{GREEN}{BOLD}[⚡ {tool}]{RESET}"
+        c_line4 = f"{BOLD}Tool:{RESET}  {tool_pill}"
 
         lines.append(self._format_box_line("│", c_line1, w))
         lines.append(self._format_box_line("│", c_line2, w))

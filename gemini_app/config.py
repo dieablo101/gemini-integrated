@@ -28,6 +28,7 @@ PROJECTS_DIR.mkdir(mode=0o755, parents=True, exist_ok=True)
 DEFAULT_COPYRIGHT_HOLDER: str = "Kyle Gallagher"
 
 STATE_FILE: Path = GEMINI_HOME / "state.json"
+COGNITIVE_STATE_FILE: Path = GEMINI_HOME / "cognitive_state.json"
 SOCKET_PATH: Path = GEMINI_HOME / "gemini_textual.sock"
 
 FORK_HEADER_TEXT: str = "## This chat is a fork of another / previous chat"

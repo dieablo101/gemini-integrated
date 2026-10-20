@@ -5,9 +5,13 @@ from gemini_app.tools.mind_tools import expand_mind
 from gemini_app.tools.registry import ToolRegistry
 from gemini_app.tools.snapshots import (
     capture_ui_snapshot,
+    cleanup_stale_ephemerals,
+    cleanup_test_snapshots,
+    delete_all_snapshots,
     extract_text_from_svg,
     get_snapshot_index,
     list_held_snapshots,
+    prune_audit_snapshots,
     review_held_snapshots,
 )
 from gemini_app.tools.workspace import (
@@ -25,6 +29,10 @@ __all__ = [
     "execute_shell",
     "expand_mind",
     "capture_ui_snapshot",
+    "cleanup_stale_ephemerals",
+    "cleanup_test_snapshots",
+    "prune_audit_snapshots",
+    "delete_all_snapshots",
     "review_held_snapshots",
     "list_held_snapshots",
     "get_snapshot_index",

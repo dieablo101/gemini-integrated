@@ -44,6 +44,9 @@ vault/*.token
 vault/*.key
 !vault/*.enc
 !vault/.vault_meta.json
+
+# Screenshots & transient audit captures
+screenshots/
 """
 
 

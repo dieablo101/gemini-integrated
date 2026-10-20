@@ -1,7 +1,11 @@
 """UI Smoke and Integration Tests for Gemini Textual App."""
 
 import asyncio
+from pathlib import Path
+import tempfile
 import unittest
+import gemini_app.config
+from gemini_app.tools import snapshots
 from gemini_app.ui.app import ChatApp
 from gemini_app.ui.boot import BootScreen
 from gemini_app.ui.modals.commands import CommandsModal
@@ -9,6 +13,27 @@ from textual.widgets import Static
 
 
 class TestUIApp(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.temp_screenshots_dir = tempfile.TemporaryDirectory()
+        self.screenshots_path = Path(self.temp_screenshots_dir.name)
+
+        self.orig_screenshots_dir = snapshots.SCREENSHOTS_DIR
+        self.orig_index_file = snapshots.INDEX_FILE
+        self.orig_config_screenshots = gemini_app.config.SCREENSHOTS_DIR
+
+        snapshots.SCREENSHOTS_DIR = self.screenshots_path
+        snapshots.INDEX_FILE = self.screenshots_path / "snapshots_index.json"
+        gemini_app.config.SCREENSHOTS_DIR = self.screenshots_path
+
+    def tearDown(self):
+        try:
+            snapshots.cleanup_test_snapshots()
+        except Exception:
+            pass
+        snapshots.SCREENSHOTS_DIR = self.orig_screenshots_dir
+        snapshots.INDEX_FILE = self.orig_index_file
+        gemini_app.config.SCREENSHOTS_DIR = self.orig_config_screenshots
+        self.temp_screenshots_dir.cleanup()
     async def test_boot_screen_desktop_display(self):
         app = ChatApp()
         async with app.run_test(size=(120, 40)) as pilot:

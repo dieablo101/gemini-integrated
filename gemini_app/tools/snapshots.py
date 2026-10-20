@@ -114,6 +114,116 @@ def cleanup_stale_ephemerals() -> int:
     return purged
 
 
+def cleanup_test_snapshots(
+    patterns: tuple[str, ...] = ("test", "visual_integrity", "post_reboot_audit")
+) -> int:
+    """Removes all test, verification, and audit snapshots from disk and index."""
+    entries = get_snapshot_index()
+    if not entries:
+        return 0
+
+    surviving: list[dict[str, Any]] = []
+    purged = 0
+
+    for e in entries:
+        lbl = (e.get("label") or "").lower()
+        sid = (e.get("id") or "").lower()
+
+        is_test = any(pat in lbl or pat in sid for pat in patterns)
+        if is_test:
+            svg_p = Path(e.get("svg_path", ""))
+            txt_p = Path(e.get("txt_path", ""))
+            if svg_p.exists():
+                try:
+                    svg_p.unlink(missing_ok=True)
+                except Exception:
+                    pass
+            if txt_p.exists():
+                try:
+                    txt_p.unlink(missing_ok=True)
+                except Exception:
+                    pass
+            purged += 1
+        else:
+            surviving.append(e)
+
+    if purged > 0:
+        save_snapshot_index(surviving)
+
+    return purged
+
+
+def prune_audit_snapshots(max_reboot_audits: int = 1) -> int:
+    """Keeps at most `max_reboot_audits` recent post_reboot_audit snapshots, deleting older ones."""
+    entries = get_snapshot_index()
+    if not entries:
+        return 0
+
+    audit_entries = [e for e in entries if (e.get("label") or "").lower() == "post_reboot_audit"]
+    if len(audit_entries) <= max_reboot_audits:
+        return 0
+
+    audit_entries.sort(key=lambda x: x.get("index", 0), reverse=True)
+    to_delete = set(e.get("id") for e in audit_entries[max_reboot_audits:])
+
+    surviving: list[dict[str, Any]] = []
+    purged = 0
+
+    for e in entries:
+        if e.get("id") in to_delete:
+            svg_p = Path(e.get("svg_path", ""))
+            txt_p = Path(e.get("txt_path", ""))
+            if svg_p.exists():
+                try:
+                    svg_p.unlink(missing_ok=True)
+                except Exception:
+                    pass
+            if txt_p.exists():
+                try:
+                    txt_p.unlink(missing_ok=True)
+                except Exception:
+                    pass
+            purged += 1
+        else:
+            surviving.append(e)
+
+    if purged > 0:
+        save_snapshot_index(surviving)
+
+    return purged
+
+
+def delete_all_snapshots() -> int:
+    """Deletes all snapshots (SVG, TXT, index) from SCREENSHOTS_DIR and empties index."""
+    SCREENSHOTS_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    entries = get_snapshot_index()
+    count = 0
+    for e in entries:
+        svg_p = Path(e.get("svg_path", ""))
+        txt_p = Path(e.get("txt_path", ""))
+        if svg_p.exists():
+            try:
+                svg_p.unlink(missing_ok=True)
+            except Exception:
+                pass
+        if txt_p.exists():
+            try:
+                txt_p.unlink(missing_ok=True)
+            except Exception:
+                pass
+        count += 1
+
+    # Also clean up any orphan snapshot svg or txt files in SCREENSHOTS_DIR
+    for item in SCREENSHOTS_DIR.glob("snapshot_*"):
+        try:
+            item.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    save_snapshot_index([])
+    return count
+
+
 def capture_ui_snapshot(
     app: Any,
     label: str = "",
@@ -205,6 +315,10 @@ def capture_ui_snapshot(
 
     entries.append(entry)
     save_snapshot_index(entries)
+
+    if clean_label.startswith("post_reboot"):
+        prune_audit_snapshots(max_reboot_audits=1)
+
     return entry
 
 

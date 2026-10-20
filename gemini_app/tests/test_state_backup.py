@@ -51,6 +51,7 @@ class TestStateBackup(unittest.TestCase):
         self.assertIn("vault/*.txt", gitignore)
         self.assertIn("!vault/*.enc", gitignore)
         self.assertIn("!vault/.vault_meta.json", gitignore)
+        self.assertIn("screenshots/", gitignore)
 
     def test_gitignore_protects_plaintext_vault_secrets(self) -> None:
         """Ensures plaintext token files are untracked by git while encrypted tokens are tracked."""

@@ -112,7 +112,14 @@ from gemini_app.introspection import (
     start_mind_animation,
 )
 from gemini_app.tools.registry import ToolRegistry
-from gemini_app.tools.snapshots import capture_ui_snapshot, cleanup_stale_ephemerals, list_held_snapshots
+from gemini_app.tools.snapshots import (
+    capture_ui_snapshot,
+    cleanup_stale_ephemerals,
+    cleanup_test_snapshots,
+    delete_all_snapshots,
+    list_held_snapshots,
+    prune_audit_snapshots,
+)
 from gemini_app.ui.boot import BootScreen
 from gemini_app.ui.modals import (
     ApiKeyModal,
@@ -990,6 +997,8 @@ class ChatApp(App):
 
     async def on_mount(self) -> None:
         cleanup_stale_ephemerals()
+        prune_audit_snapshots(max_reboot_audits=1)
+        cleanup_test_snapshots()
         saved_theme = self._read_theme_from_state()
         self.set_theme(saved_theme, notify_user=False)
 
@@ -2450,6 +2459,15 @@ class ChatApp(App):
             return True
 
         elif verb in ("snapshot", "snap"):
+            clean_arg = arg.strip().lower()
+            if clean_arg in ("clean", "clear", "purge", "delete-all"):
+                purged = delete_all_snapshots()
+                self.notify(f"✓ All snapshots deleted ({purged} files removed).", timeout=3.5)
+                return True
+            elif clean_arg in ("prune", "prune-audits", "clean-tests"):
+                pruned = cleanup_test_snapshots()
+                self.notify(f"✓ Test & audit snapshots cleaned up ({pruned} removed).", timeout=3.5)
+                return True
             label = arg.strip()
             self.action_take_snapshot(label=label, taken_by="user", source="command")
             return True

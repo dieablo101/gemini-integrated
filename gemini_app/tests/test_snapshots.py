@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from unittest.mock import MagicMock
 
+import gemini_app.config
 from gemini_app.tools import snapshots
 from gemini_app.ui.app import ChatApp
 
@@ -14,16 +15,20 @@ class TestSnapshotsLifecycle(unittest.IsolatedAsyncioTestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.screenshots_dir = Path(self.temp_dir.name)
 
-        # Mock SCREENSHOTS_DIR and INDEX_FILE in snapshots module
+        # Mock SCREENSHOTS_DIR and INDEX_FILE in snapshots module and config
         self.orig_dir = snapshots.SCREENSHOTS_DIR
         self.orig_index = snapshots.INDEX_FILE
+        self.orig_config_dir = gemini_app.config.SCREENSHOTS_DIR
 
         snapshots.SCREENSHOTS_DIR = self.screenshots_dir
         snapshots.INDEX_FILE = self.screenshots_dir / "snapshots_index.json"
+        gemini_app.config.SCREENSHOTS_DIR = self.screenshots_dir
 
     def tearDown(self):
+        snapshots.cleanup_test_snapshots()
         snapshots.SCREENSHOTS_DIR = self.orig_dir
         snapshots.INDEX_FILE = self.orig_index
+        gemini_app.config.SCREENSHOTS_DIR = self.orig_config_dir
         self.temp_dir.cleanup()
 
     def test_ephemeral_snapshot_deleted_after_review(self):
@@ -109,6 +114,70 @@ class TestSnapshotsLifecycle(unittest.IsolatedAsyncioTestCase):
                 any(key in txt_content for key in ["^q", "quit", "^c", "commands", "Mind", "Fork"]),
                 f"Visual layout missing footer/navigation anchors. Dump:\n{txt_content}",
             )
+
+    def test_cleanup_test_snapshots(self):
+        mock_app = MagicMock()
+        mock_app.export_screenshot.return_value = "<svg><text>Test Line</text></svg>"
+        mock_app.screen = MagicMock()
+        mock_app.screen.__class__.__name__ = "ChatApp"
+
+        # Capture a test snapshot and a user persistent snapshot
+        entry_test = snapshots.capture_ui_snapshot(mock_app, label="visual_integrity_check", source="command")
+        entry_audit = snapshots.capture_ui_snapshot(mock_app, label="post_reboot_audit", source="command")
+        entry_user = snapshots.capture_ui_snapshot(mock_app, label="user_important_shot", source="command")
+
+        self.assertEqual(len(snapshots.get_snapshot_index()), 3)
+        self.assertTrue(Path(entry_test["svg_path"]).exists())
+        self.assertTrue(Path(entry_audit["svg_path"]).exists())
+        self.assertTrue(Path(entry_user["svg_path"]).exists())
+
+        # Run cleanup_test_snapshots
+        purged = snapshots.cleanup_test_snapshots()
+        self.assertEqual(purged, 2)
+
+        # Test and audit files deleted
+        self.assertFalse(Path(entry_test["svg_path"]).exists())
+        self.assertFalse(Path(entry_audit["svg_path"]).exists())
+        # User snapshot preserved
+        self.assertTrue(Path(entry_user["svg_path"]).exists())
+
+        remaining = snapshots.get_snapshot_index()
+        self.assertEqual(len(remaining), 1)
+        self.assertEqual(remaining[0]["label"], "user_important_shot")
+
+    def test_prune_audit_snapshots(self):
+        mock_app = MagicMock()
+        mock_app.export_screenshot.return_value = "<svg><text>Audit Line</text></svg>"
+        mock_app.screen = MagicMock()
+        mock_app.screen.__class__.__name__ = "ChatApp"
+
+        # Capture 3 audit snapshots
+        e1 = snapshots.capture_ui_snapshot(mock_app, label="post_reboot_audit", source="command")
+        e2 = snapshots.capture_ui_snapshot(mock_app, label="post_reboot_audit", source="command")
+
+        # Because capture_ui_snapshot automatically prunes prior post_reboot_audits,
+        # only the latest post_reboot_audit should survive!
+        index = snapshots.get_snapshot_index()
+        audit_entries = [e for e in index if e.get("label") == "post_reboot_audit"]
+        self.assertEqual(len(audit_entries), 1)
+        self.assertEqual(audit_entries[0]["id"], e2["id"])
+        self.assertFalse(Path(e1["svg_path"]).exists())
+        self.assertTrue(Path(e2["svg_path"]).exists())
+
+    def test_delete_all_snapshots(self):
+        mock_app = MagicMock()
+        mock_app.export_screenshot.return_value = "<svg><text>Any Line</text></svg>"
+        mock_app.screen = MagicMock()
+        mock_app.screen.__class__.__name__ = "ChatApp"
+
+        snapshots.capture_ui_snapshot(mock_app, label="snap1", source="command")
+        snapshots.capture_ui_snapshot(mock_app, label="snap2", source="command")
+        self.assertEqual(len(snapshots.get_snapshot_index()), 2)
+
+        count = snapshots.delete_all_snapshots()
+        self.assertEqual(count, 2)
+        self.assertEqual(len(snapshots.get_snapshot_index()), 0)
+        self.assertEqual(list(self.screenshots_dir.glob("snapshot_*")), [])
 
 
 if __name__ == "__main__":

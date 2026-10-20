@@ -20,6 +20,88 @@ ANIMATION_FRAMES: dict[str, list[str]] = {
 }
 
 
+def compute_user_location(app: Any) -> Dict[str, Any]:
+    """Determines exact human-readable location of the user across screens, modals, and widgets."""
+    screen_obj = getattr(app, "screen", None)
+    screen_name = type(screen_obj).__name__ if screen_obj else "Unknown"
+
+    screen_stack = getattr(app, "screen_stack", [])
+    stack_names = [type(s).__name__ for s in screen_stack] if screen_stack else [screen_name]
+
+    focused = getattr(app, "focused", None)
+    focused_id = getattr(focused, "id", None)
+    focused_type = type(focused).__name__ if focused else None
+
+    notes_open = bool(getattr(app, "notes_open", False))
+    notes_mgr = getattr(app, "notes_manager", None)
+    active_topic = getattr(notes_mgr, "active_topic", "general") if notes_mgr else "general"
+
+    turn_idx = getattr(app, "current_focused_turn_index", None)
+    turn_id = getattr(app, "current_focused_turn_id", None)
+
+    modal_labels = {
+        "MindMapScreen": "Cognitive Mind Map (Viewing visual relation tree & anchors)",
+        "BootScreen": "Boot Splash Screen",
+        "ForkModal": "Fork & Branch Navigation Modal",
+        "CommandsModal": "Commands & Shortcuts Palette",
+        "VaultDashboardModal": "Vault Dashboard (Encrypted secrets & passkeys)",
+        "VaultAuthModal": "Vault Authentication Prompt",
+        "VaultChangePasskeyModal": "Vault Passkey Setup",
+        "VaultPasswordEntryModal": "Vault Password Entry Modal",
+        "VaultSecretEntryModal": "Vault Secret Entry Modal",
+        "VaultFileEntryModal": "Vault File Entry Modal",
+        "GitTreeModal": "Git Tree Inspector (Browsing files)",
+        "WriteSnippetModal": "Snippet Composer Modal",
+        "InsertFileModal": "File Ingestion Modal",
+        "FrameSelectModal": "Frame Select Modal",
+        "GitSetupModal": "Git Setup Modal",
+        "ApiKeyModal": "API Key Modal",
+        "ConfirmModal": "Confirmation Dialog",
+        "TitlePromptModal": "Title Prompt Dialog",
+    }
+
+    if screen_name in modal_labels:
+        loc = modal_labels[screen_name]
+        if focused_id:
+            loc += f" [Focus: {focused_id}]"
+        active_view = screen_name
+    elif screen_name not in ("Screen", "ChatApp", "Unknown"):
+        loc = f"Modal: {screen_name}" + (f" [Focus: {focused_id}]" if focused_id else "")
+        active_view = screen_name
+    else:
+        active_view = "MainChat"
+        if focused_id == "input":
+            loc = "Main Chat Input (Typing prompt / command)"
+        elif focused_id in ("notes_editor", "notes_input"):
+            loc = f"Notes Panel Editor (Active Topic: '{active_topic}')"
+        elif focused_type == "TopicChip" or (focused_id and "chip" in str(focused_id)):
+            loc = f"Notes Panel (Browsing topic chips: active '{active_topic}')"
+        elif focused_id == "snippet_preview":
+            loc = "Snippet Preview (Inspecting staged code snippet)"
+        elif focused_id == "feed" or focused_type == "TurnCard" or (focused_id and "turn" in str(focused_id)):
+            turn_str = f"Turn #{turn_idx + 1}" if turn_idx is not None and turn_idx >= 0 else "Feed"
+            if turn_id:
+                turn_str += f" [{turn_id[:8]}]"
+            loc = f"Chat Feed (Viewing {turn_str})"
+        elif notes_open and ("notes" in str(focused_id).lower() or "notes" in str(focused_type).lower()):
+            loc = f"Notes Panel (Active topic: '{active_topic}')"
+        else:
+            loc = f"Main Chat (Focus: {focused_id or focused_type or 'Feed'})"
+
+    return {
+        "user_location": loc,
+        "active_view": active_view,
+        "screen_name": screen_name,
+        "modal_stack": stack_names,
+        "focused_widget_id": focused_id,
+        "focused_widget_type": focused_type,
+        "notes_open": notes_open,
+        "active_topic": active_topic,
+        "turn_index": turn_idx,
+        "turn_id": turn_id,
+    }
+
+
 def get_tier_1_visual(app: Any) -> Dict[str, Any]:
     """Tier 1: Visual & Layout Awareness (Presentation Layer)."""
     theme_name = getattr(app, "active_palette_name", DEFAULT_PALETTE)
@@ -31,19 +113,15 @@ def get_tier_1_visual(app: Any) -> Dict[str, Any]:
         w = app.size.width
         h = app.size.height
 
-    screen_obj = getattr(app, "screen", None)
-    screen_name = type(screen_obj).__name__ if screen_obj else "Unknown"
+    loc_info = compute_user_location(app)
+    screen_name = loc_info["screen_name"]
     is_mobile = w <= MOBILE_BREAKPOINT
-
-    focused = getattr(app, "focused", None)
-    focused_id = getattr(focused, "id", None)
-    focused_type = type(focused).__name__ if focused else None
-
-    notes_open = bool(getattr(app, "notes_open", False))
 
     return {
         "tier": 1,
         "name": "visual_layout",
+        "user_location": loc_info["user_location"],
+        "active_view": loc_info["active_view"],
         "active_theme": theme_name,
         "accent_color": theme_cfg.get("accent", "#ff3333"),
         "accent_bright": theme_cfg.get("accent_bright", "#ff6666"),
@@ -59,10 +137,12 @@ def get_tier_1_visual(app: Any) -> Dict[str, Any]:
         },
         "views": {
             "active_screen": screen_name,
+            "active_view": loc_info["active_view"],
+            "screen_stack": loc_info["modal_stack"],
             "is_mind_screen_open": screen_name == "MindMapScreen",
-            "notes_panel_open": notes_open,
-            "focused_widget_id": focused_id,
-            "focused_widget_type": focused_type,
+            "notes_panel_open": loc_info["notes_open"],
+            "focused_widget_id": loc_info["focused_widget_id"],
+            "focused_widget_type": loc_info["focused_widget_type"],
             "nav_indicator_action": getattr(app, "_nav_indicator_action", None),
             "nav_indicator_palette": getattr(app, "_nav_indicator_palette", None),
         },
@@ -183,7 +263,8 @@ def format_introspection_summary(app: Any) -> str:
 
     summary_lines = [
         "### BILATERAL CONSOLE INTROSPECTION (LIVE APPLICATION STATE)",
-        f"• Visual Layer (Tier 1): Theme: '{t1['active_theme']}' (Accent: {t1['accent_color']}) | "
+        f"• Visual Layer (Tier 1): Location: {t1['user_location']} | "
+        f"Theme: '{t1['active_theme']}' (Accent: {t1['accent_color']}) | "
         f"Screen: {views['active_screen']} (Focus: {views['focused_widget_id'] or 'None'}) | "
         f"Viewport: {geom['width']}x{geom['height']} (Mobile: {geom['is_mobile']}) | "
         f"Notes: {'Open' if views['notes_panel_open'] else 'Closed'}",
@@ -221,6 +302,40 @@ def apply_accent_talk(
     target_clean = (target or "all").strip().lower()
     theme_cfg = THEMES[pal_clean]
     accent = theme_cfg["accent"]
+
+    # Comma-separated multi-targets (e.g. "input,navbar" or "feed,input")
+    if "," in target:
+        sub_targets = [t.strip() for t in target.split(",") if t.strip()]
+        for st in sub_targets:
+            apply_accent_talk(app, target=st, palette=palette, duration=duration, message="")
+        if message and hasattr(app, "notify") and not getattr(app, "_suppress_ambient_toasts", False):
+            app.notify(f"[{accent}]{message}[/]", timeout=max(2.0, duration))
+        return {
+            "status": "success",
+            "action": "multi_accent_talk",
+            "targets": sub_targets,
+            "palette": pal_clean,
+            "duration": duration,
+            "message": f"Accent applied across {len(sub_targets)} targets ({', '.join(sub_targets)}).",
+        }
+
+    # Preset collections
+    if target_clean in ("widgets", "workspace"):
+        return apply_accent_talk(app, target="input,navbar,feed", palette=palette, duration=duration, message=message)
+
+    # Ambient status or mood
+    if target_clean in ("mood", "status") and message:
+        if hasattr(app, "set_status_text"):
+            app.set_status_text(f"[{accent}]{message}[/]")
+            if duration > 0 and hasattr(app, "set_timer"):
+                app.set_timer(duration, getattr(app, "hide_status", lambda: None))
+        return {
+            "status": "success",
+            "target": target_clean,
+            "palette": pal_clean,
+            "duration": duration,
+            "message": message,
+        }
 
     # If target is "all" or "theme", permanently or temporarily switch theme
     if target_clean in ("all", "theme", "app"):

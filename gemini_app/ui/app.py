@@ -3281,6 +3281,16 @@ class ChatApp(App):
                     start_mind_animation(self, effect=effect, palette=palette, duration=duration, message=message)
                 self.app.call_from_thread(_do_anim)
                 return {"status": "success", "effect": effect, "palette": palette, "duration": duration}
+            elif act in ("mood", "status", "vibe"):
+                def _do_mood():
+                    pal_key = palette or getattr(self, "active_palette_name", DEFAULT_PALETTE)
+                    acc = THEMES.get(pal_key, {}).get("accent", self.accent_color)
+                    text = f"[{acc}]{message or '✨ Bilateral Synchrony'}[/]"
+                    self.set_status_text(text)
+                    if duration > 0:
+                        self.set_timer(duration, self.hide_status)
+                self.app.call_from_thread(_do_mood)
+                return {"status": "success", "action": "mood", "palette": palette, "message": message, "duration": duration}
             elif act in ("inspect", "introspect"):
                 return get_console_state(self, tier="all")
             return {"status": "error", "message": f"Unknown UI interaction action '{action}'."}
@@ -3358,7 +3368,7 @@ class ChatApp(App):
             f"12. `scaffold_project(project_name='...', description='...', author='...'): Scaffolds a new project directory in ~/Projects.\n"
             f"13. `manage_system_dependencies(action='check'|'install'|'ensure'|'detect', packages=[...]): Inspects and manages system packages.\n"
             f"14. `introspect_console(tier='all'|'visual'|'runtime'|'workflow'): Inspects live console state across visual layout, runtime environment, and workflow anchors.\n"
-            f"15. `interact_ui(action='set_theme'|'accent_talk'|'pulse_nav'|'animate_mind'|'inspect', target='feed'|'mind'|'notes'|'input'|'footer'|'navbar'|'edge'|'cards'|'snippets'|'fork'|'all', palette='...', effect='sparkle'|'pulse'|'wave'|'synapse'|'glow', duration=3.0, message='...'): Talk through theme accents, pulse navbar navigation items (edge/cards/snippets/fork), or animate the Mind screen.\n"
+            f"15. `interact_ui(action='set_theme'|'accent_talk'|'pulse_nav'|'animate_mind'|'mood'|'inspect', target='feed'|'mind'|'notes'|'input'|'footer'|'navbar'|'edge'|'cards'|'snippets'|'fork'|'all'|'input,navbar', palette='...', effect='sparkle'|'pulse'|'wave'|'synapse'|'glow', duration=3.0, message='...'): Express personality through accent talk on widgets, multi-widget pulses, navbar actions, ambient moods, or Mind screen animations.\n"
             f"16. `manage_fleet_nodes(action='list'|'rescue'|'reboot'|'check'|'register', node_id='...', host='...', command='...'): Inspects connected satellite nodes or executes remote SSH rescue/reboot via the dieablo key.\n\n"
             f"### UI SNAPSHOT RETENTION & VALIDATION PROTOCOL\n"
             f"• Snapshot Retention Rules:\n"

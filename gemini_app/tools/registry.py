@@ -242,7 +242,7 @@ class ToolRegistry:
             duration: float = 3.0,
             message: str = "",
         ) -> Dict[str, Any]:
-            """Interacts with the console UI: alters accent colors on the fly, pulses navbar navigation items (edge, cards, snippets, fork), switches themes, or triggers playful reactive animations in the Mind view."""
+            """Interacts with the console UI: alters accent colors on the fly, pulses navbar navigation items (edge, cards, snippets, fork), switches themes, triggers playful reactive animations in the Mind view, or sets ambient personality moods and multi-widget layout cues."""
             self._notify_phase("animating", f"UI interaction ({action} on {target})")
             if self.ui_interact_callback:
                 return self.ui_interact_callback(

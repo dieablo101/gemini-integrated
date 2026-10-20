@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 from gemini_app.config import THEMES
 from gemini_app.introspection import (
     apply_accent_talk,
+    compute_user_location,
     format_introspection_summary,
     get_console_state,
     get_tier_1_visual,
@@ -134,9 +135,31 @@ class TestIntrospection(unittest.TestCase):
     def test_format_introspection_summary(self):
         summary = format_introspection_summary(self.app)
         self.assertIn("### BILATERAL CONSOLE INTROSPECTION", summary)
-        self.assertIn("Visual Layer (Tier 1): Theme: 'blue'", summary)
+        self.assertIn("Visual Layer (Tier 1): Location:", summary)
+        self.assertIn("Theme: 'blue'", summary)
         self.assertIn("Runtime Layer (Tier 2): CWD: /opt/gemini", summary)
         self.assertIn("Cognitive Layer (Tier 3): Task: 'Testing introspection'", summary)
+
+    def test_compute_user_location(self):
+        loc = compute_user_location(self.app)
+        self.assertIn("Main Chat Input", loc["user_location"])
+        self.assertEqual(loc["active_view"], "MainChat")
+
+        # Test modal location
+        self.app.screen.__class__.__name__ = "ForkModal"
+        loc_modal = compute_user_location(self.app)
+        self.assertIn("Fork & Branch Navigation Modal", loc_modal["user_location"])
+        self.assertEqual(loc_modal["active_view"], "ForkModal")
+
+        # Reset
+        self.app.screen.__class__.__name__ = "ChatApp"
+
+    def test_apply_accent_talk_multi_target(self):
+        res = apply_accent_talk(self.app, target="input,feed", palette="pink", duration=2.0)
+        self.assertEqual(res["status"], "success")
+        self.assertEqual(res["action"], "multi_accent_talk")
+        self.assertIn("input", res["targets"])
+        self.assertIn("feed", res["targets"])
 
     def test_apply_accent_talk_invalid_palette(self):
         res = apply_accent_talk(self.app, target="feed", palette="neon_nonexistent")

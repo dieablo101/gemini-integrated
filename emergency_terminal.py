@@ -157,6 +157,118 @@ def get_latest_crash_log() -> str:
     except Exception as e:
         return f"Failed to read {latest.name}: {e}"
 
+
+# -----------------------------------------------------------------------------
+# Emergency Session & Continuity Tracker
+# -----------------------------------------------------------------------------
+
+class EmergencySessionTracker:
+    """Persists session runs, continuity transcripts, and tool history to ~/.gemini/emergency_state.json."""
+
+    def __init__(self, state_file: Optional[Path] = None):
+        self.state_file = state_file or (Path.home() / ".gemini" / "emergency_state.json")
+        try:
+            self.state_file.parent.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        self.data: Dict[str, Any] = self._load()
+        self.current_session: Dict[str, Any] = {}
+
+    def _load(self) -> Dict[str, Any]:
+        if self.state_file.exists():
+            try:
+                return json.loads(self.state_file.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        return {"total_runs": 0, "last_session": None, "sessions": []}
+
+    def _save(self) -> None:
+        try:
+            tmp = self.state_file.with_suffix(".tmp")
+            tmp.write_text(json.dumps(self.data, indent=2), encoding="utf-8")
+            tmp.replace(self.state_file)
+        except Exception:
+            pass
+
+    def start_session(self) -> int:
+        self.data["total_runs"] = self.data.get("total_runs", 0) + 1
+        run_number = self.data["total_runs"]
+        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        self.previous_session = self.data.get("last_session")
+        self.current_session = {
+            "session_id": f"emg-{int(time.time())}",
+            "run_number": run_number,
+            "started_at": now,
+            "ended_at": None,
+            "duration_seconds": 0.0,
+            "turns_count": 0,
+            "tools_invoked": [],
+            "status": "in_progress",
+            "conversation_snippets": [],
+        }
+        self.data["active_session"] = self.current_session
+        self.data["last_session"] = self.current_session
+        self._save()
+        return run_number
+
+    def record_turn(self, user_msg: str, assistant_reply: str, tools_used: List[str]) -> None:
+        if not self.current_session:
+            return
+        self.current_session["turns_count"] = self.current_session.get("turns_count", 0) + 1
+        if tools_used:
+            invoked = self.current_session.setdefault("tools_invoked", [])
+            for t in tools_used:
+                if t not in invoked:
+                    invoked.append(t)
+
+        snippet = {
+            "turn": self.current_session["turns_count"],
+            "user": user_msg[:250] + ("..." if len(user_msg) > 250 else ""),
+            "assistant": assistant_reply[:250] + ("..." if len(assistant_reply) > 250 else ""),
+            "tools": list(tools_used),
+        }
+        snippets = self.current_session.setdefault("conversation_snippets", [])
+        snippets.append(snippet)
+        self.data["last_session"] = self.current_session
+        self._save()
+
+    def end_session(self, status: str = "completed") -> None:
+        if not self.current_session:
+            return
+        now_ts = time.time()
+        now_str = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now_ts))
+        self.current_session["ended_at"] = now_str
+        self.current_session["status"] = status
+        try:
+            started_raw = self.current_session.get("started_at")
+            if started_raw:
+                started_ts = time.mktime(time.strptime(started_raw, "%Y-%m-%dT%H:%M:%SZ"))
+                self.current_session["duration_seconds"] = round(max(0.0, now_ts - started_ts), 1)
+        except Exception:
+            pass
+
+        sessions = self.data.setdefault("sessions", [])
+        sessions.append(dict(self.current_session))
+        # Keep last 50 session records for continuity
+        self.data["sessions"] = sessions[-50:]
+        self.data["last_session"] = self.current_session
+        self._save()
+
+    def get_continuity_summary(self) -> str:
+        runs = self.data.get("total_runs", 0)
+        sessions = self.data.get("sessions", [])
+        last = sessions[-1] if sessions else getattr(self, "previous_session", None)
+        if runs <= 1 or not last:
+            return "This is the first time the emergency recovery terminal is being launched."
+        tools = ", ".join(last.get("tools_invoked", [])) or "None"
+        return (
+            f"PREVIOUS EMERGENCY TERMINAL HISTORY:\n"
+            f"- Total Runs Executed: {runs - 1}\n"
+            f"- Last Session: #{last.get('run_number')} started at {last.get('started_at')} (Status: {last.get('status')})\n"
+            f"- Turns Exchanged in Last Session: {last.get('turns_count', 0)}\n"
+            f"- Tools Used in Last Session: {tools}"
+        )
+
 # -----------------------------------------------------------------------------
 # Monolithic Autonomous Tools (Stand-alone implementations)
 # -----------------------------------------------------------------------------
@@ -360,12 +472,13 @@ def print_banner() -> None:
     print(banner)
 
 
-def print_system_info(cwd: Path, key_present: bool) -> None:
+def print_system_info(cwd: Path, key_present: bool, run_number: int = 1, total_runs: int = 1) -> None:
     """Prints a fast diagnosis panel."""
     print(f" {CLR_DARK_PURPLE}◈{C_RESET} {CLR_LAVENDER}Workspace:{C_RESET} {cwd}")
     key_status = f"{CLR_GREEN}Found & Configured{C_RESET}" if key_present else f"{CLR_RED}NOT FOUND (run with --key or export GEMINI_API_KEY){C_RESET}"
     print(f" {CLR_DARK_PURPLE}◈{C_RESET} {CLR_LAVENDER}API Key:{C_RESET}   {key_status}")
     print(f" {CLR_DARK_PURPLE}◈{C_RESET} {CLR_LAVENDER}Safety:{C_RESET}    Triage First | Non-destructive Verification | Rollback Ready")
+    print(f" {CLR_DARK_PURPLE}◈{C_RESET} {CLR_LAVENDER}Session:{C_RESET}   Run #{run_number} (Total Recorded: {total_runs})")
     print(f"{CLR_MUTED}─────────────────────────────────────────────────────────────────────────────{C_RESET}\n")
 
 # -----------------------------------------------------------------------------
@@ -386,12 +499,17 @@ SAFETY & TRIAGE PROTOCOL:
 
 def run_emergency_session(api_key: str, working_dir: Path) -> None:
     """Main interactive recovery REPL loop."""
+    tracker = EmergencySessionTracker()
+    run_number = tracker.start_session()
+    total_runs = tracker.data.get("total_runs", run_number)
+
     print_banner()
-    print_system_info(working_dir, bool(api_key))
+    print_system_info(working_dir, bool(api_key), run_number=run_number, total_runs=total_runs)
 
     if not GENAI_AVAILABLE:
         print(f"\n{CLR_RED}Error: 'google.genai' is not installed in this Python environment.{C_RESET}")
         print(f"{CLR_MUTED}Try running with: /opt/gemini/.venv/bin/python emergency_terminal.py{C_RESET}\n")
+        tracker.end_session("missing_dependency")
         sys.exit(1)
 
     if not api_key:
@@ -401,9 +519,11 @@ def run_emergency_session(api_key: str, working_dir: Path) -> None:
             api_key = input(f"{CLR_LAVENDER}Enter Gemini API Key: {C_RESET}").strip()
             if not api_key:
                 print("No key entered. Exiting.")
+                tracker.end_session("missing_api_key")
                 sys.exit(1)
         except (KeyboardInterrupt, EOFError):
             print("\nAborted.")
+            tracker.end_session("aborted")
             sys.exit(0)
 
     # Initialize Client & Toolbox
@@ -425,9 +545,12 @@ def run_emergency_session(api_key: str, working_dir: Path) -> None:
     # Gather initial environment snapshot for prompt
     git_snap = get_git_status_summary(working_dir)
     crash_snap = get_latest_crash_log()
+    continuity_snap = tracker.get_continuity_summary()
     initial_context = (
         f"INITIAL SYSTEM DIAGNOSIS SNAPSHOT:\n"
         f"Working Directory: {working_dir}\n"
+        f"Current Emergency Run: #{run_number} (Total Runs: {total_runs})\n"
+        f"{continuity_snap}\n\n"
         f"{git_snap}\n\n"
         f"{crash_snap}\n"
     )
@@ -444,6 +567,7 @@ def run_emergency_session(api_key: str, working_dir: Path) -> None:
         )
     except Exception as e:
         print(f"\n{CLR_RED}Failed to initialize Gemini recovery session: {e}{C_RESET}")
+        tracker.end_session("init_failed")
         sys.exit(1)
 
     # Setup Readline history in ~/.gemini
@@ -462,6 +586,7 @@ def run_emergency_session(api_key: str, working_dir: Path) -> None:
 
         max_iterations = 10
         iteration = 0
+        turn_tools: List[str] = []
 
         while iteration < max_iterations:
             iteration += 1
@@ -479,6 +604,8 @@ def run_emergency_session(api_key: str, working_dir: Path) -> None:
                     has_fc = True
                     fn_name = part.function_call.name
                     fn_args = dict(part.function_call.args) if part.function_call.args else {}
+                    if fn_name not in turn_tools:
+                        turn_tools.append(fn_name)
 
                     # Execute local tool
                     if fn_name in tool_map:
@@ -501,6 +628,7 @@ def run_emergency_session(api_key: str, working_dir: Path) -> None:
                 # Strip mind map footer if present
                 clean_reply = re.sub(r"```json:mind_map[\s\S]*?```", "", reply_text).strip()
                 print(f"\n{CLR_PRIMARY}{C_BOLD}Gemini Recovery:{C_RESET}\n{clean_reply}\n")
+                tracker.record_turn(user_msg, clean_reply, turn_tools)
                 break
 
     # First turn: Gemini initiates triage greeting
@@ -516,6 +644,7 @@ def run_emergency_session(api_key: str, working_dir: Path) -> None:
                 continue
 
             if line.lower() in ("exit", "quit", "q", "/exit"):
+                tracker.end_session("completed")
                 print(f"\n{CLR_MUTED}Closing emergency recovery terminal. Stay safe!{C_RESET}")
                 break
 
@@ -552,10 +681,14 @@ def run_emergency_session(api_key: str, working_dir: Path) -> None:
             dispatch_turn(line)
 
         except KeyboardInterrupt:
+            tracker.end_session("interrupted")
             print(f"\n{CLR_AMBER}[Interrupted] Press Ctrl+D or type 'exit' to quit.{C_RESET}")
         except EOFError:
+            tracker.end_session("completed")
             print(f"\n{CLR_MUTED}Session closed.{C_RESET}")
             break
+
+    tracker.end_session("completed")
 
     # Save history on clean exit
     try:

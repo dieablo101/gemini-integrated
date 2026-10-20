@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 import time
 from typing import Any, Dict, List, Optional, Union
 
-from gemini_app.config import THEMES, DEFAULT_PALETTE, MOBILE_BREAKPOINT
+from gemini_app.config import GEMINI_HOME, THEMES, DEFAULT_PALETTE, MOBILE_BREAKPOINT
 
 ANIMATION_EFFECTS: set[str] = {"sparkle", "pulse", "wave", "synapse", "glow"}
 
@@ -87,6 +89,17 @@ def get_tier_2_runtime(app: Any) -> Dict[str, Any]:
     focused_turn = getattr(app, "current_focused_turn_id", "")
     marker = getattr(app, "current_chat_center_marker", "")
 
+    emergency_runs = 0
+    last_emergency = None
+    try:
+        emg_file = GEMINI_HOME / "emergency_state.json"
+        if emg_file.exists():
+            emg_data = json.loads(emg_file.read_text(encoding="utf-8"))
+            emergency_runs = int(emg_data.get("total_runs", 0))
+            last_emergency = emg_data.get("last_session")
+    except Exception:
+        pass
+
     return {
         "tier": 2,
         "name": "runtime_operational",
@@ -98,6 +111,8 @@ def get_tier_2_runtime(app: Any) -> Dict[str, Any]:
         "request_details": details,
         "focused_turn_id": focused_turn,
         "center_marker": marker,
+        "emergency_runs": emergency_runs,
+        "last_emergency_session": last_emergency,
     }
 
 
@@ -177,6 +192,13 @@ def format_introspection_summary(app: Any) -> str:
         f"• Cognitive Layer (Tier 3): Task: '{t3['active_task_title']}' | Topic: '{t3['active_topic']}' ({t3['notes_count']} notes) | "
         f"Snapshots Held: {t3['held_snapshots_count']}",
     ]
+
+    if t2.get("emergency_runs", 0) > 0:
+        last_emg = t2.get("last_emergency_session") or {}
+        r_num = last_emg.get("run_number", t2["emergency_runs"])
+        status = last_emg.get("status", "completed")
+        summary_lines.append(f"• Emergency Bridge: {t2['emergency_runs']} run(s) logged (Last: Session #{r_num} - {status})")
+
     return "\n".join(summary_lines)
 
 

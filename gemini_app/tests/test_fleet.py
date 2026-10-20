@@ -355,11 +355,22 @@ class TestFleetNodesAndAutostart(unittest.TestCase):
         self._temp_dir.cleanup()
 
     def test_get_dieablo_ssh_key(self) -> None:
-        key = get_dieablo_ssh_key()
-        # Even if on test environment without ~/.ssh/dieablo101, it either returns None or a Path
+        from gemini_app.fleet.keys import get_cluster_ssh_key, generate_cluster_keypair, save_cluster_key_path
+        key = get_cluster_ssh_key()
         if key:
             self.assertIsInstance(key, Path)
-            self.assertTrue(key.exists())
+
+    def test_cluster_keypair_generation(self) -> None:
+        import tempfile
+        from gemini_app.fleet.keys import generate_cluster_keypair, save_cluster_key_path, get_stored_cluster_key_path
+        with tempfile.TemporaryDirectory() as td:
+            target_key = Path(td) / "custom_cluster_key"
+            priv, pub = generate_cluster_keypair(target_key)
+            self.assertTrue(priv.exists())
+            self.assertTrue(pub.exists())
+            save_cluster_key_path(priv)
+            stored = get_stored_cluster_key_path()
+            self.assertEqual(stored, priv.resolve())
 
     def test_nodes_registry_crud(self) -> None:
         node = register_or_update_node(

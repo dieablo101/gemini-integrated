@@ -20,6 +20,7 @@ import urllib.error
 import urllib.request
 
 from gemini_app.config import GEMINI_HOME, STATE_FILE, VAULT_DIR
+from gemini_app.fleet.keys import get_cluster_ssh_key
 
 logger = logging.getLogger(__name__)
 
@@ -133,34 +134,77 @@ def ensure_state_repo_initialized(remote_repo: str = DEFAULT_REPO_NAME) -> Path:
     subprocess.run(["git", "config", "user.email", email], cwd=str(GEMINI_HOME), check=True, capture_output=True)
 
     # 4. Configure remote origin
-    remote_url = f"git@github.com:dieablo101/{remote_repo}.git"
-    res = subprocess.run(["git", "remote", "get-url", "origin"], cwd=str(GEMINI_HOME), capture_output=True, text=True)
-    if res.returncode == 0:
-        if res.stdout.strip() != remote_url:
-            subprocess.run(["git", "remote", "set-url", "origin", remote_url], cwd=str(GEMINI_HOME), check=True)
-    else:
-        subprocess.run(["git", "remote", "add", "origin", remote_url], cwd=str(GEMINI_HOME), check=True)
+    remote_url, _ = get_configured_backup_remote(remote_repo)
+    if remote_url:
+        res = subprocess.run(["git", "remote", "get-url", "origin"], cwd=str(GEMINI_HOME), capture_output=True, text=True)
+        if res.returncode == 0:
+            if res.stdout.strip() != remote_url:
+                subprocess.run(["git", "remote", "set-url", "origin", remote_url], cwd=str(GEMINI_HOME), check=True)
+        else:
+            subprocess.run(["git", "remote", "add", "origin", remote_url], cwd=str(GEMINI_HOME), check=True)
 
     return GEMINI_HOME
 
 
+def get_configured_backup_remote(remote_repo: str = DEFAULT_REPO_NAME) -> tuple[str, Optional[Path]]:
+    """Resolves backup remote repository URL and SSH key from user config or state."""
+    meta = get_backup_metadata()
+    configured_url = meta.get("backup_remote_url", "").strip()
+    if configured_url:
+        return configured_url, get_cluster_ssh_key()
+
+    # Check ~/.gemini/config.json for github_user, backup_remote_url, or backup_remote
+    cfg_file = GEMINI_HOME / "config.json"
+    user_name = ""
+    if cfg_file.exists():
+        try:
+            cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
+            if cfg.get("backup_remote_url"):
+                return cfg["backup_remote_url"].strip(), get_cluster_ssh_key()
+            user_name = cfg.get("github_user", "").strip() or cfg.get("github_username", "").strip()
+        except Exception:
+            pass
+
+    if not user_name and STATE_FILE.is_file():
+        try:
+            st = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+            user_name = st.get("github_user", "").strip() or st.get("github_username", "").strip()
+        except Exception:
+            pass
+
+    if not user_name:
+        # Default to github.com:current_user or standard fallback
+        import getpass
+        u = getpass.getuser()
+        return f"git@github.com:{u}/{remote_repo}.git", get_cluster_ssh_key()
+
+    return f"git@github.com:{user_name}/{remote_repo}.git", get_cluster_ssh_key()
+
+
 def check_remote_repo_exists(remote_repo: str = DEFAULT_REPO_NAME) -> bool:
     """Checks if the remote GitHub repository exists and is accessible over SSH."""
-    remote_url = f"git@github.com:dieablo101/{remote_repo}.git"
-    ssh_key = Path.home() / ".ssh" / "dieablo101"
-    env = os.environ.copy()
-    if ssh_key.is_file():
-        env["GIT_SSH_COMMAND"] = f"ssh -i {ssh_key} -o StrictHostKeyChecking=accept-new"
+    remote_url, ssh_key = get_configured_backup_remote(remote_repo)
+    if not remote_url:
+        return False
 
-    res = subprocess.run(
-        ["git", "ls-remote", remote_url],
-        cwd=str(GEMINI_HOME),
-        capture_output=True,
-        text=True,
-        env=env,
-        timeout=15,
-    )
-    return res.returncode == 0
+    env = os.environ.copy()
+    ssh_cmd = "ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new"
+    if ssh_key and ssh_key.is_file():
+        ssh_cmd = f"ssh -i {ssh_key} -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new"
+    env["GIT_SSH_COMMAND"] = ssh_cmd
+
+    try:
+        res = subprocess.run(
+            ["git", "ls-remote", remote_url],
+            cwd=str(GEMINI_HOME),
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=8,
+        )
+        return res.returncode == 0
+    except (subprocess.TimeoutExpired, Exception):
+        return False
 
 
 def create_private_github_repo(repo_name: str = DEFAULT_REPO_NAME, token: str | None = None) -> tuple[bool, str]:
@@ -285,9 +329,11 @@ def perform_backup(force: bool = False) -> dict[str, Any]:
 
     # 4. Check if remote repo exists before pushing
     remote_exists = check_remote_repo_exists(DEFAULT_REPO_NAME)
+    remote_url, ssh_key = get_configured_backup_remote(DEFAULT_REPO_NAME)
+
     if not remote_exists:
         err = (
-            f"Remote repository 'dieablo101/{DEFAULT_REPO_NAME}' not found on GitHub. "
+            f"Remote repository '{remote_url}' not found on GitHub. "
             f"Please create a private repo named '{DEFAULT_REPO_NAME}' at https://github.com/new "
             f"or run 'gh auth login' to allow automatic creation."
         )
@@ -298,10 +344,11 @@ def perform_backup(force: bool = False) -> dict[str, Any]:
         return result
 
     # 5. Push to GitHub
-    ssh_key = Path.home() / ".ssh" / "dieablo101"
     env = os.environ.copy()
-    if ssh_key.is_file():
-        env["GIT_SSH_COMMAND"] = f"ssh -i {ssh_key} -o StrictHostKeyChecking=accept-new"
+    ssh_cmd = "ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new"
+    if ssh_key and ssh_key.is_file():
+        ssh_cmd = f"ssh -i {ssh_key} -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new"
+    env["GIT_SSH_COMMAND"] = ssh_cmd
 
     try:
         push_res = subprocess.run(

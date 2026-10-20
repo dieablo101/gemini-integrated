@@ -15,43 +15,21 @@ import time
 from typing import Any, Dict, List, Optional
 
 from gemini_app.config import GEMINI_HOME
+from gemini_app.fleet.keys import get_or_create_cluster_ssh_key, get_stored_cluster_key_path, save_cluster_key_path
 
 FLEET_DIR = GEMINI_HOME / "fleet"
 NODES_REGISTRY_FILE = FLEET_DIR / "nodes_registry.json"
 ACTIVE_NODES_FILE = FLEET_DIR / "active_nodes.json"
 
 
+def get_cluster_ssh_key() -> Optional[Path]:
+    """Finds or creates the cluster SSH private key using setup configuration."""
+    return get_or_create_cluster_ssh_key()
+
+
+# Backwards compatibility alias
 def get_dieablo_ssh_key() -> Optional[Path]:
-    """Finds the dieablo SSH private key in ~/.ssh or standard locations."""
-    ssh_dir = Path.home() / ".ssh"
-    if not ssh_dir.exists():
-        return None
-
-    # Priority candidates
-    candidates = [
-        ssh_dir / "dieablo101",
-        ssh_dir / "dieablo",
-        ssh_dir / "id_dieablo101",
-        ssh_dir / "id_dieablo",
-    ]
-    for c in candidates:
-        if c.exists() and c.is_file():
-            return c
-
-    # Search for any file with 'dieablo' in the name that is not a public key (.pub)
-    try:
-        for f in ssh_dir.iterdir():
-            if "dieablo" in f.name.lower() and not f.name.endswith(".pub") and f.is_file():
-                return f
-    except Exception:
-        pass
-
-    # Standard fallback keys if dieablo-specific key is not found
-    for fallback in [ssh_dir / "id_ed25519", ssh_dir / "id_rsa"]:
-        if fallback.exists() and fallback.is_file():
-            return fallback
-
-    return None
+    return get_cluster_ssh_key()
 
 
 def ensure_fleet_dir() -> Path:
@@ -69,14 +47,14 @@ def load_nodes_registry() -> Dict[str, Dict[str, Any]]:
     ensure_fleet_dir()
     if not NODES_REGISTRY_FILE.exists():
         # Seed with initial known iPad satellite node if available
-        default_key = get_dieablo_ssh_key()
+        default_key = get_cluster_ssh_key()
         default_registry = {
             "satellite-ipad": {
                 "node_id": "satellite-ipad",
                 "host": "192.168.1.38",
                 "ssh_user": "root",
                 "ssh_port": 22,
-                "ssh_key": str(default_key) if default_key else "~/.ssh/dieablo101",
+                "ssh_key": str(default_key) if default_key else str(FLEET_DIR / "id_cluster"),
                 "autostart": "openrc",
                 "status": "online",
                 "last_seen": time.time(),
@@ -117,8 +95,8 @@ def register_or_update_node(
 
     resolved_key = ssh_key
     if not resolved_key:
-        found_key = get_dieablo_ssh_key()
-        resolved_key = str(found_key) if found_key else "~/.ssh/dieablo101"
+        found_key = get_cluster_ssh_key()
+        resolved_key = str(found_key) if found_key else str(FLEET_DIR / "id_cluster")
 
     # Deduplicate: if an older placeholder exists with the same host IP and a different node_id, retire it
     stale_keys = [
@@ -219,7 +197,7 @@ def get_fleet_snapshot() -> Dict[str, Any]:
                 "host": host_part,
                 "ssh_user": "root",
                 "ssh_port": 22,
-                "ssh_key": str(get_dieablo_ssh_key() or "~/.ssh/dieablo101"),
+                "ssh_key": str(get_cluster_ssh_key() or (FLEET_DIR / "id_cluster")),
                 "autostart": "auto",
                 "status": "online",
                 "last_seen_seconds_ago": act.get("last_seen_seconds_ago", 0),
@@ -254,7 +232,7 @@ def execute_ssh_rescue(
                     "host": host,
                     "ssh_user": "root",
                     "ssh_port": 22,
-                    "ssh_key": str(get_dieablo_ssh_key() or "~/.ssh/dieablo101"),
+                    "ssh_key": str(get_cluster_ssh_key() or (FLEET_DIR / "id_cluster")),
                 }
                 break
 
@@ -270,9 +248,9 @@ def execute_ssh_rescue(
 
     key_path = node.get("ssh_key")
     if not key_path or not os.path.exists(os.path.expanduser(key_path)):
-        dieablo_key = get_dieablo_ssh_key()
-        if dieablo_key:
-            key_path = str(dieablo_key)
+        cluster_key = get_cluster_ssh_key()
+        if cluster_key:
+            key_path = str(cluster_key)
         else:
             return {"status": "error", "error": f"SSH key not found: {key_path}"}
 

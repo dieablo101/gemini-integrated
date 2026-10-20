@@ -533,7 +533,7 @@ class MothershipServer:
         return results
 
     def rescue_remote_node(self, node_id: str, action: str = "restart", timeout: int = 15) -> Dict[str, Any]:
-        """Dispatches an SSH rescue/reboot operation to a remote node using dieablo key credentials."""
+        """Dispatches an SSH rescue/reboot operation to a remote node using cluster key credentials."""
         return execute_ssh_rescue(node_id=node_id, action=action, timeout=timeout)
 
     def stop(self) -> None:

@@ -136,8 +136,8 @@ Autostart Options:
 
 Fleet / Nodes Options:
   --list                  List active and registered nodes with SSH details
-  --rescue NODE_ID        Execute remote SSH restart rescue using dieablo key
-  --reboot NODE_ID        Reboot remote node machine over SSH using dieablo key
+  --rescue NODE_ID        Execute remote SSH restart rescue using cluster key
+  --reboot NODE_ID        Reboot remote node machine over SSH using cluster key
   --check NODE_ID         Check remote process vitals and iPad mount status
 
 Node / HUD Options:
@@ -230,7 +230,7 @@ if __name__ == "__main__":
             print(f"Mothership Fleet: {snap.get('active_count')} active / {snap.get('total_registered')} registered")
             for n in snap.get("nodes", []):
                 st = "🟢 LIVE" if n.get("status") == "online" else "🔴 OFFLINE"
-                key_name = Path(n.get("ssh_key", "")).name if n.get("ssh_key") else "dieablo101"
+                key_name = Path(n.get("ssh_key", "")).name if n.get("ssh_key") else "id_cluster"
                 print(f"  • {n.get('node_id')} ({n.get('host')}:{n.get('ssh_port', 22)}) [{st}] SSH: {n.get('ssh_user')}@{n.get('host')} [key: {key_name}]")
         sys.exit(0)
 

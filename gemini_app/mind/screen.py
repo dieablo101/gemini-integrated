@@ -81,7 +81,9 @@ def format_fleet_nodes_markdown() -> str:
             if vitals_parts:
                 lines.append(f"  • **Sys:** {' | '.join(vitals_parts)}")
 
-            lines.append(f"  • **SSH Rescue:** `{user}@{host}:{port}` *(key: dieablo101)*")
+            from pathlib import Path
+            k_name = Path(n.get("ssh_key", "")).name if n.get("ssh_key") else "id_cluster"
+            lines.append(f"  • **SSH Rescue:** `{user}@{host}:{port}` *(key: {k_name})*")
             lines.append(f"  • **Autostart:** Boot-persistent daemon (`{autostart}`)")
             lines.append("")
 

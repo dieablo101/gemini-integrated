@@ -170,7 +170,7 @@ class TestOnboarding(unittest.TestCase):
         self.assertFalse(is_first_boot_pending())
 
     def test_ensure_first_time_onboarding_interactive(self):
-        with patch("builtins.input", side_effect=["Bob Coder", "bob@example.com"]):
+        with patch("builtins.input", side_effect=["Bob Coder", "bob@example.com", ""]):
             with patch("getpass.getpass", return_value="dummy_key_777"):
                 with patch("gemini_app.onboarding.set_git_config", return_value=True):
                     with patch("sys.stdin.isatty", return_value=True):
@@ -182,7 +182,7 @@ class TestOnboarding(unittest.TestCase):
 
     def test_ensure_first_time_onboarding_vault_confirmation(self):
         # API key, then passkey, then mismatch confirmation, then passkey, then matching confirmation
-        with patch("builtins.input", side_effect=["Alice Dev", "alice@dev.org"]):
+        with patch("builtins.input", side_effect=["Alice Dev", "alice@dev.org", ""]):
             with patch(
                 "getpass.getpass",
                 side_effect=[

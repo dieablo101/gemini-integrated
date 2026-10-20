@@ -21,6 +21,12 @@ import sys
 from typing import Any
 
 from gemini_app.config import GEMINI_HOME, STATE_FILE
+from gemini_app.fleet.keys import (
+    generate_cluster_keypair,
+    get_or_create_cluster_ssh_key,
+    get_stored_cluster_key_path,
+    save_cluster_key_path,
+)
 from gemini_app.projects import get_user_real_name, set_user_real_name
 from gemini_app.vault import is_vault_configured, set_vault_passkey, verify_vault_passkey
 
@@ -342,6 +348,10 @@ def ensure_first_time_onboarding(interactive: bool = True) -> dict[str, Any]:
         results["real_name"] = cand_name
         results["git_email"] = cand_email
         results["api_key_configured"] = bool(key)
+        # Ensure cluster key exists
+        cluster_k = get_or_create_cluster_ssh_key()
+        if cluster_k:
+            results["ssh_key_path"] = str(cluster_k)
         mark_onboarding_completed()
         return results
 
@@ -422,6 +432,38 @@ def ensure_first_time_onboarding(interactive: bool = True) -> dict[str, Any]:
                 break
     else:
         results["vault_configured"] = True
+
+    # 5. Fleet / Cluster SSH Key Setup
+    existing_ssh = get_stored_cluster_key_path()
+    if not existing_ssh:
+        print("\nGemini Fleet allows distributed satellite nodes (iPad, Android, remote servers) with SSH rescue.")
+        default_cluster_key = GEMINI_HOME / "fleet" / "id_cluster"
+        prompt_ssh = f"Enter path to your SSH private key for node rescue [press Enter to auto-generate {default_cluster_key.name}]: "
+        try:
+            ssh_input = input(prompt_ssh).strip()
+            if ssh_input:
+                expanded = Path(os.path.expanduser(ssh_input)).resolve()
+                if expanded.is_file():
+                    save_cluster_key_path(expanded)
+                    print(f"\033[1;32m✓ Configured cluster SSH key: {expanded}\033[0m")
+                    results["ssh_key_path"] = str(expanded)
+                else:
+                    print(f"\033[1;33mSpecified path '{ssh_input}' not found. Generating default cluster keypair...\033[0m")
+                    priv, _ = generate_cluster_keypair()
+                    save_cluster_key_path(priv)
+                    print(f"\033[1;32m✓ Generated cluster Ed25519 keypair: {priv}\033[0m")
+                    results["ssh_key_path"] = str(priv)
+            else:
+                priv, _ = generate_cluster_keypair()
+                save_cluster_key_path(priv)
+                print(f"\033[1;32m✓ Auto-generated cluster Ed25519 keypair: {priv}\033[0m")
+                results["ssh_key_path"] = str(priv)
+        except (KeyboardInterrupt, EOFError):
+            priv, _ = generate_cluster_keypair()
+            save_cluster_key_path(priv)
+            results["ssh_key_path"] = str(priv)
+    else:
+        results["ssh_key_path"] = str(existing_ssh)
 
     mark_onboarding_completed()
     print("\n\033[1;32m✓ First-time setup complete! Launching Gemini Integrated...\033[0m\n")

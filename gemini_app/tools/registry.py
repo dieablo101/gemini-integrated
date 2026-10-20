@@ -261,7 +261,7 @@ class ToolRegistry:
             host: str = "",
             command: str = "",
         ) -> Dict[str, Any]:
-            """Manages distributed satellite nodes: lists active/registered nodes, inspects vitals, or performs remote SSH rescue/reboot via the dieablo key."""
+            """Manages distributed satellite nodes: lists active/registered nodes, inspects vitals, or performs remote SSH rescue/reboot via the configured cluster key."""
             self._notify_phase("fleet", f"fleet node management ({action} {node_id})")
             from gemini_app.fleet.nodes import (
                 execute_ssh_rescue,

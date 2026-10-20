@@ -457,7 +457,7 @@ class ChatApp(App):
             msg = "State backup successfully synced to private GitHub repo."
             self.app.call_from_thread(self.notify, msg, title="Backup Complete")
         elif status == "awaiting_remote_repo":
-            msg = "Remote repo 'dieablo101/.gemini' not created on GitHub yet."
+            msg = "Remote backup repo not configured or not reachable on GitHub yet."
             self.app.call_from_thread(self.notify, msg, severity="warning", title="Awaiting Remote Repo")
         else:
             err = res.get("error", "Unknown error")
@@ -3369,7 +3369,7 @@ class ChatApp(App):
             f"13. `manage_system_dependencies(action='check'|'install'|'ensure'|'detect', packages=[...]): Inspects and manages system packages.\n"
             f"14. `introspect_console(tier='all'|'visual'|'runtime'|'workflow'): Inspects live console state across visual layout, runtime environment, and workflow anchors.\n"
             f"15. `interact_ui(action='set_theme'|'accent_talk'|'pulse_nav'|'animate_mind'|'mood'|'inspect', target='feed'|'mind'|'notes'|'input'|'footer'|'navbar'|'edge'|'cards'|'snippets'|'fork'|'all'|'input,navbar', palette='...', effect='sparkle'|'pulse'|'wave'|'synapse'|'glow', duration=3.0, message='...'): Express personality through accent talk on widgets, multi-widget pulses, navbar actions, ambient moods, or Mind screen animations.\n"
-            f"16. `manage_fleet_nodes(action='list'|'rescue'|'reboot'|'check'|'register', node_id='...', host='...', command='...'): Inspects connected satellite nodes or executes remote SSH rescue/reboot via the dieablo key.\n\n"
+            f"16. `manage_fleet_nodes(action='list'|'rescue'|'reboot'|'check'|'register', node_id='...', host='...', command='...'): Inspects connected satellite nodes or executes remote SSH rescue/reboot via the configured cluster key.\n\n"
             f"### UI SNAPSHOT RETENTION & VALIDATION PROTOCOL\n"
             f"• Snapshot Retention Rules:\n"
             f"  - Snapshots captured via command with a name (`/snapshot <name>`) are saved permanently to disk without deleting them.\n"

@@ -10,6 +10,13 @@ from gemini_app.fleet.satellite import SatelliteNode, execute_fleet_upgrade
 from gemini_app.fleet.mothership import MothershipServer
 from gemini_app.fleet.hud import SatelliteHUD
 from gemini_app.fleet.telemetry import collect_mothership_telemetry
+from gemini_app.fleet.keys import (
+    generate_cluster_keypair,
+    get_cluster_ssh_key,
+    get_or_create_cluster_ssh_key,
+    get_stored_cluster_key_path,
+    save_cluster_key_path,
+)
 from gemini_app.fleet.nodes import (
     execute_ssh_rescue,
     get_dieablo_ssh_key,
@@ -35,7 +42,12 @@ __all__ = [
     "SatelliteHUD",
     "execute_fleet_upgrade",
     "collect_mothership_telemetry",
+    "get_cluster_ssh_key",
     "get_dieablo_ssh_key",
+    "get_or_create_cluster_ssh_key",
+    "get_stored_cluster_key_path",
+    "save_cluster_key_path",
+    "generate_cluster_keypair",
     "load_nodes_registry",
     "save_nodes_registry",
     "register_or_update_node",

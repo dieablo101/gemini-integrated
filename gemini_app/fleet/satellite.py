@@ -111,7 +111,7 @@ class SatelliteNode:
 
     def __init__(
         self,
-        mothership_host: str = "192.168.1.91",
+        mothership_host: str = "192.168.1.90",
         mothership_port: int = DEFAULT_PORT,
         node_id: Optional[str] = None,
         heartbeat_interval: float = 15.0,
@@ -310,7 +310,7 @@ class SatelliteNode:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Gemini Distributed Satellite Node Client")
-    parser.add_argument("--mothership", default=os.getenv("GEMINI_MOTHERSHIP", "192.168.1.91"), help="Mothership host IP")
+    parser.add_argument("--mothership", default=os.getenv("GEMINI_MOTHERSHIP", "192.168.1.90"), help="Mothership host IP")
     parser.add_argument("--port", type=int, default=int(os.getenv("GEMINI_PORT", str(DEFAULT_PORT))), help="Mothership TCP port")
     parser.add_argument("--node-id", default=None, help="Explicit node identifier")
     parser.add_argument("--interval", type=float, default=15.0, help="Heartbeat interval in seconds")

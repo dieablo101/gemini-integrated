@@ -1,5 +1,6 @@
-"""Unit tests for Gemini Fleet Architecture (Protocol, Satellite, Mothership, Telemetry, HUD)."""
+"""Unit tests for Gemini Fleet Architecture (Protocol, Satellite, Mothership, Telemetry, HUD, Nodes, Autostart)."""
 
+from pathlib import Path
 import socket
 import time
 import unittest
@@ -10,6 +11,21 @@ from gemini_app.fleet.satellite import SatelliteNode, collect_telemetry, execute
 from gemini_app.fleet.mothership import MothershipServer
 from gemini_app.fleet.hud import SatelliteHUD, clip_str, render_meter_bar
 from gemini_app.fleet.telemetry import collect_mothership_telemetry, get_cpu_and_mem_vitals, get_git_vitals
+from gemini_app.fleet.nodes import (
+    execute_ssh_rescue,
+    get_dieablo_ssh_key,
+    get_fleet_snapshot,
+    load_nodes_registry,
+    register_or_update_node,
+    save_nodes_registry,
+)
+from gemini_app.fleet.autostart import (
+    check_autostart_status,
+    detect_init_system,
+    install_autostart,
+    remove_autostart,
+)
+from gemini_app.mind.screen import MindMapScreen, format_fleet_nodes_markdown
 
 
 class TestFleetProtocol(unittest.TestCase):
@@ -162,6 +178,55 @@ class TestFleetNetwork(unittest.TestCase):
         # Node should be dereferenced from active nodes
         nodes_after = self.server.list_nodes()
         self.assertEqual(len(nodes_after), 0)
+
+
+class TestFleetNodesAndAutostart(unittest.TestCase):
+    def test_get_dieablo_ssh_key(self) -> None:
+        key = get_dieablo_ssh_key()
+        # Even if on test environment without ~/.ssh/dieablo101, it either returns None or a Path
+        if key:
+            self.assertIsInstance(key, Path)
+            self.assertTrue(key.exists())
+
+    def test_nodes_registry_crud(self) -> None:
+        node = register_or_update_node(
+            node_id="test-fedora-worker",
+            host="192.168.1.150",
+            ssh_user="dieablo",
+            ssh_port=22,
+            autostart="systemd",
+            telemetry={"system": "Linux", "distro": "Fedora"},
+        )
+        self.assertEqual(node["node_id"], "test-fedora-worker")
+        self.assertEqual(node["host"], "192.168.1.150")
+
+        reg = load_nodes_registry()
+        self.assertIn("test-fedora-worker", reg)
+
+        snap = get_fleet_snapshot()
+        self.assertGreaterEqual(snap["total_registered"], 1)
+
+    @patch("subprocess.run")
+    def test_execute_ssh_rescue(self, mock_run: MagicMock) -> None:
+        register_or_update_node(
+            node_id="test-rescue-node",
+            host="192.168.1.200",
+            ssh_user="dieablo",
+        )
+        mock_run.return_value = MagicMock(returncode=0, stdout="RESTART_DISPATCHED", stderr="")
+        res = execute_ssh_rescue(node_id="test-rescue-node", action="restart")
+        self.assertEqual(res.get("status"), "ok")
+        self.assertEqual(res.get("action"), "restart")
+        self.assertIn("RESTART_DISPATCHED", res.get("stdout"))
+
+    def test_detect_init_system(self) -> None:
+        init_sys = detect_init_system()
+        self.assertIn(init_sys, ["systemd", "openrc", "launchd", "cron", "unknown"])
+
+    def test_format_fleet_nodes_markdown(self) -> None:
+        md = format_fleet_nodes_markdown()
+        self.assertIn("Mothership Fleet", md)
+        self.assertIn("Satellites", md)
 
 
 if __name__ == "__main__":

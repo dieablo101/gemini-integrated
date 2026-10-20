@@ -185,7 +185,7 @@ class TestTools(unittest.TestCase):
         )
         tools_list, tools_dict = registry.get_tool_callables()
 
-        self.assertEqual(len(tools_list), 15)
+        self.assertEqual(len(tools_list), 16)
         self.assertIn("scan_workspace_tree", tools_dict)
         self.assertIn("expand_mind", tools_dict)
         self.assertIn("recall_memory", tools_dict)
@@ -201,6 +201,7 @@ class TestTools(unittest.TestCase):
         self.assertIn("manage_system_dependencies", tools_dict)
         self.assertIn("introspect_console", tools_dict)
         self.assertIn("interact_ui", tools_dict)
+        self.assertIn("manage_fleet_nodes", tools_dict)
 
         # Call apply_patch through dict
         p_res = tools_dict["apply_patch"](

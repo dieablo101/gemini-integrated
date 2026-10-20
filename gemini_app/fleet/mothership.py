@@ -16,6 +16,11 @@ from typing import Any, Dict, List, Optional
 
 from gemini_app.fleet.protocol import DEFAULT_PORT, FleetMessage
 from gemini_app.fleet.telemetry import collect_mothership_telemetry
+from gemini_app.fleet.nodes import (
+    execute_ssh_rescue,
+    register_or_update_node,
+    save_active_nodes,
+)
 
 
 class ConnectedSatellite:
@@ -144,6 +149,18 @@ class MothershipServer:
                                 self.nodes[node_id] = satellite
                             sys.stdout.write(f"[mothership] Satellite registered: '{node_id}' from {addr}\n")
 
+                            # Persist to active nodes and update persistent registry
+                            try:
+                                host_ip = addr[0]
+                                register_or_update_node(
+                                    node_id=node_id,
+                                    host=host_ip,
+                                    telemetry=satellite.telemetry,
+                                )
+                                save_active_nodes(self.list_nodes())
+                            except Exception:
+                                pass
+
                             # Send immediate telemetry greeting so HUD populates right away
                             init_telem = collect_mothership_telemetry(
                                 cognitive_override=self._cognitive_override,
@@ -163,6 +180,10 @@ class MothershipServer:
                                     sat.last_heartbeat = time.time()
                                     if "telemetry" in msg.payload:
                                         sat.telemetry = msg.payload["telemetry"]
+                            try:
+                                save_active_nodes(self.list_nodes())
+                            except Exception:
+                                pass
 
                         elif msg.type == FleetMessage.TYPE_RESPONSE:
                             with self.lock:
@@ -177,11 +198,17 @@ class MothershipServer:
                                         sat.response_events[req_id].set()
 
                         elif msg.type == FleetMessage.TYPE_COMMAND:
-                            # Handle incoming commands from satellite (e.g. telemetry requests or pings)
+                            # Handle incoming commands from satellite (e.g. telemetry requests, node listings, or pings)
                             action = msg.payload.get("action", "")
                             resp_payload: Dict[str, Any] = {"status": "ok", "action": action}
                             if action == "ping":
                                 resp_payload["pong"] = time.time()
+                            elif action == "list_nodes":
+                                resp_payload["nodes"] = self.list_nodes()
+                            elif action == "rescue_node":
+                                target_nid = msg.payload.get("params", {}).get("node_id", "")
+                                rescue_act = msg.payload.get("params", {}).get("action", "restart")
+                                resp_payload["rescue_result"] = execute_ssh_rescue(target_nid, action=rescue_act)
                             elif action == "mothership_telemetry":
                                 resp_payload["mothership_telemetry"] = collect_mothership_telemetry(
                                     cognitive_override=self._cognitive_override,
@@ -212,6 +239,10 @@ class MothershipServer:
                     if node_id in self.nodes and self.nodes[node_id].conn == conn:
                         del self.nodes[node_id]
                 sys.stdout.write(f"[mothership] Satellite disconnected: '{node_id}'\n")
+                try:
+                    save_active_nodes(self.list_nodes())
+                except Exception:
+                    pass
             try:
                 conn.close()
             except Exception:
@@ -351,6 +382,10 @@ class MothershipServer:
         for nid in node_ids:
             results[nid] = self.upgrade_node(nid, target_ref=target_ref, force=force, timeout=timeout)
         return results
+
+    def rescue_remote_node(self, node_id: str, action: str = "restart", timeout: int = 15) -> Dict[str, Any]:
+        """Dispatches an SSH rescue/reboot operation to a remote node using dieablo key credentials."""
+        return execute_ssh_rescue(node_id=node_id, action=action, timeout=timeout)
 
     def stop(self) -> None:
         """Shuts down server socket and disconnects connected satellites."""

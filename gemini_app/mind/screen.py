@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict
 
 from textual import events, on
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.timer import Timer
 from textual.widgets import Input, Label, Markdown, Static
@@ -20,8 +20,78 @@ if TYPE_CHECKING:
     from gemini_app.ui.app import ChatApp
 
 
+def format_fleet_nodes_markdown() -> str:
+    """Formats live connected nodes and registered fleet nodes into rich Markdown."""
+    try:
+        from gemini_app.fleet.nodes import get_fleet_snapshot
+        snapshot = get_fleet_snapshot()
+        active_cnt = snapshot.get("active_count", 0)
+        total_cnt = snapshot.get("total_registered", 0)
+        nodes = snapshot.get("nodes", [])
+
+        daemon_status = "Active Daemon" if active_cnt > 0 else "Listening"
+        lines = [
+            f"**Mothership Fleet:** `192.168.1.90:7331` ({daemon_status})\n"
+            f"**Satellites:** `{active_cnt}` active / `{total_cnt}` registered\n"
+        ]
+
+        if not nodes:
+            lines.append("*No satellite nodes registered or connected yet.*")
+            lines.append("Run on node: `python3 gemini-integrated.py node --mothership 192.168.1.90`")
+            return "\n".join(lines)
+
+        for n in nodes:
+            nid = n.get("node_id", "satellite")
+            host = n.get("host", "192.168.1.38")
+            status = n.get("status", "offline")
+            user = n.get("ssh_user", "root")
+            port = n.get("ssh_port", 22)
+            autostart = n.get("autostart", "auto")
+            telem = n.get("telemetry", {})
+            live_info = n.get("live_info", {})
+
+            if status == "online":
+                addr_str = live_info.get("address", f"{host}:{port}")
+                last_seen = n.get("last_seen_seconds_ago", 0)
+                lines.append(f"🟢 **`{nid}`** (`{addr_str}`) [● LIVE]")
+            else:
+                last_seen_ago = n.get("last_seen_seconds_ago", 999)
+                time_str = f"{last_seen_ago:.0f}s ago" if last_seen_ago < 3600 else f"{last_seen_ago / 3600:.1f}h ago"
+                lines.append(f"🔴 **`{nid}`** (`{host}:{port}`) [● OFFLINE - {time_str}]")
+
+            # System vitals
+            sys_name = telem.get("system", "")
+            mach = telem.get("machine", "")
+            plat = telem.get("platform", "")
+            cpu = telem.get("cpu_pct", 0.0)
+            mem_u = telem.get("mem_used_mb", 0.0)
+            mem_t = telem.get("mem_total_mb", 0.0)
+
+            vitals_parts = []
+            plat_str = f"{sys_name} {mach}".strip()
+            if plat and plat != plat_str:
+                plat_str = f"{plat_str} ({plat})"
+            if plat_str:
+                vitals_parts.append(plat_str)
+            if cpu:
+                vitals_parts.append(f"CPU: {cpu:.1f}%")
+            if mem_t > 0:
+                vitals_parts.append(f"RAM: {mem_u / 1024:.1f}G/{mem_t / 1024:.1f}G")
+
+            if vitals_parts:
+                lines.append(f"  • **Sys:** {' | '.join(vitals_parts)}")
+
+            lines.append(f"  • **SSH Rescue:** `{user}@{host}:{port}` *(key: dieablo101)*")
+            lines.append(f"  • **Autostart:** Boot-persistent daemon (`{autostart}`)")
+            lines.append("")
+
+        return "\n".join(lines).strip()
+    except Exception as exc:
+        return f"*Fleet status: {exc}*"
+
+
 class MindMapScreen(Screen):
-    """Interactive screen displaying Gemini's technical direction, inferred user intent, and ASCII topology."""
+    """Interactive screen displaying Gemini's direction, user intent, topology, and fleet nodes."""
 
     BINDINGS = [
         Binding("escape", "back_to_chat", "Back to Chat"),
@@ -54,7 +124,7 @@ class MindMapScreen(Screen):
         layout: vertical;
     }
     #mind_states_column {
-        width: 60%;
+        width: 55%;
         height: 100%;
         background: #000000;
         layout: vertical;
@@ -80,15 +150,28 @@ class MindMapScreen(Screen):
         background: #000000;
     }
     #mind_tree_column {
-        width: 40%;
+        width: 45%;
         height: 100%;
-        padding: 1;
-        overflow-y: auto;
         background: #000000;
+        layout: vertical;
     }
     MindMapScreen.-mobile #mind_tree_column {
         width: 100%;
         height: 50%;
+    }
+    #mind_topology_card {
+        height: 50%;
+        width: 100%;
+        padding: 1;
+        overflow-y: auto;
+        background: #000000;
+    }
+    #mind_nodes_card {
+        height: 50%;
+        width: 100%;
+        padding: 1;
+        overflow-y: auto;
+        background: #000000;
     }
     .mind_header {
         text-style: bold;
@@ -114,6 +197,7 @@ class MindMapScreen(Screen):
         self._live_watch_timer: Timer | None = None
         self._anim_frame_idx: int = 0
         self._last_state_signature: str = ""
+        self._last_nodes_signature: str = ""
 
     def _update_screen_classes(self, width: int | None = None) -> None:
         w = width if width is not None else (self.size.width or (self.app.size.width if self.app else 100))
@@ -141,21 +225,27 @@ class MindMapScreen(Screen):
             gemini_md = self.query_one("#gemini_mind_text", Markdown)
             user_md = self.query_one("#user_mind_text", Markdown)
             tree_md = self.query_one("#mind_tree_text", Markdown)
+            nodes_md = self.query_one("#mind_nodes_text", Markdown)
 
             g_state = getattr(app, "current_gemini_state", "") or "*No conclusive direction recorded yet.*"
             u_state = getattr(app, "current_user_state", "") or "*Awaiting initial conversational alignment.*"
             t_content = getattr(app, "current_tree_content", "")
             tree_body = f"```text\n{t_content}\n```" if t_content else "*Tree not initialized.*"
 
+            nodes_body = format_fleet_nodes_markdown()
+
             gemini_md.update(g_state)
             user_md.update(u_state)
             tree_md.update(tree_body)
+            nodes_md.update(nodes_body)
 
             self._last_state_signature = f"{g_state}::{u_state}::{t_content}"
+            self._last_nodes_signature = nodes_body
 
             gemini_md.refresh(layout=True)
             user_md.refresh(layout=True)
             tree_md.refresh(layout=True)
+            nodes_md.refresh(layout=True)
         except Exception:
             pass
 
@@ -174,7 +264,19 @@ class MindMapScreen(Screen):
         if current_sig != self._last_state_signature:
             self.refresh_display()
 
-        # 2. Render reactive animation & cognitive flow on pulse bar
+        # 2. Check and refresh fleet nodes display every 2 ticks (1.2s)
+        if self._anim_frame_idx % 2 == 0:
+            try:
+                nodes_md = self.query_one("#mind_nodes_text", Markdown)
+                new_nodes_body = format_fleet_nodes_markdown()
+                if new_nodes_body != self._last_nodes_signature:
+                    self._last_nodes_signature = new_nodes_body
+                    nodes_md.update(new_nodes_body)
+                    nodes_md.refresh(layout=True)
+            except Exception:
+                pass
+
+        # 3. Render reactive animation & cognitive flow on pulse bar
         try:
             pulse_bar = self.query_one("#mind_pulse_bar", Static)
             now = time.monotonic()
@@ -215,9 +317,13 @@ class MindMapScreen(Screen):
                 with Vertical(id="user_mind_card"):
                     yield Label("── USER MIND STATE (Inferred Intent) ──", classes="mind_header")
                     yield Markdown(id="user_mind_text")
-            with VerticalScroll(id="mind_tree_column"):
-                yield Label("── WORKSPACE & CHAT TOPOLOGY ──", classes="mind_header")
-                yield Markdown(id="mind_tree_text")
+            with Vertical(id="mind_tree_column"):
+                with Vertical(id="mind_topology_card"):
+                    yield Label("── WORKSPACE & TELEMETRY TOPOLOGY ──", classes="mind_header")
+                    yield Markdown(id="mind_tree_text")
+                with Vertical(id="mind_nodes_card"):
+                    yield Label("── NETWORK / NODES ──", classes="mind_header")
+                    yield Markdown(id="mind_nodes_text")
 
         with Vertical(id="mind_input_bar"):
             yield Input(

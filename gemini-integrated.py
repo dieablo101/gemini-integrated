@@ -3,8 +3,8 @@
 
 Autonomously bootstraps virtual environment, pip dependencies,
 system dependencies, and API key on first launch.
-Handles subcommands (hud/monitor, satellite/node, mothership, upgrade) cleanly
-without requiring heavy UI or API dependencies.
+Handles subcommands (hud/monitor, satellite/node, mothership, upgrade, autostart, nodes)
+cleanly without requiring heavy UI or API dependencies.
 """
 
 from __future__ import annotations
@@ -116,13 +116,29 @@ Usage:
   python3 gemini-integrated.py hud [options]
   python3 gemini-integrated.py node [options]
   python3 gemini-integrated.py mothership [options]
+  python3 gemini-integrated.py autostart [options]
+  python3 gemini-integrated.py nodes [options]
   python3 gemini-integrated.py upgrade
 
 Subcommands:
   hud, monitor            Run live Telemetry and AI Cognitive Monitor HUD
   node, satellite         Run as lightweight distributed satellite node
   mothership              Run fleet mothership command-and-control server
+  autostart               Configure persistent boot autostart service on this device
+  nodes, fleet            Inspect connected nodes or perform remote SSH rescue/reboot
   upgrade                 Perform atomic 3-stage pre-flight upgrade on local node
+
+Autostart Options:
+  --install               Install boot persistence service (systemd, openrc, launchd, or cron)
+  --status                Inspect autostart daemon installation status
+  --remove, --uninstall   Disable and remove boot persistence service
+  --mothership HOST       Mothership IP/host (default: 192.168.1.90)
+
+Fleet / Nodes Options:
+  --list                  List active and registered nodes with SSH details
+  --rescue NODE_ID        Execute remote SSH restart rescue using dieablo key
+  --reboot NODE_ID        Reboot remote node machine over SSH using dieablo key
+  --check NODE_ID         Check remote process vitals and iPad mount status
 
 Node / HUD Options:
   --mothership HOST       Mothership IP/host (default: 192.168.1.90)
@@ -154,7 +170,71 @@ if __name__ == "__main__":
         print(f"gemini-integrated v{__version__}")
         sys.exit(0)
 
-    # 2. Check for HUD / Monitor mode
+    # 2. Check for autostart command
+    if "autostart" in argv_set or "--autostart" in argv_set:
+        for tok in ["autostart", "--autostart"]:
+            if tok in sys.argv:
+                sys.argv.remove(tok)
+        from gemini_app.fleet.autostart import check_autostart_status, install_autostart, remove_autostart
+        import argparse
+        as_parser = argparse.ArgumentParser(description="Gemini Satellite Boot Autostart Provisioner")
+        as_parser.add_argument("--install", action="store_true", help="Install boot autostart service")
+        as_parser.add_argument("--remove", "--uninstall", action="store_true", help="Remove boot autostart")
+        as_parser.add_argument("--status", action="store_true", help="Check autostart installation status")
+        as_parser.add_argument("--mothership", default="192.168.1.90", help="Mothership host IP")
+        as_parser.add_argument("--interval", type=float, default=10.0, help="Heartbeat interval")
+        as_args = as_parser.parse_args(sys.argv[1:])
+
+        if as_args.remove:
+            res = remove_autostart()
+            print(f"[autostart] {res.get('message')}")
+        elif as_args.status:
+            res = check_autostart_status()
+            print(f"[autostart] Status: {res}")
+        else:
+            res = install_autostart(mothership=as_args.mothership, interval=as_args.interval)
+            print(f"[autostart] Result: {res.get('status')} - {res.get('message', res.get('error'))}")
+        sys.exit(0)
+
+    # 3. Check for nodes / fleet management CLI
+    if "nodes" in argv_set or "fleet" in argv_set:
+        for tok in ["nodes", "fleet"]:
+            if tok in sys.argv:
+                sys.argv.remove(tok)
+        from gemini_app.fleet.nodes import execute_ssh_rescue, get_fleet_snapshot
+        import argparse
+        node_parser = argparse.ArgumentParser(description="Gemini Fleet & Node Remote Management")
+        node_parser.add_argument("--list", action="store_true", help="List active and registered nodes")
+        node_parser.add_argument("--rescue", metavar="NODE_ID", help="Perform remote SSH rescue on node")
+        node_parser.add_argument("--reboot", metavar="NODE_ID", help="Reboot remote node over SSH")
+        node_parser.add_argument("--check", metavar="NODE_ID", help="Inspect remote node status over SSH")
+        node_parser.add_argument("--action", default="restart", help="Action for rescue (restart|reboot|check)")
+        n_args = node_parser.parse_args(sys.argv[1:])
+
+        if n_args.rescue:
+            res = execute_ssh_rescue(n_args.rescue, action=n_args.action)
+            print(f"[rescue] Result for '{n_args.rescue}': {res.get('status')}")
+            if res.get("stdout"):
+                print(res["stdout"])
+            if res.get("error"):
+                print(f"Error: {res['error']}")
+        elif n_args.reboot:
+            res = execute_ssh_rescue(n_args.reboot, action="reboot")
+            print(f"[reboot] Dispatched reboot to '{n_args.reboot}': {res.get('status')}")
+        elif n_args.check:
+            res = execute_ssh_rescue(n_args.check, action="check")
+            print(f"[check] Status for '{n_args.check}':")
+            print(res.get("stdout", res.get("error", "Unknown")))
+        else:
+            snap = get_fleet_snapshot()
+            print(f"Mothership Fleet: {snap.get('active_count')} active / {snap.get('total_registered')} registered")
+            for n in snap.get("nodes", []):
+                st = "🟢 LIVE" if n.get("status") == "online" else "🔴 OFFLINE"
+                key_name = Path(n.get("ssh_key", "")).name if n.get("ssh_key") else "dieablo101"
+                print(f"  • {n.get('node_id')} ({n.get('host')}:{n.get('ssh_port', 22)}) [{st}] SSH: {n.get('ssh_user')}@{n.get('host')} [key: {key_name}]")
+        sys.exit(0)
+
+    # 4. Check for HUD / Monitor mode
     hud_tokens = {"hud", "monitor", "--hud", "--monitor"}
     matched_hud = [tok for tok in sys.argv[1:] if tok in hud_tokens]
     if matched_hud:
@@ -166,7 +246,7 @@ if __name__ == "__main__":
         from gemini_app.fleet.satellite import main as satellite_main
         sys.exit(satellite_main())
 
-    # 3. Check for upgrade command
+    # 5. Check for upgrade command
     if "upgrade" in argv_set or "--upgrade" in argv_set:
         for tok in ["upgrade", "--upgrade"]:
             if tok in sys.argv:
@@ -178,7 +258,7 @@ if __name__ == "__main__":
         print(f"Message: {res.get('message', res.get('error'))}")
         sys.exit(0 if res.get("status") == "ok" else 1)
 
-    # 4. Check for node/satellite mode anywhere in CLI arguments
+    # 6. Check for node/satellite mode anywhere in CLI arguments
     satellite_tokens = {"--node", "-n", "--satellite", "node", "satellite"}
     matched_sat = [tok for tok in sys.argv[1:] if tok in satellite_tokens]
     if matched_sat:
@@ -187,7 +267,7 @@ if __name__ == "__main__":
         from gemini_app.fleet.satellite import main as satellite_main
         sys.exit(satellite_main())
 
-    # 5. Check for mothership server mode
+    # 7. Check for mothership server mode
     mothership_tokens = {"--mothership-server", "--fleet-server", "mothership"}
     matched_mother = [tok for tok in sys.argv[1:] if tok in mothership_tokens]
     if matched_mother:
@@ -196,7 +276,7 @@ if __name__ == "__main__":
         from gemini_app.fleet.mothership import main as mothership_main
         sys.exit(mothership_main())
 
-    # 6. If on a constrained platform without google-genai, auto-route gracefully
+    # 8. If on a constrained platform without google-genai, auto-route gracefully
     if is_constrained_platform():
         try:
             import google.genai

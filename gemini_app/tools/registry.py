@@ -242,6 +242,30 @@ class ToolRegistry:
                 )
             return {"status": "error", "message": "UI interaction callback unavailable in this context."}
 
+        def manage_fleet_nodes(
+            action: str = "list",
+            node_id: str = "",
+            host: str = "",
+            command: str = "",
+        ) -> Dict[str, Any]:
+            """Manages distributed satellite nodes: lists active/registered nodes, inspects vitals, or performs remote SSH rescue/reboot via the dieablo key."""
+            self._notify_phase("fleet", f"fleet node management ({action} {node_id})")
+            from gemini_app.fleet.nodes import (
+                execute_ssh_rescue,
+                get_fleet_snapshot,
+                register_or_update_node,
+            )
+            act = (action or "list").lower().strip()
+            if act in ("list", "snapshot", "status"):
+                return get_fleet_snapshot()
+            elif act in ("rescue", "restart", "reboot", "check", "exec"):
+                target = node_id or "satellite-ipad"
+                res_act = "restart" if act == "rescue" else act
+                return execute_ssh_rescue(node_id=target, action=res_act, custom_cmd=command)
+            elif act in ("register", "add"):
+                return register_or_update_node(node_id=node_id, host=host)
+            return {"status": "error", "message": f"Unknown fleet node action '{action}'."}
+
         tools_list = [
             scan_workspace_tree,
             expand_mind,
@@ -258,6 +282,7 @@ class ToolRegistry:
             manage_system_dependencies,
             introspect_console,
             interact_ui,
+            manage_fleet_nodes,
         ]
 
         tools_dict = {
@@ -276,6 +301,7 @@ class ToolRegistry:
             "manage_system_dependencies": manage_system_dependencies,
             "introspect_console": introspect_console,
             "interact_ui": interact_ui,
+            "manage_fleet_nodes": manage_fleet_nodes,
         }
 
         return tools_list, tools_dict

@@ -1,4 +1,4 @@
-"""Modal dialogs: commands, confirm, fork, inputs, snippets, git trees, api key, and frame select."""
+"""Modal dialogs: commands, confirm, fork, inputs, snippets, git trees, api key, frame select, and vault."""
 
 from gemini_app.ui.modals.api_key import ApiKeyModal
 from gemini_app.ui.modals.base import ResponsiveModalScreen
@@ -18,6 +18,14 @@ from gemini_app.ui.modals.snippets import (
     InsertFileModal,
     WriteSnippetModal,
 )
+from gemini_app.ui.modals.vault import (
+    VaultAuthModal,
+    VaultChangePasskeyModal,
+    VaultDashboardModal,
+    VaultFileEntryModal,
+    VaultPasswordEntryModal,
+    VaultSecretEntryModal,
+)
 
 __all__ = [
     "ApiKeyModal",
@@ -35,4 +43,10 @@ __all__ = [
     "InsertFileModal",
     "GitTreeModal",
     "FrameSelectModal",
+    "VaultAuthModal",
+    "VaultChangePasskeyModal",
+    "VaultDashboardModal",
+    "VaultFileEntryModal",
+    "VaultPasswordEntryModal",
+    "VaultSecretEntryModal",
 ]

@@ -142,6 +142,12 @@ from gemini_app.ui.modals import (
     PasswordModal,
     ResponsiveModalScreen,
     TitlePromptModal,
+    VaultAuthModal,
+    VaultChangePasskeyModal,
+    VaultDashboardModal,
+    VaultFileEntryModal,
+    VaultPasswordEntryModal,
+    VaultSecretEntryModal,
     WriteSnippetModal,
 )
 from gemini_app.ui.widgets import (
@@ -253,9 +259,9 @@ class ChatApp(App):
             "api-key": lambda _: self.action_configure_api_key(),
             "git-setup": lambda _: self.action_configure_git(),
             "credentials": lambda _: self.action_configure_git(),
-            "vault": lambda _: self.action_vault_passkey(),
-            "passkey": lambda _: self.action_vault_passkey(),
-            "password": lambda _: self.action_vault_passkey(),
+            "vault": lambda arg: self._cmd_vault(arg),
+            "passkey": lambda arg: self._cmd_vault(arg),
+            "password": lambda arg: self._cmd_vault(arg),
             "scaffold": self._cmd_scaffold_project,
             "new-project": self._cmd_scaffold_project,
             "sys-deps": lambda _: self._cmd_sys_deps(),
@@ -306,46 +312,101 @@ class ChatApp(App):
             callback,
         )
 
-    def action_vault_passkey(self) -> None:
-        """Opens PasswordModal to securely verify or configure vault passkey."""
-        from gemini_app.vault import is_vault_configured, set_vault_passkey, verify_vault_passkey
-        is_cfg = is_vault_configured()
-        title = "🔐 Vault Passkey Verification" if is_cfg else "🔐 Set Vault Passkey"
-        msg = "Enter your vault passkey to verify credentials:" if is_cfg else "Enter a new passkey to encrypt and protect your ~/.gemini/vault:"
+    def request_vault_passkey(
+        self,
+        reason: str,
+        callback: Callable[[str | None], None],
+    ) -> None:
+        """Requests vault passkey with explicit reason banner.
 
-        def _on_entered(pswrd: str | None) -> None:
-            if not pswrd:
-                self.notify("Vault passkey entry cancelled.", severity="warning")
-                return
-            if is_cfg:
-                if verify_vault_passkey(pswrd):
-                    self.notify("✓ Vault passkey verified successfully.", timeout=3.5)
-                else:
-                    self.notify("Incorrect vault passkey.", severity="error")
-            else:
-                def _on_confirm(confirm_pswrd: str | None) -> None:
-                    if not confirm_pswrd:
-                        self.notify("Vault passkey confirmation cancelled.", severity="warning")
-                        return
-                    if pswrd != confirm_pswrd:
-                        self.notify("Passkeys did not match. Vault passkey was not set.", severity="error")
-                        return
-                    set_vault_passkey(pswrd)
-                    self.notify("✓ Vault passkey set and secured.", timeout=3.5)
+        Reuses active in-memory session key if already authenticated.
+        """
+        from gemini_app.vault import get_session_passkey, is_session_unlocked
 
-                self.prompt_password(
-                    title="🔐 Confirm Vault Passkey",
-                    message="Please re-enter your new vault passkey to confirm:",
-                    submit_label="Confirm Passkey",
-                    callback=_on_confirm,
-                )
+        if is_session_unlocked():
+            callback(get_session_passkey())
+            return
 
-        self.prompt_password(
-            title=title,
-            message=msg,
-            submit_label="Unlock" if is_cfg else "Set Passkey",
-            callback=_on_entered,
+        self.push_screen(
+            VaultAuthModal(reason=reason),
+            callback,
         )
+
+    def action_vault_passkey(self) -> None:
+        """Opens Vault Dashboard, unlocking via passkey modal if session is locked."""
+        self.action_vault_dashboard()
+
+    def action_vault_dashboard(self) -> None:
+        """Opens master Vault Dashboard after ensuring session is unlocked."""
+        def _on_authed(key: str | None) -> None:
+            if key:
+                self.push_screen(VaultDashboardModal())
+
+        self.request_vault_passkey(
+            reason="Unlocking Vault Management Console",
+            callback=_on_authed,
+        )
+
+    def action_vault_password(self) -> None:
+        """Opens modal to store an encrypted password in ~/.gemini/vault/passwords/."""
+        def _on_authed(key: str | None) -> None:
+            if key:
+                self.push_screen(VaultPasswordEntryModal())
+
+        self.request_vault_passkey(
+            reason="Encrypting and storing new password",
+            callback=_on_authed,
+        )
+
+    def action_vault_secret(self) -> None:
+        """Opens modal to store an infinite-length encrypted secret in ~/.gemini/vault/secrets/."""
+        def _on_authed(key: str | None) -> None:
+            if key:
+                self.push_screen(VaultSecretEntryModal())
+
+        self.request_vault_passkey(
+            reason="Encrypting and storing new secret string",
+            callback=_on_authed,
+        )
+
+    def action_vault_file(self) -> None:
+        """Opens modal to encrypt and store a file in ~/.gemini/vault/files/."""
+        def _on_authed(key: str | None) -> None:
+            if key:
+                self.push_screen(VaultFileEntryModal())
+
+        self.request_vault_passkey(
+            reason="Encrypting and importing file into vault",
+            callback=_on_authed,
+        )
+
+    def action_vault_change(self) -> None:
+        """Opens passkey rotation modal with 2x confirmation."""
+        self.push_screen(VaultChangePasskeyModal())
+
+    def action_vault_lock(self) -> None:
+        """Clears cached session passkey from RAM."""
+        from gemini_app.vault import clear_session_passkey
+        clear_session_passkey()
+        self.notify("Vault locked. Active session credentials cleared from RAM.", timeout=3.0)
+
+    def _cmd_vault(self, arg: str) -> None:
+        """Routes slash commands for /vault [password|file|secret|change|lock]."""
+        sub = arg.strip().lower()
+        if not sub:
+            self.action_vault_dashboard()
+        elif sub in ("change", "rotate"):
+            self.action_vault_change()
+        elif sub in ("password", "pass"):
+            self.action_vault_password()
+        elif sub in ("file", "files"):
+            self.action_vault_file()
+        elif sub in ("secret", "sec", "key"):
+            self.action_vault_secret()
+        elif sub == "lock":
+            self.action_vault_lock()
+        else:
+            self.notify(f"Unknown vault subcommand '{arg}'. Available: /vault [password|file|secret|change|lock]", severity="warning")
 
     def _cmd_scaffold_project(self, arg: str) -> None:
         """Scaffolds a new project in ~/Projects with Git, README.md, and MIT LICENSE."""
@@ -2687,9 +2748,21 @@ class ChatApp(App):
             return True
 
         elif verb in ("vault", "passkey", "password"):
-            if arg:
-                self.notify("⚠️ Passwords should never be typed into the input field! Opening secure modal...", severity="warning", timeout=4.0)
-            self.action_vault_passkey()
+            sub = arg.strip().lower()
+            if not sub:
+                self.action_vault_dashboard()
+            elif sub in ("change", "rotate"):
+                self.action_vault_change()
+            elif sub in ("password", "pass"):
+                self.action_vault_password()
+            elif sub in ("file", "files"):
+                self.action_vault_file()
+            elif sub in ("secret", "sec", "key"):
+                self.action_vault_secret()
+            elif sub == "lock":
+                self.action_vault_lock()
+            else:
+                self.notify(f"Unknown vault subcommand '{arg}'. Available: /vault [password|file|secret|change|lock]", severity="warning")
             return True
 
         elif verb == "api-key":
@@ -2711,7 +2784,7 @@ class ChatApp(App):
         elif verb == "help":
             help_text = (
                 "### Console Slash Commands\n"
-                "- `/vault`: Open secure password modal for vault passkey\n"
+                "- `/vault [password|file|secret|change|lock]`: Secure offline credentials & vault manager\n"
                 "- `/api-key`: Update Google Gemini API key via modal\n"
                 "- `/git-setup`: Configure Real Name & Git credentials\n"
                 "- `/theme <name>`: Switch color theme (e.g. `/theme amber`, `/theme hacker`)\n"

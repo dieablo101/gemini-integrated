@@ -12,8 +12,10 @@ import hmac
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import shutil
+import time
 from typing import Any
 
 from gemini_app.config import GEMINI_HOME, STATE_FILE, VAULT_DIR
@@ -21,15 +23,49 @@ from gemini_app.config import GEMINI_HOME, STATE_FILE, VAULT_DIR
 VAULT_META_FILE: Path = VAULT_DIR / ".vault_meta.json"
 PBKDF2_ITERATIONS: int = 100_000
 
+PASSWORDS_DIR: Path = VAULT_DIR / "passwords"
+SECRETS_DIR: Path = VAULT_DIR / "secrets"
+FILES_DIR: Path = VAULT_DIR / "files"
+
+# Ephemeral RAM session passkey cache (never written to disk)
+_SESSION_PASSKEY: str | None = None
+
 
 def init_vault() -> Path:
-    """Ensures ~/.gemini/vault exists with strict 0700 permissions."""
-    VAULT_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
-    try:
-        VAULT_DIR.chmod(0o700)
-    except Exception:
-        pass
+    """Ensures ~/.gemini/vault and category subdirectories exist with strict 0700 permissions."""
+    for d in (VAULT_DIR, PASSWORDS_DIR, SECRETS_DIR, FILES_DIR):
+        d.mkdir(mode=0o700, parents=True, exist_ok=True)
+        try:
+            d.chmod(0o700)
+        except Exception:
+            pass
     return VAULT_DIR
+
+
+def set_session_passkey(passkey: str) -> None:
+    """Caches the verified vault passkey in RAM for the active console session."""
+    global _SESSION_PASSKEY
+    _SESSION_PASSKEY = passkey
+
+
+def get_session_passkey() -> str | None:
+    """Retrieves the active in-memory session passkey if available."""
+    global _SESSION_PASSKEY
+    return _SESSION_PASSKEY
+
+
+def clear_session_passkey() -> None:
+    """Zeroes out the in-memory session passkey (locks vault)."""
+    global _SESSION_PASSKEY
+    _SESSION_PASSKEY = None
+
+
+def is_session_unlocked() -> bool:
+    """Returns True if a valid session passkey is currently cached in RAM."""
+    global _SESSION_PASSKEY
+    if not _SESSION_PASSKEY:
+        return False
+    return verify_vault_passkey(_SESSION_PASSKEY)
 
 
 def hash_passkey(passkey: str, salt: bytes | None = None) -> tuple[str, str]:
@@ -42,6 +78,9 @@ def hash_passkey(passkey: str, salt: bytes | None = None) -> tuple[str, str]:
 
 def verify_vault_passkey(passkey: str) -> bool:
     """Verifies a passkey against the stored vault hash."""
+    if not passkey:
+        return False
+
     salt_hex = None
     hash_hex = None
 
@@ -123,6 +162,7 @@ def set_vault_passkey(passkey: str) -> dict[str, Any]:
     STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
     STATE_FILE.chmod(0o600)
 
+    set_session_passkey(clean_pass)
     return {"status": "success", "configured": True}
 
 
@@ -195,6 +235,21 @@ def decrypt_bytes(payload: bytes, passkey: str) -> bytes:
         raise ValueError("Unsupported vault encryption format.")
 
 
+def _resolve_passkey(passkey: str | None = None) -> str:
+    key = passkey or get_session_passkey()
+    if not key:
+        raise PermissionError("No vault passkey provided or session locked.")
+    if not verify_vault_passkey(key):
+        raise PermissionError("Invalid vault passkey.")
+    return key
+
+
+def _slugify(name: str) -> str:
+    cleaned = re.sub(r"[^\w\s-]", "", name).strip().lower()
+    slug = re.sub(r"[-\s]+", "_", cleaned)
+    return slug or "untitled"
+
+
 def store_in_vault(filename: str, content: bytes | str, passkey: str | None = None) -> Path:
     """Stores secret file in ~/.gemini/vault, encrypting if passkey provided."""
     init_vault()
@@ -213,25 +268,424 @@ def store_in_vault(filename: str, content: bytes | str, passkey: str | None = No
     return dest
 
 
-def retrieve_from_vault(filename: str, passkey: str) -> bytes:
+def retrieve_from_vault(filename: str, passkey: str | None = None) -> bytes:
     """Retrieves and decrypts a secret from ~/.gemini/vault."""
-    if not verify_vault_passkey(passkey):
-        raise PermissionError("Invalid vault passkey.")
+    key = _resolve_passkey(passkey)
 
     target = VAULT_DIR / filename
     if not target.is_file():
         target = VAULT_DIR / f"{filename}.enc"
     if not target.is_file():
+        # Check subdirectories
+        for sub in (PASSWORDS_DIR, SECRETS_DIR, FILES_DIR):
+            cand = sub / filename
+            if not cand.is_file():
+                cand = sub / f"{filename}.enc"
+            if cand.is_file():
+                target = cand
+                break
+
+    if not target.is_file():
         raise FileNotFoundError(f"Vault secret '{filename}' not found.")
 
     raw = target.read_bytes()
     if target.suffix == ".enc" or raw.startswith(b"F1:") or raw.startswith(b"S1:"):
-        return decrypt_bytes(raw, passkey)
+        return decrypt_bytes(raw, key)
     return raw
 
 
 def list_vault_files() -> list[str]:
-    """Lists files currently stored in ~/.gemini/vault (excluding hidden metadata)."""
+    """Lists files currently stored directly in ~/.gemini/vault (excluding hidden metadata)."""
     if not VAULT_DIR.is_dir():
         return []
-    return sorted(f.name for f in VAULT_DIR.iterdir() if f.is_file() and not f.name.startswith("."))
+    return sorted(
+        f.name
+        for f in VAULT_DIR.iterdir()
+        if f.is_file() and not f.name.startswith(".")
+    )
+
+
+# ----------------------------------------------------------------------
+# Categorized Storage: Passwords
+# ----------------------------------------------------------------------
+
+def store_password(
+    title: str,
+    password: str,
+    username: str = "",
+    notes: str = "",
+    passkey: str | None = None,
+) -> Path:
+    """Encrypts and saves an account password into ~/.gemini/vault/passwords/."""
+    init_vault()
+    key = _resolve_passkey(passkey)
+    slug = _slugify(title)
+    payload = {
+        "title": title.strip(),
+        "username": username.strip(),
+        "password": password,
+        "notes": notes.strip(),
+        "created_at": time.time(),
+        "updated_at": time.time(),
+    }
+    encrypted = encrypt_bytes(json.dumps(payload).encode("utf-8"), key)
+    target = PASSWORDS_DIR / f"{slug}.pass.enc"
+    target.write_bytes(encrypted)
+    target.chmod(0o600)
+    return target
+
+
+def get_password(title: str, passkey: str | None = None) -> dict[str, Any]:
+    """Retrieves and decrypts a stored password entry."""
+    key = _resolve_passkey(passkey)
+    slug = _slugify(title)
+    target = PASSWORDS_DIR / f"{slug}.pass.enc"
+    if not target.is_file():
+        target = PASSWORDS_DIR / title
+    if not target.is_file():
+        for f in PASSWORDS_DIR.glob("*.pass.enc"):
+            try:
+                dec = json.loads(decrypt_bytes(f.read_bytes(), key).decode("utf-8"))
+                if dec.get("title", "").lower() == title.lower():
+                    target = f
+                    break
+            except Exception:
+                continue
+
+    if not target.is_file():
+        raise FileNotFoundError(f"Password '{title}' not found.")
+
+    raw = decrypt_bytes(target.read_bytes(), key)
+    return json.loads(raw.decode("utf-8"))
+
+
+def list_passwords(passkey: str | None = None) -> list[dict[str, Any]]:
+    """Lists all stored password entries. Decrypts credentials if passkey is available."""
+    init_vault()
+    key = passkey or get_session_passkey()
+    has_valid_key = key and verify_vault_passkey(key)
+
+    items: list[dict[str, Any]] = []
+    for f in sorted(PASSWORDS_DIR.glob("*.pass.enc")):
+        if has_valid_key:
+            try:
+                dec = json.loads(decrypt_bytes(f.read_bytes(), key).decode("utf-8"))
+                items.append({
+                    "title": dec.get("title", f.stem.replace(".pass", "")),
+                    "username": dec.get("username", ""),
+                    "password": dec.get("password", ""),
+                    "notes": dec.get("notes", ""),
+                    "updated_at": dec.get("updated_at", f.stat().st_mtime),
+                    "file_name": f.name,
+                })
+                continue
+            except Exception:
+                pass
+        items.append({
+            "title": f.stem.replace(".pass", "").replace("_", " ").title(),
+            "username": "",
+            "password": "",
+            "notes": "",
+            "updated_at": f.stat().st_mtime,
+            "file_name": f.name,
+        })
+    return items
+
+
+def delete_password(title: str) -> bool:
+    """Deletes a password entry by title or filename."""
+    slug = _slugify(title)
+    target = PASSWORDS_DIR / f"{slug}.pass.enc"
+    if target.is_file():
+        target.unlink()
+        return True
+    target = PASSWORDS_DIR / title
+    if target.is_file():
+        target.unlink()
+        return True
+    return False
+
+
+# ----------------------------------------------------------------------
+# Categorized Storage: Secrets (Multiline Strings, API Tokens, Keys)
+# ----------------------------------------------------------------------
+
+def store_secret(
+    title: str,
+    secret_text: str,
+    passkey: str | None = None,
+) -> Path:
+    """Encrypts and saves a raw secret string or multiline token."""
+    init_vault()
+    key = _resolve_passkey(passkey)
+    slug = _slugify(title)
+    payload = {
+        "title": title.strip(),
+        "secret": secret_text,
+        "created_at": time.time(),
+        "updated_at": time.time(),
+    }
+    encrypted = encrypt_bytes(json.dumps(payload).encode("utf-8"), key)
+    target = SECRETS_DIR / f"{slug}.sec.enc"
+    target.write_bytes(encrypted)
+    target.chmod(0o600)
+    return target
+
+
+def get_secret(title: str, passkey: str | None = None) -> dict[str, Any]:
+    """Retrieves and decrypts a secret entry."""
+    key = _resolve_passkey(passkey)
+    slug = _slugify(title)
+    target = SECRETS_DIR / f"{slug}.sec.enc"
+    if not target.is_file():
+        target = SECRETS_DIR / title
+    if not target.is_file():
+        for f in SECRETS_DIR.glob("*.sec.enc"):
+            try:
+                dec = json.loads(decrypt_bytes(f.read_bytes(), key).decode("utf-8"))
+                if dec.get("title", "").lower() == title.lower():
+                    target = f
+                    break
+            except Exception:
+                continue
+
+    if not target.is_file():
+        raise FileNotFoundError(f"Secret '{title}' not found.")
+
+    raw = decrypt_bytes(target.read_bytes(), key)
+    return json.loads(raw.decode("utf-8"))
+
+
+def list_secrets(passkey: str | None = None) -> list[dict[str, Any]]:
+    """Lists all stored secret entries."""
+    init_vault()
+    key = passkey or get_session_passkey()
+    has_valid_key = key and verify_vault_passkey(key)
+
+    items: list[dict[str, Any]] = []
+    for f in sorted(SECRETS_DIR.glob("*.sec.enc")):
+        if has_valid_key:
+            try:
+                dec = json.loads(decrypt_bytes(f.read_bytes(), key).decode("utf-8"))
+                items.append({
+                    "title": dec.get("title", f.stem.replace(".sec", "")),
+                    "secret": dec.get("secret", ""),
+                    "updated_at": dec.get("updated_at", f.stat().st_mtime),
+                    "file_name": f.name,
+                })
+                continue
+            except Exception:
+                pass
+        items.append({
+            "title": f.stem.replace(".sec", "").replace("_", " ").title(),
+            "secret": "",
+            "updated_at": f.stat().st_mtime,
+            "file_name": f.name,
+        })
+    return items
+
+
+def delete_secret(title: str) -> bool:
+    """Deletes a secret entry by title or filename."""
+    slug = _slugify(title)
+    target = SECRETS_DIR / f"{slug}.sec.enc"
+    if target.is_file():
+        target.unlink()
+        return True
+    target = SECRETS_DIR / title
+    if target.is_file():
+        target.unlink()
+        return True
+    return False
+
+
+# ----------------------------------------------------------------------
+# Categorized Storage: Encrypted Files & Autocomplete Imports
+# ----------------------------------------------------------------------
+
+def store_file(
+    title: str,
+    file_path: str | Path,
+    passkey: str | None = None,
+    shred_original: bool = False,
+) -> Path:
+    """Encrypts and stores a file payload into ~/.gemini/vault/files/."""
+    init_vault()
+    key = _resolve_passkey(passkey)
+    src = Path(file_path).expanduser().resolve()
+    if not src.is_file():
+        raise FileNotFoundError(f"Source file '{file_path}' does not exist.")
+
+    data = src.read_bytes()
+    slug = _slugify(title)
+    meta = {
+        "title": title.strip(),
+        "original_name": src.name,
+        "original_size": len(data),
+        "created_at": time.time(),
+        "updated_at": time.time(),
+        "payload_b64": base64.b64encode(data).decode("ascii"),
+    }
+    encrypted = encrypt_bytes(json.dumps(meta).encode("utf-8"), key)
+    target = FILES_DIR / f"{slug}.file.enc"
+    target.write_bytes(encrypted)
+    target.chmod(0o600)
+
+    if shred_original:
+        try:
+            size = src.stat().st_size
+            with open(src, "wb") as f:
+                f.write(secrets.token_bytes(size))
+                f.flush()
+                f.seek(0)
+                f.write(b"\x00" * size)
+                f.flush()
+            src.unlink()
+        except Exception:
+            pass
+
+    return target
+
+
+def export_file(
+    title: str,
+    dest_path: str | Path,
+    passkey: str | None = None,
+) -> Path:
+    """Decrypts a vault file and writes it to the designated destination path."""
+    key = _resolve_passkey(passkey)
+    slug = _slugify(title)
+    target = FILES_DIR / f"{slug}.file.enc"
+    if not target.is_file():
+        target = FILES_DIR / title
+    if not target.is_file():
+        for f in FILES_DIR.glob("*.file.enc"):
+            try:
+                dec = json.loads(decrypt_bytes(f.read_bytes(), key).decode("utf-8"))
+                if (
+                    dec.get("title", "").lower() == title.lower()
+                    or dec.get("original_name", "").lower() == title.lower()
+                ):
+                    target = f
+                    break
+            except Exception:
+                continue
+
+    if not target.is_file():
+        raise FileNotFoundError(f"Vault file '{title}' not found.")
+
+    dec = json.loads(decrypt_bytes(target.read_bytes(), key).decode("utf-8"))
+    payload = base64.b64decode(dec["payload_b64"])
+
+    dest = Path(dest_path).expanduser().resolve()
+    if dest.is_dir():
+        dest = dest / dec.get("original_name", f"{slug}.bin")
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(payload)
+    return dest
+
+
+def list_categorized_files(passkey: str | None = None) -> list[dict[str, Any]]:
+    """Lists all stored encrypted files."""
+    init_vault()
+    key = passkey or get_session_passkey()
+    has_valid_key = key and verify_vault_passkey(key)
+
+    items: list[dict[str, Any]] = []
+    for f in sorted(FILES_DIR.glob("*.file.enc")):
+        if has_valid_key:
+            try:
+                dec = json.loads(decrypt_bytes(f.read_bytes(), key).decode("utf-8"))
+                items.append({
+                    "title": dec.get("title", f.stem.replace(".file", "")),
+                    "original_name": dec.get("original_name", "unknown"),
+                    "original_size": dec.get("original_size", 0),
+                    "updated_at": dec.get("updated_at", f.stat().st_mtime),
+                    "file_name": f.name,
+                })
+                continue
+            except Exception:
+                pass
+        items.append({
+            "title": f.stem.replace(".file", "").replace("_", " ").title(),
+            "original_name": "encrypted",
+            "original_size": f.stat().st_size,
+            "updated_at": f.stat().st_mtime,
+            "file_name": f.name,
+        })
+    return items
+
+
+def delete_vault_file(title: str) -> bool:
+    """Deletes an encrypted file entry by title or filename."""
+    slug = _slugify(title)
+    target = FILES_DIR / f"{slug}.file.enc"
+    if target.is_file():
+        target.unlink()
+        return True
+    target = FILES_DIR / title
+    if target.is_file():
+        target.unlink()
+        return True
+    return False
+
+
+# ----------------------------------------------------------------------
+# Key Rotation: Atomic Re-Encryption across All Vault Items
+# ----------------------------------------------------------------------
+
+def rotate_vault_passkey(old_passkey: str, new_passkey: str) -> dict[str, Any]:
+    """Atomic key rotation: decrypts every .enc file in memory with old_passkey,
+
+    re-encrypts with new_passkey, and updates vault metadata.
+    """
+    clean_old = old_passkey.strip()
+    clean_new = new_passkey.strip()
+
+    if not clean_new:
+        return {"status": "error", "message": "New passkey cannot be empty."}
+
+    if not verify_vault_passkey(clean_old):
+        return {"status": "error", "message": "Current passkey is incorrect."}
+
+    init_vault()
+
+    # Discover all .enc files across vault root and subdirectories
+    all_enc_files: list[Path] = []
+    for f in VAULT_DIR.glob("*.enc"):
+        if f.is_file():
+            all_enc_files.append(f)
+    for sub in (PASSWORDS_DIR, SECRETS_DIR, FILES_DIR):
+        for f in sub.glob("*.enc"):
+            if f.is_file():
+                all_enc_files.append(f)
+
+    # Phase 1: Decrypt all files into memory to guarantee integrity before modifying disk
+    decrypted_map: dict[Path, bytes] = {}
+    for enc_file in all_enc_files:
+        try:
+            raw = enc_file.read_bytes()
+            plain = decrypt_bytes(raw, clean_old)
+            decrypted_map[enc_file] = plain
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Failed to decrypt '{enc_file.name}' with current passkey: {e}",
+            }
+
+    # Phase 2: Re-encrypt and overwrite every file
+    for enc_file, plain_data in decrypted_map.items():
+        re_encrypted = encrypt_bytes(plain_data, clean_new)
+        enc_file.write_bytes(re_encrypted)
+        enc_file.chmod(0o600)
+
+    # Phase 3: Update passkey metadata and session cache
+    set_vault_passkey(clean_new)
+    set_session_passkey(clean_new)
+
+    return {
+        "status": "success",
+        "rotated_count": len(decrypted_map),
+        "message": f"Passkey successfully rotated. Re-encrypted {len(decrypted_map)} items.",
+    }

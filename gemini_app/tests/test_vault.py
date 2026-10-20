@@ -205,6 +205,41 @@ class TestVault(unittest.TestCase):
         self.assertTrue(vault.delete_vault_file("Important Contract"))
         self.assertEqual(len(vault.list_categorized_files(passkey="master_key")), 0)
 
+    def test_legacy_vault_files_listing_and_export(self):
+        vault.set_vault_passkey("master_key")
+        # Store legacy file directly in VAULT_DIR
+        vault.store_in_vault("pypi_recovery_codes.txt", "code-alpha-bravo-1234", passkey="master_key")
+
+        # Must appear in list_categorized_files
+        files = vault.list_categorized_files(passkey="master_key")
+        self.assertEqual(len(files), 1)
+        self.assertEqual(files[0]["title"], "pypi_recovery_codes.txt")
+        self.assertTrue(files[0]["is_legacy"])
+
+        # Can be retrieved via retrieve_from_vault
+        retrieved = vault.retrieve_from_vault("pypi_recovery_codes.txt", "master_key")
+        self.assertEqual(retrieved.decode("utf-8"), "code-alpha-bravo-1234")
+
+        # Can be exported via export_file
+        dest = Path(self.temp_dir.name) / "exported_codes.txt"
+        exported = vault.export_file("pypi_recovery_codes.txt", dest, passkey="master_key")
+        self.assertTrue(exported.is_file())
+        self.assertEqual(exported.read_text(encoding="utf-8"), "code-alpha-bravo-1234")
+
+        # Can be deleted via delete_vault_file
+        self.assertTrue(vault.delete_vault_file("pypi_recovery_codes.txt"))
+        self.assertEqual(len(vault.list_categorized_files(passkey="master_key")), 0)
+
+    def test_retrieve_from_vault_categorized_file(self):
+        vault.set_vault_passkey("master_key")
+        sample_file = Path(self.temp_dir.name) / "test_notes.md"
+        sample_file.write_text("# Test Notes", encoding="utf-8")
+
+        vault.store_file(title="Project Notes", file_path=sample_file, passkey="master_key")
+        # retrieve_from_vault should unpack categorized file
+        recovered = vault.retrieve_from_vault("Project Notes", passkey="master_key")
+        self.assertEqual(recovered.decode("utf-8"), "# Test Notes")
+
     def test_rotate_vault_passkey(self):
         old_pass = "old_passkey_abc"
         new_pass = "new_passkey_xyz"

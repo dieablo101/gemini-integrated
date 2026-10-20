@@ -281,6 +281,9 @@ def retrieve_from_vault(filename: str, passkey: str | None = None) -> bytes:
             cand = sub / filename
             if not cand.is_file():
                 cand = sub / f"{filename}.enc"
+            if not cand.is_file() and sub == FILES_DIR:
+                slug = _slugify(filename)
+                cand = sub / f"{slug}.file.enc"
             if cand.is_file():
                 target = cand
                 break
@@ -290,8 +293,17 @@ def retrieve_from_vault(filename: str, passkey: str | None = None) -> bytes:
 
     raw = target.read_bytes()
     if target.suffix == ".enc" or raw.startswith(b"F1:") or raw.startswith(b"S1:"):
-        return decrypt_bytes(raw, key)
-    return raw
+        decrypted = decrypt_bytes(raw, key)
+    else:
+        decrypted = raw
+
+    try:
+        dec = json.loads(decrypted.decode("utf-8"))
+        if isinstance(dec, dict) and "payload_b64" in dec:
+            return base64.b64decode(dec["payload_b64"])
+    except Exception:
+        pass
+    return decrypted
 
 
 def list_vault_files() -> list[str]:
@@ -555,10 +567,19 @@ def export_file(
     """Decrypts a vault file and writes it to the designated destination path."""
     key = _resolve_passkey(passkey)
     slug = _slugify(title)
-    target = FILES_DIR / f"{slug}.file.enc"
-    if not target.is_file():
-        target = FILES_DIR / title
-    if not target.is_file():
+    target = None
+
+    # Check FILES_DIR
+    for cand in (
+        FILES_DIR / f"{slug}.file.enc",
+        FILES_DIR / title,
+        FILES_DIR / f"{title}.file.enc",
+    ):
+        if cand.is_file():
+            target = cand
+            break
+
+    if not target:
         for f in FILES_DIR.glob("*.file.enc"):
             try:
                 dec = json.loads(decrypt_bytes(f.read_bytes(), key).decode("utf-8"))
@@ -571,15 +592,51 @@ def export_file(
             except Exception:
                 continue
 
-    if not target.is_file():
+    # Check root VAULT_DIR for legacy/direct files
+    if not target:
+        for cand in (
+            VAULT_DIR / title,
+            VAULT_DIR / f"{title}.enc",
+            VAULT_DIR / f"{slug}.enc",
+        ):
+            if cand.is_file():
+                target = cand
+                break
+
+    if not target and VAULT_DIR.is_dir():
+        for f in VAULT_DIR.iterdir():
+            if f.is_file() and not f.name.startswith("."):
+                if (
+                    f.name.lower() == title.lower()
+                    or f.name.removesuffix(".enc").lower() == title.lower()
+                    or _slugify(f.name.removesuffix(".enc")) == slug
+                ):
+                    target = f
+                    break
+
+    if not target or not target.is_file():
         raise FileNotFoundError(f"Vault file '{title}' not found.")
 
-    dec = json.loads(decrypt_bytes(target.read_bytes(), key).decode("utf-8"))
-    payload = base64.b64decode(dec["payload_b64"])
+    raw = target.read_bytes()
+    if target.suffix == ".enc" or raw.startswith(b"F1:") or raw.startswith(b"S1:"):
+        decrypted_raw = decrypt_bytes(raw, key)
+    else:
+        decrypted_raw = raw
+
+    out_name = target.name.removesuffix(".enc").removesuffix(".file")
+    try:
+        dec = json.loads(decrypted_raw.decode("utf-8"))
+        if isinstance(dec, dict) and "payload_b64" in dec:
+            payload = base64.b64decode(dec["payload_b64"])
+            out_name = dec.get("original_name", out_name)
+        else:
+            payload = decrypted_raw
+    except Exception:
+        payload = decrypted_raw
 
     dest = Path(dest_path).expanduser().resolve()
     if dest.is_dir():
-        dest = dest / dec.get("original_name", f"{slug}.bin")
+        dest = dest / out_name
 
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_bytes(payload)
@@ -587,12 +644,14 @@ def export_file(
 
 
 def list_categorized_files(passkey: str | None = None) -> list[dict[str, Any]]:
-    """Lists all stored encrypted files."""
+    """Lists all stored encrypted files across categorized files and root vault files."""
     init_vault()
     key = passkey or get_session_passkey()
-    has_valid_key = key and verify_vault_passkey(key)
+    has_valid_key = bool(key and verify_vault_passkey(key))
 
     items: list[dict[str, Any]] = []
+
+    # 1. Categorized files in FILES_DIR
     for f in sorted(FILES_DIR.glob("*.file.enc")):
         if has_valid_key:
             try:
@@ -603,6 +662,7 @@ def list_categorized_files(passkey: str | None = None) -> list[dict[str, Any]]:
                     "original_size": dec.get("original_size", 0),
                     "updated_at": dec.get("updated_at", f.stat().st_mtime),
                     "file_name": f.name,
+                    "is_legacy": False,
                 })
                 continue
             except Exception:
@@ -613,21 +673,91 @@ def list_categorized_files(passkey: str | None = None) -> list[dict[str, Any]]:
             "original_size": f.stat().st_size,
             "updated_at": f.stat().st_mtime,
             "file_name": f.name,
+            "is_legacy": False,
         })
+
+    # 2. Legacy / root files in ~/.gemini/vault
+    if VAULT_DIR.is_dir():
+        for f in sorted(VAULT_DIR.iterdir()):
+            if not f.is_file() or f.name.startswith("."):
+                continue
+            clean_title = f.name[:-4] if f.name.endswith(".enc") else f.name
+            is_enc = f.name.endswith(".enc")
+
+            if has_valid_key and is_enc:
+                try:
+                    dec_bytes = decrypt_bytes(f.read_bytes(), key)
+                    try:
+                        dec = json.loads(dec_bytes.decode("utf-8"))
+                        if isinstance(dec, dict) and "payload_b64" in dec:
+                            items.append({
+                                "title": dec.get("title", clean_title),
+                                "original_name": dec.get("original_name", clean_title),
+                                "original_size": dec.get("original_size", len(dec_bytes)),
+                                "updated_at": dec.get("updated_at", f.stat().st_mtime),
+                                "file_name": f.name,
+                                "is_legacy": True,
+                            })
+                            continue
+                    except Exception:
+                        pass
+
+                    items.append({
+                        "title": clean_title,
+                        "original_name": clean_title,
+                        "original_size": len(dec_bytes),
+                        "updated_at": f.stat().st_mtime,
+                        "file_name": f.name,
+                        "is_legacy": True,
+                    })
+                    continue
+                except Exception:
+                    pass
+
+            items.append({
+                "title": clean_title,
+                "original_name": clean_title if not is_enc else "encrypted",
+                "original_size": f.stat().st_size,
+                "updated_at": f.stat().st_mtime,
+                "file_name": f.name,
+                "is_legacy": True,
+            })
+
     return items
 
 
 def delete_vault_file(title: str) -> bool:
-    """Deletes an encrypted file entry by title or filename."""
+    """Deletes an encrypted file entry by title or filename from files/ or root vault."""
     slug = _slugify(title)
-    target = FILES_DIR / f"{slug}.file.enc"
-    if target.is_file():
-        target.unlink()
-        return True
-    target = FILES_DIR / title
-    if target.is_file():
-        target.unlink()
-        return True
+    for cand in (
+        FILES_DIR / f"{slug}.file.enc",
+        FILES_DIR / title,
+        FILES_DIR / f"{title}.file.enc",
+    ):
+        if cand.is_file():
+            cand.unlink()
+            return True
+
+    for cand in (
+        VAULT_DIR / title,
+        VAULT_DIR / f"{title}.enc",
+        VAULT_DIR / f"{slug}.enc",
+    ):
+        if cand.is_file():
+            cand.unlink()
+            return True
+
+    if VAULT_DIR.is_dir():
+        for f in VAULT_DIR.iterdir():
+            if f.is_file() and not f.name.startswith("."):
+                if (
+                    f.name.lower() == title.lower()
+                    or f.name.removesuffix(".enc").lower() == title.lower()
+                    or _slugify(f.name.removesuffix(".enc")) == slug
+                ):
+                    f.unlink()
+                    return True
+
     return False
 
 

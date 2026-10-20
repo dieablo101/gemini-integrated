@@ -28,6 +28,7 @@ from gemini_app.vault import (
     list_categorized_files,
     list_passwords,
     list_secrets,
+    retrieve_from_vault,
     rotate_vault_passkey,
     set_session_passkey,
     set_vault_passkey,
@@ -713,6 +714,9 @@ class VaultDashboardModal(ResponsiveModalScreen[None]):
         self.active_category: str = "passwords"  # "passwords" | "secrets" | "files"
         self.filter_query: str = ""
         self.revealed_items: set[str] = set()
+        self.displayed_passwords: list[dict[str, Any]] = []
+        self.displayed_secrets: list[dict[str, Any]] = []
+        self.displayed_files: list[dict[str, Any]] = []
 
     def compose(self) -> ComposeResult:
         with Vertical(id="vault_dash_dialog"):
@@ -746,11 +750,11 @@ class VaultDashboardModal(ResponsiveModalScreen[None]):
 
         if self.active_category == "passwords":
             passwords = list_passwords()
-            filtered = [p for p in passwords if not q or q in p["title"].lower() or q in p["username"].lower()]
-            if not filtered:
+            self.displayed_passwords = [p for p in passwords if not q or q in p["title"].lower() or q in p["username"].lower()]
+            if not self.displayed_passwords:
                 scroll.mount(Static("[dim]No passwords found. Press '+ Password' to store one.[/dim]"))
                 return
-            for p in filtered:
+            for i, p in enumerate(self.displayed_passwords):
                 title = p["title"]
                 is_revealed = title in self.revealed_items
                 disp_val = p["password"] if is_revealed else "••••••••"
@@ -766,9 +770,9 @@ class VaultDashboardModal(ResponsiveModalScreen[None]):
                     card_children.append(Static(f"Notes: {p['notes']}", classes="vault_card_meta"))
 
                 act_row = Horizontal(
-                    Button(rev_label, id=f"rev_pass_{title}"),
-                    Button("Copy", id=f"copy_pass_{title}"),
-                    Button("Delete", variant="error", id=f"del_pass_{title}"),
+                    Button(rev_label, id=f"rev_pass_{i}"),
+                    Button("Copy", id=f"copy_pass_{i}"),
+                    Button("Delete", variant="error", id=f"del_pass_{i}"),
                     classes="vault_card_actions",
                 )
                 card_children.append(act_row)
@@ -777,18 +781,18 @@ class VaultDashboardModal(ResponsiveModalScreen[None]):
 
         elif self.active_category == "secrets":
             secrets_list = list_secrets()
-            filtered = [s for s in secrets_list if not q or q in s["title"].lower()]
-            if not filtered:
+            self.displayed_secrets = [s for s in secrets_list if not q or q in s["title"].lower()]
+            if not self.displayed_secrets:
                 scroll.mount(Static("[dim]No secrets found. Press '+ Secret' to store one.[/dim]"))
                 return
-            for s in filtered:
+            for i, s in enumerate(self.displayed_secrets):
                 title = s["title"]
                 raw_sec = s.get("secret", "")
                 preview = (raw_sec[:40] + "...") if len(raw_sec) > 40 else raw_sec
 
                 act_row = Horizontal(
-                    Button("Copy", id=f"copy_sec_{title}"),
-                    Button("Delete", variant="error", id=f"del_sec_{title}"),
+                    Button("Copy", id=f"copy_sec_{i}"),
+                    Button("Delete", variant="error", id=f"del_sec_{i}"),
                     classes="vault_card_actions",
                 )
                 card = Vertical(
@@ -801,22 +805,24 @@ class VaultDashboardModal(ResponsiveModalScreen[None]):
 
         elif self.active_category == "files":
             files_list = list_categorized_files()
-            filtered = [f for f in files_list if not q or q in f["title"].lower() or q in f["original_name"].lower()]
-            if not filtered:
+            self.displayed_files = [f for f in files_list if not q or q in f["title"].lower() or q in f["original_name"].lower()]
+            if not self.displayed_files:
                 scroll.mount(Static("[dim]No files encrypted in vault. Press '+ File' to store one.[/dim]"))
                 return
-            for f in filtered:
+            for i, f in enumerate(self.displayed_files):
                 title = f["title"]
                 orig_name = f.get("original_name", "")
                 size_kb = f.get("original_size", 0) / 1024
+                legacy_tag = " [dim cyan](Root/Legacy)[/dim cyan]" if f.get("is_legacy") else ""
 
                 act_row = Horizontal(
-                    Button("Export", id=f"export_file_{title}"),
-                    Button("Delete", variant="error", id=f"del_file_{title}"),
+                    Button("Copy", id=f"copy_file_{i}"),
+                    Button("Export", id=f"export_file_{i}"),
+                    Button("Delete", variant="error", id=f"del_file_{i}"),
                     classes="vault_card_actions",
                 )
                 card = Vertical(
-                    Static(f"📁 {title}", classes="vault_card_title"),
+                    Static(f"📁 {title}{legacy_tag}", classes="vault_card_title"),
                     Static(f"Original: {orig_name} ({size_kb:.1f} KB)", classes="vault_card_meta"),
                     act_row,
                     classes="vault_card",
@@ -877,18 +883,25 @@ class VaultDashboardModal(ResponsiveModalScreen[None]):
 
         # Entry actions: Reveal Password
         if btn_id.startswith("rev_pass_"):
-            title = btn_id.replace("rev_pass_", "")
-            if title in self.revealed_items:
-                self.revealed_items.remove(title)
-            else:
-                self.revealed_items.add(title)
-            self.refresh_entries()
+            try:
+                idx = int(btn_id.replace("rev_pass_", ""))
+                p = self.displayed_passwords[idx]
+                title = p["title"]
+                if title in self.revealed_items:
+                    self.revealed_items.remove(title)
+                else:
+                    self.revealed_items.add(title)
+                self.refresh_entries()
+            except Exception:
+                pass
             return
 
         # Entry actions: Copy Password
         if btn_id.startswith("copy_pass_"):
-            title = btn_id.replace("copy_pass_", "")
             try:
+                idx = int(btn_id.replace("copy_pass_", ""))
+                p = self.displayed_passwords[idx]
+                title = p["title"]
                 pwd_data = get_password(title)
                 self.app.copy_to_clipboard(pwd_data.get("password", ""))
                 self.notify(f"✓ Copied password for '{title}' to clipboard.")
@@ -898,17 +911,24 @@ class VaultDashboardModal(ResponsiveModalScreen[None]):
 
         # Entry actions: Delete Password
         if btn_id.startswith("del_pass_"):
-            title = btn_id.replace("del_pass_", "")
-            delete_password(title)
-            self.revealed_items.discard(title)
-            self.notify(f"Deleted password '{title}'.")
-            self.refresh_entries()
+            try:
+                idx = int(btn_id.replace("del_pass_", ""))
+                p = self.displayed_passwords[idx]
+                title = p["title"]
+                delete_password(title)
+                self.revealed_items.discard(title)
+                self.notify(f"Deleted password '{title}'.")
+                self.refresh_entries()
+            except Exception as e:
+                self.notify(f"Delete error: {e}", severity="error")
             return
 
         # Entry actions: Copy Secret
         if btn_id.startswith("copy_sec_"):
-            title = btn_id.replace("copy_sec_", "")
             try:
+                idx = int(btn_id.replace("copy_sec_", ""))
+                s = self.displayed_secrets[idx]
+                title = s["title"]
                 sec_data = get_secret(title)
                 self.app.copy_to_clipboard(sec_data.get("secret", ""))
                 self.notify(f"✓ Copied secret '{title}' to clipboard.")
@@ -918,18 +938,41 @@ class VaultDashboardModal(ResponsiveModalScreen[None]):
 
         # Entry actions: Delete Secret
         if btn_id.startswith("del_sec_"):
-            title = btn_id.replace("del_sec_", "")
-            delete_secret(title)
-            self.notify(f"Deleted secret '{title}'.")
-            self.refresh_entries()
+            try:
+                idx = int(btn_id.replace("del_sec_", ""))
+                s = self.displayed_secrets[idx]
+                title = s["title"]
+                delete_secret(title)
+                self.notify(f"Deleted secret '{title}'.")
+                self.refresh_entries()
+            except Exception as e:
+                self.notify(f"Delete error: {e}", severity="error")
+            return
+
+        # Entry actions: Copy File Content
+        if btn_id.startswith("copy_file_"):
+            try:
+                idx = int(btn_id.replace("copy_file_", ""))
+                f_item = self.displayed_files[idx]
+                title = f_item["title"]
+                data = retrieve_from_vault(f_item.get("file_name") or title)
+                text = data.decode("utf-8")
+                self.app.copy_to_clipboard(text)
+                self.notify(f"✓ Copied contents of '{title}' to clipboard.")
+            except UnicodeDecodeError:
+                self.notify(f"'{title}' is a binary file; use Export instead.", severity="warning")
+            except Exception as e:
+                self.notify(f"Copy error: {e}", severity="error")
             return
 
         # Entry actions: Export File
         if btn_id.startswith("export_file_"):
-            title = btn_id.replace("export_file_", "")
-            dest_dir = Path.cwd()
             try:
-                exported = export_file(title, dest_dir)
+                idx = int(btn_id.replace("export_file_", ""))
+                f_item = self.displayed_files[idx]
+                title = f_item["title"]
+                dest_dir = Path.cwd()
+                exported = export_file(f_item.get("file_name") or title, dest_dir)
                 self.notify(f"✓ Exported '{title}' to {exported.name} in current directory.")
             except Exception as e:
                 self.notify(f"Export error: {e}", severity="error")
@@ -937,10 +980,15 @@ class VaultDashboardModal(ResponsiveModalScreen[None]):
 
         # Entry actions: Delete File
         if btn_id.startswith("del_file_"):
-            title = btn_id.replace("del_file_", "")
-            delete_vault_file(title)
-            self.notify(f"Deleted vault file '{title}'.")
-            self.refresh_entries()
+            try:
+                idx = int(btn_id.replace("del_file_", ""))
+                f_item = self.displayed_files[idx]
+                title = f_item["title"]
+                delete_vault_file(f_item.get("file_name") or title)
+                self.notify(f"Deleted vault file '{title}'.")
+                self.refresh_entries()
+            except Exception as e:
+                self.notify(f"Delete error: {e}", severity="error")
             return
 
     def action_close(self) -> None:

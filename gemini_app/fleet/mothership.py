@@ -27,6 +27,7 @@ from gemini_app.fleet.nodes import (
     register_or_update_node,
     save_active_nodes,
 )
+from gemini_app.security.fleet_guard import FleetGuard
 
 
 class ConnectedSatellite:
@@ -75,6 +76,7 @@ class MothershipServer:
         self.broadcast_interval = broadcast_interval
         self.require_auth = require_auth
         self.fleet_key = get_or_create_fleet_key()
+        self.fleet_guard = FleetGuard(max_failures=5, ban_duration=600.0)
 
         self.nodes: Dict[str, ConnectedSatellite] = {}
         self.lock = threading.Lock()
@@ -114,6 +116,13 @@ class MothershipServer:
         while self._running and self.server_sock:
             try:
                 conn, addr = self.server_sock.accept()
+                if self.fleet_guard.is_ip_banned(addr[0]):
+                    sys.stderr.write(f"[mothership] REJECTED connection from banned IP: {addr[0]}\n")
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+                    continue
                 client_thread = threading.Thread(target=self._handle_client, args=(conn, addr), daemon=True)
                 client_thread.start()
             except Exception:
@@ -174,7 +183,9 @@ class MothershipServer:
                         if msg.type == FleetMessage.TYPE_AUTH:
                             sig = msg.payload.get("signature", "")
                             ts = msg.payload.get("timestamp", 0.0)
-                            if verify_auth_signature(fleet_key, node_id, auth_nonce, ts, sig):
+                            if (verify_auth_signature(fleet_key, node_id, auth_nonce, ts, sig)
+                                and self.fleet_guard.verify_and_consume_nonce(auth_nonce, auth_ts)):
+                                self.fleet_guard.record_auth_success(addr[0])
                                 is_authenticated = True
                                 with self.lock:
                                     satellite = ConnectedSatellite(node_id, conn, addr)
@@ -187,7 +198,10 @@ class MothershipServer:
                                     node_id="mothership",
                                     payload={"status": "authenticated", "node_id": node_id},
                                 )
-                                conn.sendall(ack.serialize())
+                                try:
+                                    conn.sendall(ack.serialize())
+                                except (ConnectionResetError, BrokenPipeError, OSError):
+                                    return
 
                                 try:
                                     host_ip = addr[0]
@@ -211,7 +225,10 @@ class MothershipServer:
                                 )
                                 satellite.send(greet)
                             else:
+                                newly_banned = self.fleet_guard.record_auth_failure(addr[0])
                                 sys.stderr.write(f"[mothership] UNAUTHORIZED node '{node_id}' from {addr}: invalid signature\n")
+                                if newly_banned:
+                                    sys.stderr.write(f"[mothership] IP '{addr[0]}' temporarily banned due to repeated auth failures\n")
                                 fail = FleetMessage(
                                     msg_type=FleetMessage.TYPE_AUTH_FAIL,
                                     node_id="mothership",

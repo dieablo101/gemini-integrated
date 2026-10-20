@@ -1,7 +1,45 @@
-chats/
-.venv
+# Virtual Environments and Caches
+.venv/
 __pycache__/
+*.py[cod]
+*$py.class
 *.egg-info/
 build/
 dist/
-scripts/
+
+# Gemini Chat and Session State
+chats/
+emergency_state.json
+cognitive_state.json
+state.json
+last_crash.json
+crash_reports/
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+
+# Secrets, Encryption & Key Material (NEVER TRACK)
+*.key
+*.enc
+*.token
+*.pem
+*.pfx
+*.secret
+*.env
+*.env.*
+fleet.key
+pypi_token*
+
+# Telemetry, Watchdogs & Runtime Sockets
+*.log
+*.sock
+*.pid
+
+# Ephemeral Backups & Compaction Archives
+archive/
+quarantine/
+*.tar.gz
+*.zip
+*.bak
+*.tmp

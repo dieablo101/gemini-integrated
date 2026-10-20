@@ -100,6 +100,11 @@ from gemini_app.storage.rollback import (
     perform_git_rollback,
     record_stable_commit,
 )
+from gemini_app.storage.state_backup import (
+    check_and_run_daily_backup,
+    install_systemd_backup_timer,
+    perform_backup,
+)
 from gemini_app.introspection import (
     apply_accent_talk,
     format_introspection_summary,
@@ -232,6 +237,8 @@ class ChatApp(App):
             "scaffold": self._cmd_scaffold_project,
             "new-project": self._cmd_scaffold_project,
             "sys-deps": lambda _: self._cmd_sys_deps(),
+            "backup-now": lambda _: self._cmd_backup_now(),
+            "backup": lambda _: self._cmd_backup_now(),
         }
 
     def action_configure_api_key(self) -> None:
@@ -337,6 +344,29 @@ class ChatApp(App):
             self.notify(f"System dependencies verified for {res.get('os_info', {}).get('name', 'Linux')}.", title="Dependencies OK")
         else:
             self.notify(f"Installed packages: {res.get('installed_packages', [])}", title="Dependencies Installed")
+
+    @work(exclusive=True, thread=True)
+    def _cmd_backup_now(self) -> None:
+        """Executes an immediate manual backup of ~/.gemini to the private GitHub repository."""
+        self.app.call_from_thread(self.notify, "Backing up ~/.gemini state to GitHub...", title="Backup Started")
+        res = perform_backup(force=True)
+        status = res.get("status")
+        if status == "success":
+            msg = "State backup successfully synced to private GitHub repo."
+            self.app.call_from_thread(self.notify, msg, title="Backup Complete")
+        elif status == "awaiting_remote_repo":
+            msg = "Remote repo 'dieablo101/.gemini' not created on GitHub yet."
+            self.app.call_from_thread(self.notify, msg, severity="warning", title="Awaiting Remote Repo")
+        else:
+            err = res.get("error", "Unknown error")
+            self.app.call_from_thread(self.notify, f"Backup error: {err}", severity="error", title="Backup Failed")
+
+    @work(exclusive=False, thread=True)
+    def _check_daily_backup(self) -> None:
+        """Checks if 24 hours have elapsed since the last backup and runs it in the background."""
+        res = check_and_run_daily_backup(force=False)
+        if res and res.get("status") == "success":
+            self.app.call_from_thread(self.notify, "Daily state backup synced to GitHub.", title="Daily Backup")
 
     def consume_notes_editor(self) -> None:
         """Consumes text typed into the notes editor by the user into Gemini-managed notes."""
@@ -970,6 +1000,8 @@ class ChatApp(App):
 
         await self.start_socket_server()
         self.push_screen(BootScreen())
+        # Check daily backup interval every hour
+        self.set_interval(3600.0, self._check_daily_backup)
         self.call_after_refresh(self._initial_startup_load)
 
     async def _initial_startup_load(self) -> None:
@@ -1026,6 +1058,10 @@ class ChatApp(App):
 
         # Background index all historical chats into SQLite FTS5 Memory Index
         asyncio.create_task(asyncio.to_thread(self.memory_index.index_all_existing_chats))
+
+        # Background check 24-hr state backup and ensure systemd user timer
+        asyncio.create_task(asyncio.to_thread(self._check_daily_backup))
+        asyncio.create_task(asyncio.to_thread(install_systemd_backup_timer))
 
         reboot_report = self._read_and_clear_reboot_report()
         if reboot_report:

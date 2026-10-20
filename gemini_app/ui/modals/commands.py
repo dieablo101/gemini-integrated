@@ -154,6 +154,10 @@ class CommandsModal(ResponsiveModalScreen[None]):
             yield Label("  Available options: [bold]red, blue, green, orange, purple, yellow, pink[/]", classes="cmd_row")
             yield Label("  Example: [italic]!/ui-theme:blue[/]", classes="cmd_row")
 
+            yield Label("State & Vault Backup:", classes="cmd_section_title")
+            yield Label("[bold]!/backup-now[/]", classes="cmd_row")
+            yield Label("  Trigger immediate 24-hr check backup of ~/.gemini to private GitHub repository.", classes="cmd_row")
+
             yield Label("ESC / Ctrl + g to exit", id="cmd_footer_hint")
 
     def action_cancel(self) -> None:

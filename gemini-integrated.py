@@ -70,6 +70,17 @@ def ensure_environment() -> None:
 
 
 if __name__ == "__main__":
+    # Fleet & Satellite lightweight mode bypasses heavy venv/GUI setup
+    if len(sys.argv) > 1 and sys.argv[1] in ("--node", "--satellite", "node", "satellite"):
+        # Remove subcommand token so satellite's argparse parses remaining flags
+        sys.argv.pop(1)
+        from gemini_app.fleet.satellite import main as satellite_main
+        sys.exit(satellite_main())
+    elif len(sys.argv) > 1 and sys.argv[1] in ("--mothership-server", "--fleet-server", "mothership"):
+        sys.argv.pop(1)
+        from gemini_app.fleet.mothership import main as mothership_main
+        sys.exit(mothership_main())
+
     ensure_environment()
     from gemini_app.main import main
     main()

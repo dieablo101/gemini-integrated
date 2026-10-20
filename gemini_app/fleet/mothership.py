@@ -55,7 +55,7 @@ class MothershipServer:
         host: str = "0.0.0.0",
         port: int = DEFAULT_PORT,
         auto_broadcast_telemetry: bool = True,
-        broadcast_interval: float = 3.0,
+        broadcast_interval: float = 1.5,
     ) -> None:
         self.host = host
         self.port = port

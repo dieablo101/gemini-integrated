@@ -16,8 +16,13 @@ import time
 from typing import Any, Dict, List, Optional
 
 
+# Module-level cache for instantaneous /proc/stat CPU calculation
+_LAST_CPU_STAT = {"idle": 0.0, "total": 0.0, "time": 0.0}
+
+
 def get_cpu_and_mem_vitals() -> Dict[str, Any]:
     """Collects CPU and Memory metrics using /proc or standard library fallbacks."""
+    global _LAST_CPU_STAT
     cpu_pct = 0.0
     mem_total_mb = 0.0
     mem_used_mb = 0.0
@@ -50,12 +55,40 @@ def get_cpu_and_mem_vitals() -> Dict[str, Any]:
         try:
             load = os.getloadavg()
             load_avg = [round(x, 2) for x in load]
-            cpu_count = os.cpu_count() or 1
-            cpu_pct = min(100.0, round((load_avg[0] / cpu_count) * 100.0, 1))
         except Exception:
             pass
 
-    # 3. Disk usage
+    # 3. Instantaneous CPU percentage via /proc/stat delta tracking
+    proc_stat = Path("/proc/stat")
+    calculated_proc_cpu = False
+    if proc_stat.exists():
+        try:
+            first_line = proc_stat.read_text().splitlines()[0]
+            if first_line.startswith("cpu "):
+                fields = [float(x) for x in first_line.split()[1:]]
+                idle = fields[3] + (fields[4] if len(fields) > 4 else 0.0)
+                total = sum(fields)
+                last_idle = _LAST_CPU_STAT["idle"]
+                last_total = _LAST_CPU_STAT["total"]
+                if last_total > 0 and total > last_total:
+                    idle_delta = idle - last_idle
+                    total_delta = total - last_total
+                    if total_delta > 0:
+                        raw_pct = (1.0 - (idle_delta / total_delta)) * 100.0
+                        cpu_pct = round(max(0.0, min(100.0, raw_pct)), 1)
+                        calculated_proc_cpu = True
+                _LAST_CPU_STAT["idle"] = idle
+                _LAST_CPU_STAT["total"] = total
+                _LAST_CPU_STAT["time"] = time.time()
+        except Exception:
+            pass
+
+    # Fallback to load average if /proc/stat delta wasn't available
+    if not calculated_proc_cpu and load_avg[0] > 0:
+        cpu_count = os.cpu_count() or 1
+        cpu_pct = min(100.0, round((load_avg[0] / cpu_count) * 100.0, 1))
+
+    # 4. Disk usage
     total_b, used_b, free_b = shutil.disk_usage("/")
     disk_total_gb = round(total_b / (1024 ** 3), 1)
     disk_free_gb = round(free_b / (1024 ** 3), 1)

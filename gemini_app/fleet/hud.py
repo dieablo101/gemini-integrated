@@ -166,8 +166,10 @@ class SatelliteHUD:
 
         meter = render_meter_bar(cpu_pct, width=8)
         mem_str = f"{mem_used / 1024:.1f}G/{mem_tot / 1024:.1f}G" if mem_tot > 0 else "N/A"
+        load_avg = vitals.get("load_avg", [0.0, 0.0, 0.0])
+        ld_str = f"{load_avg[0]:.2f}" if load_avg else "?"
         line2 = (
-            f"{BOLD}CPU:{RESET} {meter}  "
+            f"{BOLD}CPU:{RESET} {meter} ({DARK_GRAY}ld:{ld_str}{RESET})  "
             f"{BOLD}RAM:{RESET} {WHITE}{mem_str}{RESET}  "
             f"{BOLD}Git:{RESET} {BLUE}{git_branch}@{git_sha}{RESET} [{clean_tag}]"
         )
@@ -234,6 +236,10 @@ class SatelliteHUD:
             if sys.stdin.isatty():
                 self._orig_termios = termios.tcgetattr(sys.stdin)
                 tty.setcbreak(sys.stdin.fileno())
+                try:
+                    os.set_blocking(sys.stdin.fileno(), False)
+                except Exception:
+                    pass
             sys.stdout.write("\033[?1049h\033[?25l")  # Alt buffer + hide cursor
             sys.stdout.flush()
         except Exception:
@@ -244,19 +250,27 @@ class SatelliteHUD:
         try:
             sys.stdout.write("\033[?25h\033[?1049l")  # Show cursor + exit alt buffer
             sys.stdout.flush()
-            if self._orig_termios and sys.stdin.isatty():
-                termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self._orig_termios)
+            if sys.stdin.isatty():
+                try:
+                    os.set_blocking(sys.stdin.fileno(), True)
+                except Exception:
+                    pass
+                if self._orig_termios:
+                    termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self._orig_termios)
         except Exception:
             pass
 
     def check_keyboard_input(self) -> Optional[str]:
-        """Polls for single keypress non-blockingly."""
+        """Polls for single keypress non-blockingly without ever hanging the event loop."""
         if not sys.stdin.isatty():
             return None
         try:
-            rlist, _, _ = select.select([sys.stdin], [], [], 0.0)
-            if rlist:
-                return sys.stdin.read(1)
+            # Completely non-blocking raw read
+            data = os.read(sys.stdin.fileno(), 32)
+            if data:
+                return data.decode("utf-8", errors="ignore")[:1]
+        except (BlockingIOError, InterruptedError, OSError):
+            return None
         except Exception:
             pass
         return None

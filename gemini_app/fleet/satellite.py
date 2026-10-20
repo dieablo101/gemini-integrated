@@ -273,6 +273,7 @@ class SatelliteNode:
         self._listener_thread: Optional[threading.Thread] = None
         self._write_lock = threading.Lock()
         self.hud = None  # SatelliteHUD instance if running in HUD mode
+        self._pending_ping_t0: Optional[float] = None
 
     def connect(self, timeout: float = 5.0) -> bool:
         """Establishes TCP connection to the Mothership."""
@@ -401,6 +402,12 @@ class SatelliteNode:
                         if msg.type == FleetMessage.TYPE_COMMAND:
                             resp = self.handle_command(msg)
                             self.send_message(resp)
+                        elif msg.type == FleetMessage.TYPE_RESPONSE:
+                            if "pong" in msg.payload and self._pending_ping_t0:
+                                rtt_ms = (time.perf_counter() - self._pending_ping_t0) * 1000.0
+                                self._pending_ping_t0 = None
+                                if self.hud:
+                                    self.hud.set_connection_status(True, ping_ms=round(rtt_ms, 1))
                         elif msg.type == FleetMessage.TYPE_TELEMETRY:
                             if self.hud:
                                 self.hud.update_telemetry(msg.payload.get("mothership_telemetry", msg.payload))
@@ -476,18 +483,16 @@ class SatelliteNode:
             while True:
                 # Periodic ping measurement
                 now = time.time()
-                if self._running and (now - last_ping_time > 5.0):
+                if self._running and (now - last_ping_time > 3.0):
                     last_ping_time = now
                     # Measure RTT
-                    t0 = time.perf_counter()
+                    self._pending_ping_t0 = time.perf_counter()
                     ping_msg = FleetMessage(
                         msg_type=FleetMessage.TYPE_COMMAND,
                         node_id=self.node_id,
                         payload={"action": "ping"},
                     )
-                    if self.send_message(ping_msg):
-                        rtt_ms = (time.perf_counter() - t0) * 1000.0
-                        self.hud.set_connection_status(True, ping_ms=round(rtt_ms, 1))
+                    self.send_message(ping_msg)
 
                 # Render frame and check non-blocking input
                 key = self.hud.render_loop_tick()

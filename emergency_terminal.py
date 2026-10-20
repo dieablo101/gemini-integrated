@@ -423,6 +423,75 @@ class EmergencySessionTracker:
             f"- Tools Used in Last Session: {tools}"
         )
 
+
+def get_cognitive_continuity_snapshot() -> str:
+    """Reads persistent cognitive mind map, task, and working notes from ~/.gemini."""
+    gemini_home = Path.home() / ".gemini"
+    lines = ["COGNITIVE & MEMORY STATE CONTINUITY:"]
+
+    # 1. Inspect live cognitive_state.json
+    cog_file = gemini_home / "cognitive_state.json"
+    if cog_file.exists():
+        try:
+            cog_data = json.loads(cog_file.read_text(encoding="utf-8"))
+            task = cog_data.get("task")
+            topic = cog_data.get("topic")
+            thought = cog_data.get("thought")
+            if task:
+                lines.append(f"• Active Task: {task}")
+            if topic:
+                lines.append(f"• Active Topic: {topic}")
+            if thought:
+                lines.append(f"• Last Thought State: {thought}")
+        except Exception:
+            pass
+
+    # 2. Inspect active chat from state.json
+    state_file = gemini_home / "state.json"
+    active_chat_id = None
+    if state_file.exists():
+        try:
+            state_data = json.loads(state_file.read_text(encoding="utf-8"))
+            active_chat_id = state_data.get("active_chat")
+        except Exception:
+            pass
+
+    if active_chat_id:
+        chat_dir = gemini_home / "chats" / active_chat_id
+        meta_file = chat_dir / "meta.json"
+        if not meta_file.exists():
+            legacy_file = gemini_home / "chats" / f"{active_chat_id}.json"
+            if legacy_file.exists():
+                meta_file = legacy_file
+
+        if meta_file.exists():
+            try:
+                meta = json.loads(meta_file.read_text(encoding="utf-8"))
+                mind_map = meta.get("mind_map") or {}
+                if mind_map.get("gemini_state"):
+                    lines.append(f"• Gemini Mind State: {mind_map.get('gemini_state')}")
+                if mind_map.get("user_state"):
+                    lines.append(f"• User Mind State: {mind_map.get('user_state')}")
+                if mind_map.get("tree_state"):
+                    lines.append(f"• Tree Anchors: {mind_map.get('tree_state')}")
+                if mind_map.get("tree_content"):
+                    lines.append(f"• Visual Relation Tree:\n{mind_map.get('tree_content')}")
+
+                notes_data = meta.get("notes") or ""
+                if isinstance(notes_data, dict):
+                    w_notes = notes_data.get("working_notes") or notes_data.get("gemini_notes") or ""
+                    if w_notes:
+                        lines.append(f"• Active Working Notes: {w_notes[:500]}")
+                elif isinstance(notes_data, str) and notes_data.strip():
+                    lines.append(f"• Active Working Notes: {notes_data[:500]}")
+            except Exception:
+                pass
+
+    if len(lines) == 1:
+        return "COGNITIVE & MEMORY STATE CONTINUITY: None found (Cold Boot)"
+    return "\n".join(lines)
+
+
 # -----------------------------------------------------------------------------
 # Monolithic Autonomous Tools (Stand-alone implementations)
 # -----------------------------------------------------------------------------
@@ -708,11 +777,13 @@ def run_emergency_session(api_key: str, working_dir: Path) -> None:
     git_snap = get_git_status_summary(working_dir)
     crash_snap = get_latest_crash_log()
     continuity_snap = tracker.get_continuity_summary()
+    cognitive_snap = get_cognitive_continuity_snapshot()
     initial_context = (
         f"INITIAL SYSTEM DIAGNOSIS SNAPSHOT:\n"
         f"Working Directory: {working_dir}\n"
         f"Current Emergency Run: #{run_number} (Total Runs: {total_runs})\n"
         f"{continuity_snap}\n\n"
+        f"{cognitive_snap}\n\n"
         f"{git_snap}\n\n"
         f"{crash_snap}\n"
     )

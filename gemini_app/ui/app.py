@@ -2001,6 +2001,13 @@ class ChatApp(App):
         if not self.current_chat_id:
             return
 
+        chat_dir = self._get_chat_dir(self.current_chat_id)
+        # Lazy Materialization Gate:
+        # If the session has 0 turns, hasn't yet materialized on disk, and is not a legacy flat chat,
+        # defer disk allocation until the first conversational turn is received.
+        if not self.history and not chat_dir.exists() and not self.is_legacy_chat:
+            return
+
         self.flush_current_notes()
 
         active_topic = getattr(self.notes_manager, "active_topic", "general") if hasattr(self, "notes_manager") else "general"

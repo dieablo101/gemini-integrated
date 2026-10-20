@@ -537,53 +537,56 @@ class SatelliteNode:
 
         try:
             while True:
-                # Periodic ping measurement
-                now = time.time()
-                if self._running and (now - last_ping_time > 3.0):
-                    last_ping_time = now
-                    # Measure RTT
-                    self._pending_ping_t0 = time.perf_counter()
-                    ping_msg = FleetMessage(
-                        msg_type=FleetMessage.TYPE_COMMAND,
-                        node_id=self.node_id,
-                        payload={"action": "ping"},
-                    )
-                    self.send_message(ping_msg)
+                try:
+                    # Periodic ping measurement
+                    now = time.time()
+                    if self._running and (now - last_ping_time > 3.0):
+                        last_ping_time = now
+                        # Measure RTT
+                        self._pending_ping_t0 = time.perf_counter()
+                        ping_msg = FleetMessage(
+                            msg_type=FleetMessage.TYPE_COMMAND,
+                            node_id=self.node_id,
+                            payload={"action": "ping"},
+                        )
+                        self.send_message(ping_msg)
 
-                # Render frame and check non-blocking input
-                key = self.hud.render_loop_tick()
-                if key:
-                    if key.lower() == "q":
-                        break
-                    elif key.lower() == "u":
-                        self.hud.show_toast("Checking & upgrading node...", duration=4.0)
-                        self.hud.render_loop_tick()
-                        res = execute_fleet_upgrade()
-                        if res.get("status") == "ok":
-                            if res.get("upgraded"):
-                                self.hud.show_toast(f"Upgraded to {res['new_commit']}! Rebooting...", duration=3.0)
-                                self.hud.render_loop_tick()
-                                time.sleep(1.0)
-                                if os.environ.get("GEMINI_WATCHDOG") == "1":
-                                    sys.exit(42)
+                    # Render frame and check non-blocking input
+                    key = self.hud.render_loop_tick()
+                    if key:
+                        if key.lower() == "q":
+                            break
+                        elif key.lower() == "u":
+                            self.hud.show_toast("Checking & upgrading node...", duration=4.0)
+                            self.hud.render_loop_tick(force_redraw=True)
+                            res = execute_fleet_upgrade()
+                            if res.get("status") == "ok":
+                                if res.get("upgraded"):
+                                    self.hud.show_toast(f"Upgraded to {res['new_commit']}! Rebooting...", duration=3.0)
+                                    self.hud.render_loop_tick(force_redraw=True)
+                                    time.sleep(1.0)
+                                    if os.environ.get("GEMINI_WATCHDOG") == "1":
+                                        sys.exit(42)
+                                    else:
+                                        os.execv(sys.executable, [sys.executable] + sys.argv)
                                 else:
-                                    os.execv(sys.executable, [sys.executable] + sys.argv)
+                                    self.hud.show_toast("Node is already up to date.", duration=3.0)
                             else:
-                                self.hud.show_toast("Node is already up to date.", duration=3.0)
-                        else:
-                            self.hud.show_toast(f"Upgrade failed: {res.get('error', 'unknown')}", duration=5.0)
-                    elif key.lower() == "r":
-                        # Force screen clear & redraw
-                        self.hud.render_loop_tick(force_redraw=True)
+                                self.hud.show_toast(f"Upgrade failed: {res.get('error', 'unknown')}", duration=5.0)
+                        elif key.lower() == "r":
+                            # Force screen clear & redraw
+                            self.hud.render_loop_tick(force_redraw=True)
 
-                # Low-power tick sleep (optimized for iOS/mobile battery and memory stability)
-                time.sleep(0.3)
+                    # Low-power tick sleep (optimized for iOS/mobile battery and memory stability)
+                    time.sleep(0.4)
 
-                # Reconnect attempt if disconnected
-                if not self._running:
-                    self.hud.set_connection_status(False)
-                    time.sleep(1.5)
-                    self.start()
+                    # Reconnect attempt if disconnected
+                    if not self._running:
+                        self.hud.set_connection_status(False)
+                        time.sleep(1.5)
+                        self.start()
+                except Exception:
+                    time.sleep(0.5)
 
         except KeyboardInterrupt:
             pass

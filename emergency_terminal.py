@@ -20,6 +20,7 @@ import readline
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -114,6 +115,77 @@ CLR_GREEN = "\033[38;2;74;222;128m"       # #4ade80 - Emerald
 CLR_AMBER = "\033[38;2;251;191;36m"       # #fbbf24 - Warning Amber
 CLR_RED = "\033[38;2;248;113;113m"        # #f87171 - Error Red
 CLR_BG_PURPLE = "\033[48;2;88;28;135m"    # Background deep violet
+
+# GNU Readline non-printing escape wrappers (prevents cursor jumping & walking over prompts)
+RL_START = "\001"
+RL_END = "\002"
+
+def rl_esc(ansi_seq: str) -> str:
+    """Wraps ANSI escape sequences with readline ignore markers so prompt length is exact."""
+    return f"{RL_START}{ansi_seq}{RL_END}"
+
+
+# -----------------------------------------------------------------------------
+# Live Terminal Status & Spinner Engine
+# -----------------------------------------------------------------------------
+
+class LiveStatus:
+    """Threaded terminal spinner with elapsed timer and violet animated pulses.
+    
+    Guarantees the user knows Gemini and commands are actively processing,
+    never appearing frozen or unresponsive.
+    """
+
+    def __init__(self, message: str = "Working..."):
+        self.message = message
+        self._stop_event = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        self._frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+        self._start_time = 0.0
+
+    def start(self, message: Optional[str] = None) -> "LiveStatus":
+        if self._thread and self._thread.is_alive():
+            if message:
+                self.message = message
+            return self
+        if message:
+            self.message = message
+        self._stop_event.clear()
+        self._start_time = time.time()
+        self._thread = threading.Thread(target=self._spin, daemon=True)
+        self._thread.start()
+        return self
+
+    def update(self, message: str) -> None:
+        self.message = message
+
+    def stop(self, final_text: str = "") -> None:
+        if self._thread and self._thread.is_alive():
+            self._stop_event.set()
+            self._thread.join(timeout=1.0)
+        self._thread = None
+        # Cleanly erase the spinner line
+        sys.stdout.write("\r\033[K")
+        if final_text:
+            sys.stdout.write(final_text + "\n")
+        sys.stdout.flush()
+
+    def _spin(self) -> None:
+        idx = 0
+        while not self._stop_event.is_set():
+            frame = self._frames[idx % len(self._frames)]
+            elapsed = time.time() - self._start_time
+            line = f"\r  {CLR_PRIMARY}{frame}{C_RESET} {CLR_LAVENDER}{self.message}{C_RESET} {CLR_MUTED}({elapsed:.1f}s){C_RESET}"
+            sys.stdout.write(line)
+            sys.stdout.flush()
+            idx += 1
+            time.sleep(0.08)
+
+    def __enter__(self) -> "LiveStatus":
+        return self.start()
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        self.stop()
 
 # -----------------------------------------------------------------------------
 # Environment & Key Discovery (No reliance on internal app modules)
@@ -341,11 +413,16 @@ class EmergencyToolbox:
 
     def print_tool_badge(self, action: str, detail: str) -> None:
         """Prints a stylish violet tool execution badge in terminal."""
+        sys.stdout.write("\r\033[K")
         print(f"\n  {CLR_BG_PURPLE}{C_BOLD} TOOL {C_RESET} {CLR_PRIMARY}{action}{C_RESET} {CLR_MUTED}{detail}{C_RESET}")
+        sys.stdout.flush()
 
     def execute_shell(self, command: str, timeout_seconds: int = 60) -> Dict[str, Any]:
         """Executes a shell command inside the working directory and returns output."""
         self.print_tool_badge("execute_shell", command[:80] + ("..." if len(command) > 80 else ""))
+        short_cmd = command[:50] + ("..." if len(command) > 50 else "")
+        status = LiveStatus(f"Executing: {short_cmd}")
+        status.start()
         try:
             env = os.environ.copy()
             # Detect virtual environment if present
@@ -363,14 +440,17 @@ class EmergencyToolbox:
                 timeout=timeout_seconds,
                 env=env,
             )
+            status.stop()
             return {
                 "exit_code": res.returncode,
                 "stdout": res.stdout,
                 "stderr": res.stderr,
             }
         except subprocess.TimeoutExpired:
+            status.stop()
             return {"status": "error", "message": f"Command timed out after {timeout_seconds}s"}
         except Exception as e:
+            status.stop()
             return {"status": "error", "message": str(e)}
 
     def read_file(self, path: str, start_line: int = 1, line_count: int = 200) -> Dict[str, Any]:
@@ -576,7 +656,7 @@ def run_emergency_session(api_key: str, working_dir: Path) -> None:
         print(f"\n{CLR_RED}Error: GEMINI_API_KEY could not be located.{C_RESET}")
         print(f"Please enter your key or run: export GEMINI_API_KEY='your_key'")
         try:
-            api_key = input(f"{CLR_LAVENDER}Enter Gemini API Key: {C_RESET}").strip()
+            api_key = input(f"{rl_esc(CLR_LAVENDER)}Enter Gemini API Key: {rl_esc(C_RESET)}").strip()
             if not api_key:
                 print("No key entered. Exiting.")
                 tracker.end_session("missing_api_key")
@@ -647,14 +727,23 @@ def run_emergency_session(api_key: str, working_dir: Path) -> None:
         max_iterations = 10
         iteration = 0
         turn_tools: List[str] = []
+        status = LiveStatus()
 
         while iteration < max_iterations:
             iteration += 1
+            if iteration == 1:
+                status.start("Thinking & consulting Gemini recovery co-pilot...")
+            else:
+                status.start("Synthesizing diagnosis & follow-up...")
+
             try:
                 response = chat.send_message(current_input)
             except Exception as net_err:
+                status.stop()
                 print(f"\n{CLR_RED}[API Error] {net_err}{C_RESET}")
                 return
+
+            status.stop()
 
             # Check for function calls
             has_fc = False
@@ -684,6 +773,7 @@ def run_emergency_session(api_key: str, working_dir: Path) -> None:
 
             if not has_fc:
                 # Output text reply
+                status.stop()
                 reply_text = response.text or ""
                 # Strip mind map footer if present
                 clean_reply = re.sub(r"```json:mind_map[\s\S]*?```", "", reply_text).strip()
@@ -695,8 +785,8 @@ def run_emergency_session(api_key: str, working_dir: Path) -> None:
     print(f"{CLR_MUTED}Initializing recovery handshake...{C_RESET}")
     dispatch_turn("Hello. The emergency terminal has just booted up. Please introduce yourself, review the initial system diagnosis snapshot, and ask me what happened so we can triage.")
 
-    # Interactive REPL loop
-    prompt_str = f"{CLR_LAVENDER}{C_BOLD}emergency {CLR_PRIMARY}❯{C_RESET} "
+    # Interactive REPL loop (Prompt escape codes wrapped with rl_esc to prevent cursor walking)
+    prompt_str = f"{rl_esc(CLR_LAVENDER + C_BOLD)}emergency {rl_esc(CLR_PRIMARY)}❯{rl_esc(C_RESET)} "
     while True:
         try:
             line = input(prompt_str).strip()
@@ -723,18 +813,27 @@ def run_emergency_session(api_key: str, working_dir: Path) -> None:
                 continue
 
             if line.lower() == "tests":
+                cmd_status = LiveStatus("Running project test suite...")
+                cmd_status.start()
                 res = toolbox.run_tests()
+                cmd_status.stop()
                 out = res.get("stdout", "") or res.get("stderr", "")
                 print(f"\n{out}\n")
                 continue
 
             if line.lower() == "git status":
+                cmd_status = LiveStatus("Checking git status...")
+                cmd_status.start()
                 res = toolbox.git_repair("status")
+                cmd_status.stop()
                 print(f"\n{res.get('stdout', '')}\n")
                 continue
 
             if line.lower() == "git diff":
+                cmd_status = LiveStatus("Fetching git diff...")
+                cmd_status.start()
                 res = toolbox.git_repair("diff")
+                cmd_status.stop()
                 print(f"\n{res.get('stdout', '')}\n")
                 continue
 

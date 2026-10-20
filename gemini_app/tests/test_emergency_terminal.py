@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 import tempfile
+import time
 import unittest
 
-from emergency_terminal import EmergencySessionTracker, EmergencyToolbox
+from emergency_terminal import EmergencySessionTracker, EmergencyToolbox, LiveStatus, rl_esc, RL_START, RL_END, CLR_LAVENDER, CLR_PRIMARY, C_BOLD, C_RESET
 from gemini_app.introspection import get_tier_2_runtime, format_introspection_summary
 
 
@@ -102,6 +104,26 @@ class TestEmergencyTerminal(unittest.TestCase):
         s_res = toolbox.search_codebase("patched_line")
         self.assertEqual(s_res["status"], "success")
         self.assertGreaterEqual(s_res["total_matches"], 1)
+
+    def test_readline_prompt_escaping(self):
+        prompt_str = f"{rl_esc(CLR_LAVENDER + C_BOLD)}emergency {rl_esc(CLR_PRIMARY)}❯{rl_esc(C_RESET)} "
+        self.assertTrue(prompt_str.startswith(RL_START))
+        self.assertIn(RL_END, prompt_str)
+        # Strip invisible RL markers and their contents
+        visible_text = re.sub(r"\001.*?\002", "", prompt_str)
+        self.assertEqual(visible_text, "emergency ❯ ")
+        self.assertEqual(len(visible_text), 12)
+
+    def test_live_status_spinner_lifecycle(self):
+        status = LiveStatus("Testing spinner")
+        self.assertFalse(status._thread and status._thread.is_alive())
+        status.start()
+        self.assertTrue(status._thread and status._thread.is_alive())
+        status.update("Updated status")
+        self.assertEqual(status.message, "Updated status")
+        time.sleep(0.1)
+        status.stop()
+        self.assertIsNone(status._thread)
 
     def test_introspection_tier2_emergency_integration(self):
         # Write a mock emergency_state.json to GEMINI_HOME

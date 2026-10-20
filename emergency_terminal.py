@@ -23,6 +23,66 @@ import sys
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+# -----------------------------------------------------------------------------
+# Autonomous Environment Trampoline
+# -----------------------------------------------------------------------------
+
+def _ensure_runtime_environment() -> None:
+    """Ensures google.genai is importable.
+    
+    If the current Python interpreter lacks google.genai (e.g. system python
+    invoked from an un-activated shell), searches candidate virtual environments
+    and re-executes itself transparently. If none exist, auto-bootstraps
+    a minimal isolated environment in ~/.gemini/venv.
+    """
+    try:
+        import google.genai
+        return  # Current interpreter is fully equipped!
+    except ImportError:
+        pass
+
+    script_dir = Path(__file__).resolve().parent
+    candidates = [
+        script_dir / ".venv" / "bin" / "python3",
+        script_dir / "venv" / "bin" / "python3",
+        Path.home() / ".gemini" / "venv" / "bin" / "python3",
+        Path("/opt/gemini/.venv/bin/python3"),
+    ]
+
+    for py in candidates:
+        if py.exists() and os.access(str(py), os.X_OK):
+            try:
+                res = subprocess.run(
+                    [str(py), "-c", "import google.genai"],
+                    capture_output=True,
+                    timeout=5,
+                )
+                if res.returncode == 0:
+                    os.execv(str(py), [str(py), str(Path(__file__).resolve())] + sys.argv[1:])
+            except Exception:
+                continue
+
+    # If no virtualenv has google.genai, attempt fallback bootstrap into ~/.gemini/venv
+    gemini_venv = Path.home() / ".gemini" / "venv"
+    gemini_python = gemini_venv / "bin" / "python3"
+    try:
+        sys.stdout.write("⚡ Emergency Terminal: Bootstrapping google-genai dependency in ~/.gemini/venv...\n")
+        import venv
+        gemini_venv.parent.mkdir(parents=True, exist_ok=True)
+        venv.create(str(gemini_venv), with_pip=True, clear=False)
+        subprocess.run(
+            [str(gemini_python), "-m", "pip", "install", "-q", "google-genai>=1.0.0"],
+            check=True,
+            timeout=120,
+        )
+        os.execv(str(gemini_python), [str(gemini_python), str(Path(__file__).resolve())] + sys.argv[1:])
+    except Exception:
+        pass
+
+
+# Run trampoline check before any external package imports
+_ensure_runtime_environment()
+
 # Try to import google.genai
 try:
     from google import genai

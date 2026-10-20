@@ -78,13 +78,16 @@ else
     echo -e "✓ Repository files successfully extracted."
 fi
 
-# Ensure executable permissions on runner
+# Ensure executable permissions on runners
 chmod +x "$INSTALL_DIR/gemini-integrated.py"
+chmod +x "$INSTALL_DIR/emergency_terminal.py"
 
 # Create symlinks in ~/.local/bin
 echo -e "⚡ Creating executable links in ${BIN_DIR}..."
 ln -sf "$INSTALL_DIR/gemini-integrated.py" "$BIN_DIR/gemini-integrated"
 ln -sf "$INSTALL_DIR/gemini-integrated.py" "$BIN_DIR/gemini"
+ln -sf "$INSTALL_DIR/emergency_terminal.py" "$BIN_DIR/gemini-emergency"
+ln -sf "$INSTALL_DIR/emergency_terminal.py" "$BIN_DIR/gemini-recovery"
 
 # Ensure ~/.local/bin is in PATH in shell rc files
 SHELL_RC=""

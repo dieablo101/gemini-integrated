@@ -120,6 +120,14 @@ def register_or_update_node(
         found_key = get_dieablo_ssh_key()
         resolved_key = str(found_key) if found_key else "~/.ssh/dieablo101"
 
+    # Deduplicate: if an older placeholder exists with the same host IP and a different node_id, retire it
+    stale_keys = [
+        k for k, v in registry.items()
+        if k != node_id and v.get("host") == host and (k in ("satellite-ipad", "test-satellite-unit") or v.get("status") == "offline")
+    ]
+    for sk in stale_keys:
+        del registry[sk]
+
     entry = registry.get(node_id, {})
     entry.update({
         "node_id": node_id,
@@ -139,6 +147,16 @@ def register_or_update_node(
     registry[node_id] = entry
     save_nodes_registry(registry)
     return entry
+
+
+def remove_node(node_id: str) -> bool:
+    """Removes a node from the persistent registry."""
+    registry = load_nodes_registry()
+    if node_id in registry:
+        del registry[node_id]
+        save_nodes_registry(registry)
+        return True
+    return False
 
 
 def load_active_nodes() -> List[Dict[str, Any]]:
@@ -281,8 +299,12 @@ def execute_ssh_rescue(
         if not custom_cmd:
             return {"status": "error", "error": "custom_cmd required for 'exec' action"}
         remote_cmd = custom_cmd
+    elif action == "provision":
+        from gemini_app.fleet.security import get_or_create_fleet_key
+        fleet_key = get_or_create_fleet_key()
+        remote_cmd = f"mkdir -p ~/.gemini && echo '{fleet_key}' > ~/.gemini/fleet.key && chmod 600 ~/.gemini/fleet.key && echo PROVISIONED"
     else:
-        return {"status": "error", "error": f"Unknown rescue action '{action}'. Options: restart, reboot, check, exec"}
+        return {"status": "error", "error": f"Unknown rescue action '{action}'. Options: restart, reboot, check, exec, provision"}
 
     ssh_args = [
         "ssh",

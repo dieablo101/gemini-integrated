@@ -16,6 +16,12 @@ from typing import Any, Dict, List, Optional
 
 from gemini_app.fleet.protocol import DEFAULT_PORT, FleetMessage
 from gemini_app.fleet.telemetry import collect_mothership_telemetry
+from gemini_app.fleet.security import (
+    compute_command_signature,
+    generate_challenge,
+    get_or_create_fleet_key,
+    verify_auth_signature,
+)
 from gemini_app.fleet.nodes import (
     execute_ssh_rescue,
     register_or_update_node,
@@ -61,11 +67,14 @@ class MothershipServer:
         port: int = DEFAULT_PORT,
         auto_broadcast_telemetry: bool = True,
         broadcast_interval: float = 1.5,
+        require_auth: bool = True,
     ) -> None:
         self.host = host
         self.port = port
         self.auto_broadcast_telemetry = auto_broadcast_telemetry
         self.broadcast_interval = broadcast_interval
+        self.require_auth = require_auth
+        self.fleet_key = get_or_create_fleet_key()
 
         self.nodes: Dict[str, ConnectedSatellite] = {}
         self.lock = threading.Lock()
@@ -83,6 +92,7 @@ class MothershipServer:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             s.bind((self.host, self.port))
+            self.port = s.getsockname()[1]
             s.listen(10)
             self.server_sock = s
             self._running = True
@@ -126,10 +136,29 @@ class MothershipServer:
         buf = ""
         node_id: Optional[str] = None
         satellite: Optional[ConnectedSatellite] = None
+        fleet_key = get_or_create_fleet_key()
+        auth_nonce, auth_ts = generate_challenge()
+        is_authenticated = False
+        is_loopback = (addr[0] in ("127.0.0.1", "::1", "localhost"))
+
+        # Issue immediate authentication challenge
+        if self.require_auth:
+            try:
+                chal = FleetMessage(
+                    msg_type=FleetMessage.TYPE_CHALLENGE,
+                    node_id="mothership",
+                    payload={"nonce": auth_nonce, "timestamp": auth_ts},
+                )
+                conn.sendall(chal.serialize())
+            except Exception:
+                return
 
         try:
             while self._running:
-                data = conn.recv(4096)
+                try:
+                    data = conn.recv(4096)
+                except (ConnectionResetError, BrokenPipeError, OSError):
+                    break
                 if not data:
                     break
                 buf += data.decode("utf-8", errors="replace")
@@ -142,36 +171,103 @@ class MothershipServer:
                         msg = FleetMessage.deserialize(line)
                         node_id = msg.node_id
 
-                        if msg.type == FleetMessage.TYPE_REGISTER:
-                            with self.lock:
-                                satellite = ConnectedSatellite(node_id, conn, addr)
-                                satellite.telemetry = msg.payload.get("telemetry", {})
-                                self.nodes[node_id] = satellite
-                            sys.stdout.write(f"[mothership] Satellite registered: '{node_id}' from {addr}\n")
+                        if msg.type == FleetMessage.TYPE_AUTH:
+                            sig = msg.payload.get("signature", "")
+                            ts = msg.payload.get("timestamp", 0.0)
+                            if verify_auth_signature(fleet_key, node_id, auth_nonce, ts, sig):
+                                is_authenticated = True
+                                with self.lock:
+                                    satellite = ConnectedSatellite(node_id, conn, addr)
+                                    satellite.telemetry = msg.payload.get("telemetry", {})
+                                    self.nodes[node_id] = satellite
+                                sys.stdout.write(f"[mothership] Satellite authenticated & registered: '{node_id}' from {addr}\n")
 
-                            # Persist to active nodes and update persistent registry
-                            try:
-                                host_ip = addr[0]
-                                register_or_update_node(
-                                    node_id=node_id,
-                                    host=host_ip,
-                                    telemetry=satellite.telemetry,
+                                ack = FleetMessage(
+                                    msg_type=FleetMessage.TYPE_AUTH_OK,
+                                    node_id="mothership",
+                                    payload={"status": "authenticated", "node_id": node_id},
                                 )
-                                save_active_nodes(self.list_nodes())
-                            except Exception:
-                                pass
+                                conn.sendall(ack.serialize())
 
-                            # Send immediate telemetry greeting so HUD populates right away
-                            init_telem = collect_mothership_telemetry(
-                                cognitive_override=self._cognitive_override,
-                                satellites_info=self.list_nodes(),
-                            )
-                            greet = FleetMessage(
-                                msg_type=FleetMessage.TYPE_TELEMETRY,
-                                node_id="mothership",
-                                payload={"mothership_telemetry": init_telem},
-                            )
-                            satellite.send(greet)
+                                try:
+                                    host_ip = addr[0]
+                                    register_or_update_node(
+                                        node_id=node_id,
+                                        host=host_ip,
+                                        telemetry=satellite.telemetry,
+                                    )
+                                    save_active_nodes(self.list_nodes())
+                                except Exception:
+                                    pass
+
+                                init_telem = collect_mothership_telemetry(
+                                    cognitive_override=self._cognitive_override,
+                                    satellites_info=self.list_nodes(),
+                                )
+                                greet = FleetMessage(
+                                    msg_type=FleetMessage.TYPE_TELEMETRY,
+                                    node_id="mothership",
+                                    payload={"mothership_telemetry": init_telem},
+                                )
+                                satellite.send(greet)
+                            else:
+                                sys.stderr.write(f"[mothership] UNAUTHORIZED node '{node_id}' from {addr}: invalid signature\n")
+                                fail = FleetMessage(
+                                    msg_type=FleetMessage.TYPE_AUTH_FAIL,
+                                    node_id="mothership",
+                                    payload={"error": "Authentication failed: invalid fleet key signature"},
+                                )
+                                try:
+                                    conn.sendall(fail.serialize())
+                                except Exception:
+                                    pass
+                                return
+
+                        elif msg.type == FleetMessage.TYPE_REGISTER:
+                            # Allow if loopback or auth not enforced
+                            if is_loopback or not self.require_auth:
+                                is_authenticated = True
+                                with self.lock:
+                                    satellite = ConnectedSatellite(node_id, conn, addr)
+                                    satellite.telemetry = msg.payload.get("telemetry", {})
+                                    self.nodes[node_id] = satellite
+                                sys.stdout.write(f"[mothership] Satellite registered: '{node_id}' from {addr}\n")
+
+                                # Persist to active nodes and update persistent registry
+                                try:
+                                    host_ip = addr[0]
+                                    register_or_update_node(
+                                        node_id=node_id,
+                                        host=host_ip,
+                                        telemetry=satellite.telemetry,
+                                    )
+                                    save_active_nodes(self.list_nodes())
+                                except Exception:
+                                    pass
+
+                                # Send immediate telemetry greeting so HUD populates right away
+                                init_telem = collect_mothership_telemetry(
+                                    cognitive_override=self._cognitive_override,
+                                    satellites_info=self.list_nodes(),
+                                )
+                                greet = FleetMessage(
+                                    msg_type=FleetMessage.TYPE_TELEMETRY,
+                                    node_id="mothership",
+                                    payload={"mothership_telemetry": init_telem},
+                                )
+                                satellite.send(greet)
+                            else:
+                                sys.stderr.write(f"[mothership] Blocked unauthenticated registration from {addr}\n")
+                                fail = FleetMessage(
+                                    msg_type=FleetMessage.TYPE_AUTH_FAIL,
+                                    node_id="mothership",
+                                    payload={"error": "Challenge authentication required for non-loopback connections"},
+                                )
+                                try:
+                                    conn.sendall(fail.serialize())
+                                except Exception:
+                                    pass
+                                return
 
                         elif msg.type == FleetMessage.TYPE_HEARTBEAT:
                             with self.lock:
@@ -206,8 +302,15 @@ class MothershipServer:
                             elif action == "update_cognitive":
                                 cog_data = msg.payload.get("cognitive", {})
                                 if cog_data:
-                                    self._cognitive_override.update(cog_data)
-                                    self.broadcast_telemetry()
+                                    self.set_cognitive_state(
+                                        state_desc=cog_data.get("state_desc", ""),
+                                        task=cog_data.get("task", ""),
+                                        thought=cog_data.get("thought", ""),
+                                        tool=cog_data.get("tool", "none"),
+                                        turn_number=cog_data.get("turn_number"),
+                                        topic=cog_data.get("topic", ""),
+                                    )
+                                resp_payload["status"] = "ok"
                             elif action == "list_nodes":
                                 resp_payload["nodes"] = self.list_nodes()
                             elif action == "rescue_node":
@@ -219,16 +322,6 @@ class MothershipServer:
                                     cognitive_override=self._cognitive_override,
                                     satellites_info=self.list_nodes(),
                                 )
-                            elif action == "update_cognitive":
-                                cog = msg.payload.get("cognitive", {})
-                                self.set_cognitive_state(
-                                    state_desc=cog.get("state_desc", ""),
-                                    task=cog.get("task", ""),
-                                    thought=cog.get("thought", ""),
-                                    tool=cog.get("tool", "none"),
-                                    turn_number=cog.get("turn_number"),
-                                )
-                                resp_payload["status"] = "ok"
                             reply = FleetMessage(
                                 msg_type=FleetMessage.TYPE_RESPONSE,
                                 node_id="mothership",
@@ -304,6 +397,7 @@ class MothershipServer:
         thought: str = "",
         tool: str = "none",
         turn_number: Optional[int] = None,
+        topic: str = "",
     ) -> None:
         """Updates internal cognitive state and broadcasts immediately."""
         updates: Dict[str, Any] = {}
@@ -317,6 +411,8 @@ class MothershipServer:
             updates["tool"] = tool
         if turn_number is not None:
             updates["turn_number"] = turn_number
+        if topic:
+            updates["topic"] = topic
         self._cognitive_override.update(updates)
         self.broadcast_telemetry()
 
@@ -352,10 +448,18 @@ class MothershipServer:
         event = threading.Event()
         satellite.response_events[req_id] = event
 
+        cmd_ts = time.time()
+        cmd_sig = compute_command_signature(self.fleet_key, action, node_id, cmd_ts)
+
         cmd = FleetMessage(
             msg_type=FleetMessage.TYPE_COMMAND,
             node_id="mothership",
-            payload={"action": action, "params": params or {}},
+            payload={
+                "action": action,
+                "params": params or {},
+                "auth_sig": cmd_sig,
+                "auth_ts": cmd_ts,
+            },
             msg_id=req_id,
         )
 

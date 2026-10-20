@@ -20,6 +20,11 @@ import time
 from typing import Any, Dict, Optional
 
 from gemini_app.fleet.protocol import DEFAULT_PORT, FleetMessage
+from gemini_app.fleet.security import (
+    compute_auth_signature,
+    get_or_create_fleet_key,
+    verify_command_signature,
+)
 
 
 def collect_telemetry() -> Dict[str, Any]:
@@ -310,6 +315,20 @@ class SatelliteNode:
         params = cmd_msg.payload.get("params", {})
         result_payload: Dict[str, Any] = {"status": "ok", "action": action}
 
+        # Mutual Authentication Security Gate: verify signature from Mothership
+        fleet_key = get_or_create_fleet_key()
+        auth_sig = cmd_msg.payload.get("auth_sig")
+        auth_ts = cmd_msg.payload.get("auth_ts")
+        if auth_sig and auth_ts:
+            if not verify_command_signature(fleet_key, action, self.node_id, auth_ts, auth_sig):
+                sys.stderr.write(f"[satellite] REJECTED unauthorized command '{action}' from Mothership (invalid signature)\n")
+                return FleetMessage(
+                    msg_type=FleetMessage.TYPE_RESPONSE,
+                    node_id=self.node_id,
+                    payload={"status": "error", "error": "Unauthorized command: Mothership signature verification failed"},
+                    msg_id=f"resp-{cmd_msg.msg_id}",
+                )
+
         if action == "ping":
             result_payload["pong"] = time.time()
             result_payload["client_time"] = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -399,7 +418,33 @@ class SatelliteNode:
                         continue
                     try:
                         msg = FleetMessage.deserialize(line)
-                        if msg.type == FleetMessage.TYPE_COMMAND:
+                        if msg.type == FleetMessage.TYPE_CHALLENGE:
+                            nonce = msg.payload.get("nonce", "")
+                            ts = msg.payload.get("timestamp", time.time())
+                            fleet_key = get_or_create_fleet_key()
+                            sig = compute_auth_signature(fleet_key, self.node_id, nonce, ts)
+                            auth_msg = FleetMessage(
+                                msg_type=FleetMessage.TYPE_AUTH,
+                                node_id=self.node_id,
+                                payload={
+                                    "signature": sig,
+                                    "timestamp": ts,
+                                    "telemetry": collect_telemetry(),
+                                },
+                            )
+                            self.send_message(auth_msg)
+                        elif msg.type == FleetMessage.TYPE_AUTH_OK:
+                            if self.hud:
+                                self.hud.set_connection_status(True)
+                        elif msg.type == FleetMessage.TYPE_AUTH_FAIL:
+                            err_str = msg.payload.get("error", "Authentication rejected by Mothership")
+                            if self.hud:
+                                self.hud.show_toast(f"Auth failed: {err_str}", duration=5.0)
+                            else:
+                                sys.stderr.write(f"[satellite] AUTH FAILED: {err_str}\n")
+                            self._running = False
+                            break
+                        elif msg.type == FleetMessage.TYPE_COMMAND:
                             resp = self.handle_command(msg)
                             self.send_message(resp)
                         elif msg.type == FleetMessage.TYPE_RESPONSE:
@@ -441,18 +486,16 @@ class SatelliteNode:
 
         self._running = True
 
+        self._listener_thread = threading.Thread(target=self._listen_loop, daemon=True)
+        self._listener_thread.start()
+
         # Send initial registration message
         reg = FleetMessage(
             msg_type=FleetMessage.TYPE_REGISTER,
             node_id=self.node_id,
             payload={"telemetry": collect_telemetry()},
         )
-        if not self.send_message(reg):
-            self.stop()
-            return False
-
-        self._listener_thread = threading.Thread(target=self._listen_loop, daemon=True)
-        self._listener_thread.start()
+        self.send_message(reg)
 
         self._heartbeat_thread = threading.Thread(target=self._heartbeat_loop, daemon=True)
         self._heartbeat_thread.start()

@@ -1067,11 +1067,11 @@ class ChatApp(App):
             feed = self.query_one("#feed", FeedArea)
             active_topic = getattr(self.notes_manager, "active_topic", "general") if hasattr(self, "notes_manager") else "general"
             work_desc = (getattr(self, "active_task_title", "") or self.current_gemini_state or "").strip()
-            if not work_desc or work_desc in ("Unifying Notes System & Relational Anchors", "Legacy active session.", "None"):
+            if not work_desc or "unifying notes" in work_desc.lower() or work_desc in ("Legacy active session.", "None"):
                 clean_work = f"Topic: {active_topic}"
             else:
                 clean_work = work_desc.replace("\n", " ").strip()
-                if not clean_work.lower().startswith("topic:") and active_topic and active_topic.lower() != "general":
+                if not clean_work.lower().startswith("topic:"):
                     clean_work = f"Topic: {active_topic} • {clean_work}"
             if len(clean_work) > 65:
                 clean_work = clean_work[:62] + "..."
@@ -1936,7 +1936,7 @@ class ChatApp(App):
             mind_map = meta_data.get("mind_map", {})
             gem_state = mind_map.get("gemini_state", "")
             curr_top = getattr(self.notes_manager, "active_topic", "general")
-            if not gem_state or gem_state in ("Legacy active session.", "Unifying Notes System & Relational Anchors"):
+            if not gem_state or "unifying notes" in gem_state.lower() or gem_state in ("Legacy active session.", "None"):
                 gem_state = f"Topic: {curr_top}"
             self.active_task_title = gem_state
             self.current_gemini_state = gem_state
@@ -2005,7 +2005,7 @@ class ChatApp(App):
 
         active_topic = getattr(self.notes_manager, "active_topic", "general") if hasattr(self, "notes_manager") else "general"
         raw_title = (getattr(self, "active_task_title", "") or self.current_chat_title or "").strip()
-        if not raw_title or raw_title in ("Unifying Notes System & Relational Anchors", "Legacy active session.", "None"):
+        if not raw_title or "unifying notes" in raw_title.lower() or raw_title in ("Legacy active session.", "None"):
             title = f"Topic: {active_topic}"
         else:
             title = raw_title
@@ -3049,6 +3049,14 @@ class ChatApp(App):
                 self.app.call_from_thread(self.set_feed_title, content)
                 return {"status": "success", "message": f"Updated feed active task title to '{content}'."}
 
+            if act in ("set_topic", "topic", "switch_topic"):
+                self.notes_manager.set_current_topic(target_topic)
+                self.app.call_from_thread(self.set_feed_title, f"Topic: {target_topic}")
+                return {"status": "success", "message": f"Switched active topic to '{target_topic}'."}
+
+            if topic:
+                self.notes_manager.set_current_topic(target_topic)
+
             if act in ("record", "add"):
                 item = self.notes_manager.record_note(
                     content=content,
@@ -3410,6 +3418,19 @@ class ChatApp(App):
 
             # Send the latest turn with silent quota retry
             first_user_content = payload[-1]["parts"][0]["text"] if payload else ""
+            clean_snippet = first_user_content.strip().splitlines()[0][:60] if first_user_content else "Prompt"
+            try:
+                from gemini_app.fleet.telemetry import update_cognitive_state
+                update_cognitive_state(
+                    state_desc="Deliberating",
+                    task=task_summary,
+                    thought=f"Analyzing prompt: \"{clean_snippet}\"",
+                    tool="idle",
+                    turn_number=turn_number,
+                    topic=getattr(self, "current_topic", "general"),
+                )
+            except Exception:
+                pass
             response = _send_with_silent_quota_retry(lambda: chat_session.send_message(first_user_content))
             if response is None:
                 return

@@ -10,6 +10,7 @@ from gemini_app.fleet.protocol import FleetMessage
 from gemini_app.fleet.satellite import SatelliteNode, collect_telemetry, execute_fleet_upgrade
 from gemini_app.fleet.mothership import MothershipServer
 from gemini_app.fleet.hud import SatelliteHUD, clip_str, render_meter_bar
+import gemini_app.fleet.security as fleet_sec
 from gemini_app.fleet.telemetry import (
     collect_mothership_telemetry,
     get_cpu_and_mem_vitals,
@@ -17,6 +18,7 @@ from gemini_app.fleet.telemetry import (
     get_persisted_cognitive_state,
     update_cognitive_state,
 )
+import gemini_app.fleet.nodes as fleet_nodes
 from gemini_app.fleet.nodes import (
     execute_ssh_rescue,
     get_dieablo_ssh_key,
@@ -32,6 +34,44 @@ from gemini_app.fleet.autostart import (
     remove_autostart,
 )
 from gemini_app.mind.screen import MindMapScreen, format_fleet_nodes_markdown
+
+
+class TestFleetSecurity(unittest.TestCase):
+    def test_key_generation_and_loading(self) -> None:
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            kp = Path(td) / "fleet.key"
+            k1 = fleet_sec.get_or_create_fleet_key(kp)
+            self.assertEqual(len(k1), 64)  # 32 bytes hex
+            k2 = fleet_sec.get_or_create_fleet_key(kp)
+            self.assertEqual(k1, k2)
+
+    def test_challenge_response_verification(self) -> None:
+        key = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        node_id = "test-node"
+        nonce, ts = fleet_sec.generate_challenge()
+        sig = fleet_sec.compute_auth_signature(key, node_id, nonce, ts)
+        self.assertTrue(fleet_sec.verify_auth_signature(key, node_id, nonce, ts, sig))
+
+        # Rejects tampered signature
+        self.assertFalse(fleet_sec.verify_auth_signature(key, node_id, nonce, ts, "bad" + sig[3:]))
+
+        # Rejects different node_id
+        self.assertFalse(fleet_sec.verify_auth_signature(key, "other-node", nonce, ts, sig))
+
+        # Rejects expired timestamp (> drift)
+        self.assertFalse(fleet_sec.verify_auth_signature(key, node_id, nonce, ts - 120, sig))
+
+    def test_command_signature_verification(self) -> None:
+        key = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        node_id = "test-node"
+        action = "fleet_upgrade"
+        ts = time.time()
+        sig = fleet_sec.compute_command_signature(key, action, node_id, ts)
+        self.assertTrue(fleet_sec.verify_command_signature(key, action, node_id, ts, sig))
+
+        # Rejects forged action
+        self.assertFalse(fleet_sec.verify_command_signature(key, "exec", node_id, ts, sig))
 
 
 class TestFleetProtocol(unittest.TestCase):
@@ -146,11 +186,26 @@ class TestFleetNetwork(unittest.TestCase):
         sock.close()
 
     def setUp(self) -> None:
-        self.server = MothershipServer(host="127.0.0.1", port=self.test_port, auto_broadcast_telemetry=False)
+        import tempfile
+        self._temp_dir = tempfile.TemporaryDirectory()
+        t_path = Path(self._temp_dir.name)
+        self._orig_fleet_dir = fleet_nodes.FLEET_DIR
+        self._orig_registry_file = fleet_nodes.NODES_REGISTRY_FILE
+        self._orig_active_file = fleet_nodes.ACTIVE_NODES_FILE
+        fleet_nodes.FLEET_DIR = t_path
+        fleet_nodes.NODES_REGISTRY_FILE = t_path / "nodes_registry.json"
+        fleet_nodes.ACTIVE_NODES_FILE = t_path / "active_nodes.json"
+
+        self.server = MothershipServer(host="127.0.0.1", port=0, auto_broadcast_telemetry=False)
         self.assertTrue(self.server.start())
+        self.test_port = self.server.port
 
     def tearDown(self) -> None:
         self.server.stop()
+        fleet_nodes.FLEET_DIR = self._orig_fleet_dir
+        fleet_nodes.NODES_REGISTRY_FILE = self._orig_registry_file
+        fleet_nodes.ACTIVE_NODES_FILE = self._orig_active_file
+        self._temp_dir.cleanup()
 
     def test_satellite_mothership_interaction(self) -> None:
         node_id = "test-satellite-unit"
@@ -230,8 +285,47 @@ class TestFleetNetwork(unittest.TestCase):
         nodes_after = self.server.list_nodes()
         self.assertEqual(len(nodes_after), 0)
 
+    def test_rogue_node_rejection(self) -> None:
+        """Verifies that an unauthorized node with an invalid signature is rejected."""
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.connect(("127.0.0.1", self.test_port))
+        # Read challenge
+        data = s.recv(2048).decode("utf-8")
+        self.assertIn("challenge", data)
+
+        # Send invalid signature
+        rogue_auth = FleetMessage(
+            msg_type=FleetMessage.TYPE_AUTH,
+            node_id="rogue-imposter-node",
+            payload={"signature": "bad_signature_0000000000000000", "timestamp": time.time()},
+        )
+        s.sendall(rogue_auth.serialize())
+        resp_data = s.recv(2048).decode("utf-8")
+        self.assertIn(FleetMessage.TYPE_AUTH_FAIL, resp_data)
+        s.close()
+
+        # Rogue node must not appear in server list
+        self.assertEqual(len(self.server.list_nodes()), 0)
+
 
 class TestFleetNodesAndAutostart(unittest.TestCase):
+    def setUp(self) -> None:
+        import tempfile
+        self._temp_dir = tempfile.TemporaryDirectory()
+        t_path = Path(self._temp_dir.name)
+        self._orig_fleet_dir = fleet_nodes.FLEET_DIR
+        self._orig_registry_file = fleet_nodes.NODES_REGISTRY_FILE
+        self._orig_active_file = fleet_nodes.ACTIVE_NODES_FILE
+        fleet_nodes.FLEET_DIR = t_path
+        fleet_nodes.NODES_REGISTRY_FILE = t_path / "nodes_registry.json"
+        fleet_nodes.ACTIVE_NODES_FILE = t_path / "active_nodes.json"
+
+    def tearDown(self) -> None:
+        fleet_nodes.FLEET_DIR = self._orig_fleet_dir
+        fleet_nodes.NODES_REGISTRY_FILE = self._orig_registry_file
+        fleet_nodes.ACTIVE_NODES_FILE = self._orig_active_file
+        self._temp_dir.cleanup()
+
     def test_get_dieablo_ssh_key(self) -> None:
         key = get_dieablo_ssh_key()
         # Even if on test environment without ~/.ssh/dieablo101, it either returns None or a Path

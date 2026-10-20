@@ -21,6 +21,10 @@ class FleetMessage:
     TYPE_ERROR = "error"
     TYPE_TELEMETRY = "telemetry"
     TYPE_EVENT = "event"
+    TYPE_CHALLENGE = "challenge"
+    TYPE_AUTH = "auth"
+    TYPE_AUTH_OK = "auth_ok"
+    TYPE_AUTH_FAIL = "auth_fail"
 
     def __init__(
         self,

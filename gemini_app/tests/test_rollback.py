@@ -6,6 +6,8 @@ import tempfile
 import unittest
 
 from gemini_app.storage.rollback import (
+    check_reboot_guard,
+    create_safety_checkpoint,
     get_current_git_commit,
     get_last_stable_commit,
     is_reboot_in_progress,
@@ -13,7 +15,9 @@ from gemini_app.storage.rollback import (
     mark_startup_successful,
     perform_git_rollback,
     record_stable_commit,
+    restore_safety_checkpoint,
     run_with_guardian,
+    verify_offline_preflight,
 )
 
 
@@ -61,6 +65,67 @@ class TestRollbackEngine(unittest.TestCase):
 
         with self.assertRaises(RuntimeError):
             run_with_guardian(crashing_app)
+
+    def test_verify_offline_preflight_valid(self):
+        ok, msg = verify_offline_preflight()
+        self.assertTrue(ok)
+        self.assertIn("Pre-flight verification passed", msg)
+
+    def test_verify_offline_preflight_syntax_error(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            bad_dir = Path(tmp_dir) / "gemini_app"
+            bad_dir.mkdir()
+            bad_file = bad_dir / "broken.py"
+            bad_file.write_text("def broken_syntax(:\n")
+            ok, msg = verify_offline_preflight(cwd=tmp_dir)
+            self.assertFalse(ok)
+            self.assertIn("failed", msg.lower())
+
+    def test_check_reboot_guard(self):
+        # Fresh state -> allowed
+        ok, msg = check_reboot_guard(min_interval_seconds=2.0)
+        self.assertTrue(ok)
+
+        # Mark reboot just now -> rate-limited
+        mark_reboot_in_progress()
+        ok, msg = check_reboot_guard(min_interval_seconds=2.0)
+        self.assertFalse(ok)
+        self.assertIn("rate-limited", msg.lower())
+
+    def test_safety_checkpoints(self):
+        ckpt = create_safety_checkpoint(label="unit_test_checkpoint")
+        self.assertIn("id", ckpt)
+        self.assertEqual(ckpt["label"], "unit_test_checkpoint")
+
+        # Non-existent checkpoint restore returns False cleanly
+        ok, msg = restore_safety_checkpoint("non_existent_ckpt")
+        self.assertFalse(ok)
+        self.assertIn("not found", msg.lower())
+
+    def test_safe_mode_consecutive_boot_failures(self):
+        # Simulate consecutive startup crashes reaching Safe Mode threshold
+        import os
+        os.environ["GEMINI_TESTING"] = "1"
+        try:
+            def crashing():
+                raise RuntimeError("Crash on start")
+
+            # 1st crash
+            with self.assertRaises(RuntimeError):
+                run_with_guardian(crashing)
+            # 2nd crash
+            with self.assertRaises(RuntimeError):
+                run_with_guardian(crashing)
+            # 3rd crash -> should activate Safe Mode (and return cleanly without re-raising in test mode)
+            run_with_guardian(crashing)
+
+            # Successful startup resets counter
+            mark_startup_successful()
+            from gemini_app.storage.rollback import read_state
+            self.assertEqual(read_state().get("boot_failures_count"), 0)
+        finally:
+            os.environ.pop("GEMINI_TESTING", None)
+
 
 
 if __name__ == "__main__":

@@ -108,3 +108,8 @@ class AppLockController:
             self._active_reasons.remove(reason)
             if not self.is_locked:
                 self.app.post_message(AppLockReleased(reason))
+
+    def release_all(self, reason: str = "emergency_interrupt") -> None:
+        if self.is_locked:
+            self._active_reasons.clear()
+            self.app.post_message(AppLockReleased(reason))

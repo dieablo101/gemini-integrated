@@ -308,42 +308,24 @@ class TestNotesManager(unittest.TestCase):
 
 class TestSilentQuotaReconnect(unittest.TestCase):
     def test_extract_retry_delay(self):
-        import re
+        from gemini_app.helpers import extract_retry_delay
 
-        def _extract_retry_delay(err_text: str) -> float | None:
-            m = re.search(r"(?:retry\s+(?:in|after)|wait)\s+([\d\.]+)\s*(?:seconds|second|sec|s\b)", err_text, re.IGNORECASE)
-            if m:
-                try:
-                    return float(m.group(1))
-                except ValueError:
-                    pass
-            m = re.search(r"seconds:\s*([\d\.]+)", err_text, re.IGNORECASE)
-            if m:
-                try:
-                    return float(m.group(1))
-                except ValueError:
-                    pass
-            m = re.search(r"retry_delay[^{]*\{[^}]*seconds:\s*([\d\.]+)", err_text, re.IGNORECASE)
-            if m:
-                try:
-                    return float(m.group(1))
-                except ValueError:
-                    pass
-            return None
-
-        self.assertEqual(_extract_retry_delay("Quota exceeded. Please retry in 18s."), 18.0)
-        self.assertEqual(_extract_retry_delay("Rate limit reached. Please retry after 12.5s"), 12.5)
-        self.assertEqual(_extract_retry_delay("ResourceExhausted: 429 [retry_delay { seconds: 20 }]"), 20.0)
-        self.assertEqual(_extract_retry_delay("429 wait 5 seconds"), 5.0)
-        self.assertIsNone(_extract_retry_delay("Random quota error without timing hint"))
+        self.assertEqual(extract_retry_delay("Quota exceeded. Please retry in 18s."), 18.0)
+        self.assertEqual(extract_retry_delay("Rate limit reached. Please retry after 12.5s"), 12.5)
+        self.assertEqual(extract_retry_delay("ResourceExhausted: 429 [retry_delay { seconds: 20 }]"), 20.0)
+        self.assertEqual(extract_retry_delay("retry_delay { seconds: 14 nanos: 500000000 }"), 14.5)
+        self.assertEqual(extract_retry_delay("429 wait 5 seconds"), 5.0)
+        self.assertIsNone(extract_retry_delay("Random quota error without timing hint"))
 
     def test_smooth_countdown_math(self):
         import math
+        from gemini_app.helpers import format_reconnect_countdown
 
         target_time = time.monotonic() + 5.0
-        # Rem at t=0 should be 5
-        rem = max(0, int(math.ceil(target_time - time.monotonic())))
-        self.assertIn(rem, (4, 5))
+        rem = max(0.0, target_time - time.monotonic())
+        countdown_str = format_reconnect_countdown(rem)
+        self.assertTrue(countdown_str.endswith("s"))
+        self.assertTrue(4.0 <= rem <= 5.0)
 
         # At expiration, rem should be 0
         rem_expired = max(0, int(math.ceil(time.monotonic() - 1.0 - time.monotonic())))

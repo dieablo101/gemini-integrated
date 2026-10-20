@@ -708,11 +708,12 @@ class FeedArea(VerticalScroll):
             self.request_wall_shift(turn_idx, discrete_dock=True)
 
     async def append_message(self, sender: str, text: str, jump_to_start: bool = False) -> None:
+        safe_text = text if (text and text.strip()) else "✓ Action completed."
         new_idx = len(self._all_messages)
         turn_data = {
             "turn_id": f"turn_{uuid4().hex[:8]}",
             "role": "user" if sender == CURRENT_USER else "model",
-            "text": text,
+            "text": safe_text,
         }
         self._all_messages.append(turn_data)
 

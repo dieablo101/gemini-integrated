@@ -201,3 +201,43 @@ class TestUIApp(unittest.IsolatedAsyncioTestCase):
             await pilot.click("#git_setup_cancel_btn")
             await pilot.pause()
             self.assertNotIsInstance(app.screen, GitSetupModal)
+
+    async def test_emergency_interrupt_action(self):
+        app = ChatApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("space")
+            # Put app into reconnecting phase
+            app._request_phase = "reconnecting"
+            app._reconnect_target_time = 999999.0
+            app.lock.acquire("test")
+
+            # Fire emergency interrupt
+            app.action_emergency_interrupt()
+            await pilot.pause()
+
+            self.assertTrue(app._abort_requested)
+            self.assertEqual(app._request_phase, "idle")
+            self.assertEqual(app._reconnect_target_time, 0.0)
+            self.assertFalse(app.lock.is_locked)
+
+            # Test command registry dispatch
+            self.assertIn("abort", app._commands_registry)
+            self.assertIn("interrupt", app._commands_registry)
+            self.assertIn("cancel", app._commands_registry)
+
+    async def test_blank_message_prevention(self):
+        from gemini_app.events import RequestFinished
+        app = ChatApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("space")
+            init_turns = len(app.history)
+
+            # Post a blank message RequestFinished
+            app.post_message(RequestFinished("", 0.2, 0))
+            await pilot.pause()
+
+            self.assertEqual(len(app.history), init_turns + 1)
+            last_turn = app.history[-1]
+            self.assertTrue(bool(last_turn["text"].strip()))
+            self.assertNotEqual(last_turn["text"].strip(), "")
+

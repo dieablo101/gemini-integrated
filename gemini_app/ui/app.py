@@ -14,6 +14,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from typing import Callable
 from uuid import uuid4
@@ -77,6 +78,8 @@ from gemini_app.helpers import (
     build_ascii_tree,
     cast_ray_from_center,
     detect_language,
+    extract_retry_delay,
+    format_reconnect_countdown,
     get_git_files_catalog,
     truncate_wire_snippets,
     write_code_to_disk,
@@ -95,10 +98,14 @@ from gemini_app.mind.screen import MindMapScreen
 from gemini_app.storage.memory_index import MemoryIndex
 from gemini_app.storage.notes_manager import NoteItem, NotesManager, sanitize_working_notes
 from gemini_app.storage.rollback import (
+    check_reboot_guard,
+    create_safety_checkpoint,
     mark_reboot_in_progress,
     mark_startup_successful,
     perform_git_rollback,
     record_stable_commit,
+    restore_safety_checkpoint,
+    verify_offline_preflight,
 )
 from gemini_app.storage.state_backup import (
     check_and_run_daily_backup,
@@ -226,6 +233,11 @@ class ChatApp(App):
         self._reconnect_target_time: float = 0.0
         self._reconnect_attempt: int = 0
         self._reconnect_max_retries: int = 0
+        self._abort_requested: bool = False
+
+        self._last_heartbeat_time: float = time.monotonic()
+        self._watchdog_thread: threading.Thread | None = None
+        self._watchdog_running: bool = False
 
         self._nav_indicator_action: str | None = None
         self._nav_indicator_palette: str | None = None
@@ -235,6 +247,9 @@ class ChatApp(App):
             "ui-theme": self._cmd_ui_theme,
             "reboot": lambda arg: self.action_reboot(status_report=arg if arg else None),
             "restart": lambda arg: self.action_reboot(status_report=arg if arg else None),
+            "abort": lambda _: self.action_emergency_interrupt(),
+            "interrupt": lambda _: self.action_emergency_interrupt(),
+            "cancel": lambda _: self.action_emergency_interrupt(),
             "api-key": lambda _: self.action_configure_api_key(),
             "git-setup": lambda _: self.action_configure_git(),
             "credentials": lambda _: self.action_configure_git(),
@@ -719,6 +734,9 @@ class ChatApp(App):
         elif key in ("ctrl+g", "g") or char == "g":
             self.action_open_git_tree()
             return True
+        elif key in ("ctrl+k", "k") or char == "k":
+            self.action_emergency_interrupt()
+            return True
         # for later exploration by gemini
         # elif key in ("period", "full_stop", ".") or char == ".":
         #     self.action_fork_chat()
@@ -1007,6 +1025,7 @@ class ChatApp(App):
         if self.size and self.size.width <= MOBILE_BREAKPOINT and self.screen:
             self.screen.add_class("-mobile")
 
+        self._start_heartbeat_watchdog()
         await self.start_socket_server()
         self.push_screen(BootScreen())
         # Check daily backup interval every hour
@@ -1160,6 +1179,7 @@ class ChatApp(App):
         self._reconnect_max_retries = 0
 
     def _tick_status(self) -> None:
+        self._last_heartbeat_time = time.monotonic()
         if self._request_phase == "idle":
             return
 
@@ -1171,10 +1191,7 @@ class ChatApp(App):
             if self._reconnect_target_time > 0:
                 rem_sec = max(0.0, self._reconnect_target_time - time.monotonic())
                 if rem_sec > 0.05:
-                    if rem_sec < 10.0:
-                        rem_str = f"{rem_sec:.1f}s"
-                    else:
-                        rem_str = f"{int(math.ceil(rem_sec))}s"
+                    rem_str = format_reconnect_countdown(rem_sec)
                     status_text = f"{frame} Quota reached — reconnecting silently in {rem_str} (retry {self._reconnect_attempt}/{self._reconnect_max_retries})"
                 else:
                     status_text = f"{frame} Quota reached — reconnecting now (retry {self._reconnect_attempt}/{self._reconnect_max_retries})..."
@@ -1231,11 +1248,15 @@ class ChatApp(App):
     async def on_request_finished(self, event: RequestFinished) -> None:
         self._stop_status_ticker()
 
+        full_text = (event.full_text or "").strip()
+        if not full_text:
+            full_text = "✓ Action completed."
+
         feed = self.query_one("#feed", FeedArea)
-        await feed.append_message("gemini", event.full_text, jump_to_start=True)
+        await feed.append_message("gemini", full_text, jump_to_start=True)
 
         new_turn_id = f"turn_{uuid4().hex[:8]}"
-        self.history.append({"turn_id": new_turn_id, "role": "model", "text": event.full_text})
+        self.history.append({"turn_id": new_turn_id, "role": "model", "text": full_text})
         self.current_chat_last_index = max(0, len(self.history) - 1)
         self.current_chat_center_marker = new_turn_id
         self.save_current_chat()
@@ -1409,9 +1430,60 @@ class ChatApp(App):
             except Exception:
                 pass
 
-    def action_reboot(self, status_report: str | None = None) -> None:
-        """Saves current state and notes cleanly, marks reboot safety flag, and execs the application process."""
+    def action_emergency_interrupt(self) -> None:
+        """Emergency interrupt: immediately cancels active requests, retry loops, and releases locks."""
+        self._abort_requested = True
+        self._reconnect_target_time = 0.0
+        self._request_phase = "idle"
+        self._request_details = ""
+        self._stop_status_ticker()
+        self.set_status_text("⚡ Emergency interrupt triggered: Active task halted.")
+        self.notify("Emergency interrupt: Ongoing generation or reconnect aborted.", severity="warning")
+        if self.lock.is_locked:
+            if hasattr(self.lock, "release_all"):
+                self.lock.release_all("emergency_interrupt")
+            else:
+                for r in list(getattr(self.lock, "_active_reasons", [])):
+                    self.lock.release(r)
         try:
+            self.query_one("#input").focus()
+        except Exception:
+            pass
+
+    def _start_heartbeat_watchdog(self) -> None:
+        self._watchdog_running = True
+        self._last_heartbeat_time = time.monotonic()
+
+        def _watchdog_loop():
+            while self._watchdog_running:
+                time.sleep(2.0)
+                if not self._watchdog_running:
+                    break
+                gap = time.monotonic() - self._last_heartbeat_time
+                if gap > 25.0:
+                    try:
+                        log_path = GEMINI_HOME / "watchdog.log"
+                        with open(log_path, "a", encoding="utf-8") as f:
+                            f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Heartbeat warning: UI thread unresponsive for {gap:.1f}s\n")
+                    except Exception:
+                        pass
+
+        t = threading.Thread(target=_watchdog_loop, daemon=True, name="HeartbeatWatchdog")
+        t.start()
+        self._watchdog_thread = t
+
+    def _stop_heartbeat_watchdog(self) -> None:
+        self._watchdog_running = False
+
+    def action_reboot(self, status_report: str | None = None) -> None:
+        """Saves current state and notes cleanly, checks reboot guard, marks reboot safety flag, and execs the application process."""
+        can_reboot, reason = check_reboot_guard()
+        if not can_reboot:
+            self.notify(f"Reboot blocked: {reason}", severity="error")
+            return
+
+        try:
+            create_safety_checkpoint(label=f"pre_reboot_{int(time.time())}")
             self.flush_current_notes()
             self._do_notes_flush()
             self.save_current_chat()
@@ -1475,6 +1547,7 @@ class ChatApp(App):
         self.exit()
 
     def on_unmount(self) -> None:
+        self._stop_heartbeat_watchdog()
         self._stop_status_ticker()
         if self._c_c_timer:
             self._c_c_timer.stop()
@@ -2724,6 +2797,7 @@ class ChatApp(App):
 
     @work(exclusive=True, thread=True)
     def ask_gemini(self, is_mind_steer: bool = False, steer_instruction: str = "") -> None:
+        self._abort_requested = False
         chat_id_snapshot = self.current_chat_id
         working_dir_snapshot = self.get_effective_working_dir()
 
@@ -2736,6 +2810,13 @@ class ChatApp(App):
 
         # 1. Initialize Bilateral Tools via ToolRegistry
         def _schedule_reboot(delay_seconds: float = 1.5, status_report: str = "") -> dict:
+            can_reboot, reason = check_reboot_guard()
+            if not can_reboot:
+                return {
+                    "status": "blocked",
+                    "reason": reason,
+                    "message": f"Console reboot blocked by safety guard: {reason}",
+                }
             delay = max(0.5, float(delay_seconds))
             report = status_report.strip() if status_report else "✓ Reboot complete: Console reloaded, session restored, UI operational."
             def _trigger():
@@ -2744,7 +2825,9 @@ class ChatApp(App):
             self.app.call_from_thread(_trigger)
             return {
                 "status": "scheduled",
-                "message": f"Console reboot scheduled in {delay:.1f} seconds. Active turn and state will be committed before restart."
+                "delay_seconds": delay,
+                "report": report,
+                "message": f"Console reboot scheduled in {delay:.1f} seconds. Active turn and state will be committed before restart.",
             }
 
         def _schedule_snapshot(label: str = "") -> dict:
@@ -3088,35 +3171,17 @@ class ChatApp(App):
                 ),
             )
 
-            # Helper for extracting retry duration from quota error text
-            def _extract_retry_delay(err_text: str) -> float | None:
-                m = re.search(r"(?:retry\s+(?:in|after)|wait)\s+([\d\.]+)\s*(?:seconds|second|sec|s\b)", err_text, re.IGNORECASE)
-                if m:
-                    try:
-                        return float(m.group(1))
-                    except ValueError:
-                        pass
-                m = re.search(r"seconds:\s*([\d\.]+)", err_text, re.IGNORECASE)
-                if m:
-                    try:
-                        return float(m.group(1))
-                    except ValueError:
-                        pass
-                m = re.search(r"retry_delay[^{]*\{[^}]*seconds:\s*([\d\.]+)", err_text, re.IGNORECASE)
-                if m:
-                    try:
-                        return float(m.group(1))
-                    except ValueError:
-                        pass
-                return None
-
             # Helper for silent reconnection and resume on quota limit / ResourceExhausted
             def _send_with_silent_quota_retry(send_call: Callable[[], Any], max_retries: int = 5, base_delay: float = 3.0) -> Any:
                 attempt = 0
                 while True:
+                    if getattr(self, "_abort_requested", False):
+                        return None
                     try:
                         return send_call()
                     except Exception as call_err:
+                        if getattr(self, "_abort_requested", False):
+                            return None
                         err_text = str(call_err)
                         is_quota = (
                             "ResourceExhausted" in err_text
@@ -3129,9 +3194,9 @@ class ChatApp(App):
                             raise call_err
 
                         attempt += 1
-                        delay_hint = _extract_retry_delay(err_text)
+                        delay_hint = extract_retry_delay(err_text)
                         if delay_hint is not None and delay_hint > 0:
-                            wait_sec = max(delay_hint + 0.25, 0.5)
+                            wait_sec = max(delay_hint + 0.1, 0.5)
                         else:
                             wait_sec = base_delay * (2 ** (attempt - 1))
 
@@ -3148,11 +3213,11 @@ class ChatApp(App):
                         self.app.call_from_thread(_update_reconnect_ui)
 
                         while time.monotonic() < target_time:
-                            if self.current_chat_id != chat_id_snapshot:
+                            if getattr(self, "_abort_requested", False) or self.current_chat_id != chat_id_snapshot:
                                 return None
                             time.sleep(0.02)
 
-                        if self.current_chat_id != chat_id_snapshot:
+                        if getattr(self, "_abort_requested", False) or self.current_chat_id != chat_id_snapshot:
                             return None
 
                         def _update_retrying_ui(att=attempt, mr=max_retries):
@@ -3173,6 +3238,8 @@ class ChatApp(App):
             tool_iterations = 0
             max_tool_iterations = 10
             while response.candidates and response.candidates[0].content.parts and tool_iterations < max_tool_iterations:
+                if getattr(self, "_abort_requested", False):
+                    return
                 part = response.candidates[0].content.parts[0]
                 if part.function_call:
                     tool_iterations += 1
@@ -3252,6 +3319,12 @@ class ChatApp(App):
                     )
                 except Exception:
                     pass
+
+            if not clean_reply.strip():
+                if gemini_state:
+                    clean_reply = f"✓ {gemini_state}"
+                else:
+                    clean_reply = "✓ Action completed successfully."
 
             elapsed = max(time.monotonic() - start_time, 0.1)
             total_words = len(clean_reply.split())

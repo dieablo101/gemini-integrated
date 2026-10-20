@@ -276,3 +276,88 @@ def truncate_wire_snippets(text: str, max_lines: int = MAX_SNIPPET_LINES_ON_WIRE
         return m.group(0)
 
     return pattern.sub(repl, text)
+
+
+def extract_retry_delay(err: str | Exception) -> float | None:
+    """Extracts high-precision retry countdown delay (seconds + nanos) from quota / rate limit errors."""
+    if isinstance(err, Exception):
+        err_str = f"{err} {getattr(err, 'message', '')} {getattr(err, 'details', '')}"
+    else:
+        err_str = str(err)
+
+    # 1. Check for protobuf style: retry_delay { seconds: X nanos: Y } or seconds: X nanos: Y
+    proto_m = re.search(r"seconds:\s*(\d+)(?:\s+nanos:\s*(\d+))?", err_str, re.IGNORECASE)
+    if proto_m:
+        try:
+            sec = float(proto_m.group(1))
+            nanos_val = proto_m.group(2)
+            if nanos_val:
+                sec += float(nanos_val) / 1e9
+            if sec > 0:
+                return round(sec, 3)
+        except (ValueError, TypeError):
+            pass
+
+    # 2. Check for JSON / header style: "quotaResetDelay": "15s" or "retryDelay": "15.5s" or resetDelay
+    json_m = re.search(
+        r'["\']?(?:quotaResetDelay|retryDelay|resetDelay|retry_delay|quota_reset_delay)["\']?\s*:\s*["\']?(?:(\d+)\s*m)?\s*([\d\.]+)\s*s?["\']?',
+        err_str,
+        re.IGNORECASE,
+    )
+    if json_m:
+        try:
+            mins = float(json_m.group(1)) if json_m.group(1) else 0.0
+            secs = float(json_m.group(2))
+            val = mins * 60.0 + secs
+            if val > 0:
+                return round(val, 3)
+        except (ValueError, TypeError):
+            pass
+
+    # 3. Check for natural language hints: "Please retry in 18.5s" / "retry after 12 seconds" / "wait 5.2s"
+    nl_m = re.search(
+        r"(?:retry\s+(?:in|after)|wait|reset\s+(?:in|after))\s+(?:(\d+)\s*m(?:inutes?|in)?)?\s*([\d\.]+)\s*(?:seconds|second|sec|s\b)",
+        err_str,
+        re.IGNORECASE,
+    )
+    if nl_m:
+        try:
+            mins = float(nl_m.group(1)) if nl_m.group(1) else 0.0
+            secs = float(nl_m.group(2))
+            val = mins * 60.0 + secs
+            if val > 0:
+                return round(val, 3)
+        except (ValueError, TypeError):
+            pass
+
+    # 4. Check for HTTP Retry-After header: "Retry-After: 30"
+    ra_m = re.search(r'(?:Retry-After|retry_after|retryAfter):\s*["\']?([\d\.]+)', err_str, re.IGNORECASE)
+    if ra_m:
+        try:
+            val = float(ra_m.group(1))
+            if val > 0:
+                return round(val, 3)
+        except (ValueError, TypeError):
+            pass
+
+    return None
+
+
+def format_reconnect_countdown(remaining_seconds: float) -> str:
+    """Formats reconnect countdown with sub-second precision calibration."""
+    try:
+        rem_f = float(remaining_seconds)
+        if rem_f != rem_f or rem_f == float("inf") or rem_f == float("-inf"):
+            return "0.0s"
+    except (ValueError, TypeError):
+        return "0.0s"
+
+    rem = max(0.0, rem_f)
+    if rem < 0.05:
+        return "0.0s"
+    if rem < 60.0:
+        return f"{rem:.1f}s"
+    mins = int(rem // 60)
+    secs = rem % 60
+    return f"{mins}m {secs:.1f}s"
+

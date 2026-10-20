@@ -8,6 +8,8 @@ from gemini_app.helpers import (
     build_ascii_tree,
     cast_ray_from_center,
     detect_language,
+    extract_retry_delay,
+    format_reconnect_countdown,
     truncate_wire_snippets,
     write_code_to_disk,
 )
@@ -88,6 +90,75 @@ class TestHelpers(unittest.TestCase):
             out_file = write_code_to_disk(tmpdir, "subdir/test.py", "print('hello')\n")
             self.assertTrue(out_file.exists())
             self.assertEqual(out_file.read_text(encoding="utf-8"), "print('hello')\n")
+
+    def test_extract_retry_delay_high_precision(self):
+        # Protobuf with seconds + nanos
+        self.assertEqual(
+            extract_retry_delay("ResourceExhausted: 429 [retry_delay { seconds: 12 nanos: 500000000 }]"),
+            12.5,
+        )
+        self.assertEqual(
+            extract_retry_delay("seconds: 7 nanos: 250000000"),
+            7.25,
+        )
+        # Protobuf with only seconds
+        self.assertEqual(
+            extract_retry_delay("retry_delay { seconds: 20 }"),
+            20.0,
+        )
+        # JSON / quotaResetDelay / retryDelay
+        self.assertEqual(
+            extract_retry_delay('{"error": {"quotaResetDelay": "15.5s"}}'),
+            15.5,
+        )
+        self.assertEqual(
+            extract_retry_delay('{"retryDelay": "8s"}'),
+            8.0,
+        )
+        # Natural language patterns
+        self.assertEqual(
+            extract_retry_delay("Resource exhausted. Please retry in 18.2s."),
+            18.2,
+        )
+        self.assertEqual(
+            extract_retry_delay("Rate limit exceeded. Please retry after 14 seconds."),
+            14.0,
+        )
+        self.assertEqual(
+            extract_retry_delay("Rate limit hit, wait 4.5 seconds"),
+            4.5,
+        )
+        # Retry-After header
+        self.assertEqual(
+            extract_retry_delay("HTTP/1.1 429 Too Many Requests\nRetry-After: 30"),
+            30.0,
+        )
+        # Exception object
+        exc = Exception("Quota exceeded, retry in 10s")
+        self.assertEqual(extract_retry_delay(exc), 10.0)
+        # Composite minutes + seconds
+        self.assertEqual(extract_retry_delay('{"retryDelay": "1m25.4s"}'), 85.4)
+        # Google RPC retryInfo format
+        self.assertEqual(
+            extract_retry_delay("{'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '18.423s'}"),
+            18.423,
+        )
+        # None when no hint is present
+        self.assertIsNone(extract_retry_delay("Random unparseable error"))
+
+    def test_format_reconnect_countdown(self):
+        self.assertEqual(format_reconnect_countdown(0.0), "0.0s")
+        self.assertEqual(format_reconnect_countdown(-5.0), "0.0s")
+        self.assertEqual(format_reconnect_countdown(float("nan")), "0.0s")
+        self.assertEqual(format_reconnect_countdown(float("inf")), "0.0s")
+        self.assertEqual(format_reconnect_countdown(0.04), "0.0s")
+        self.assertEqual(format_reconnect_countdown(0.82), "0.8s")
+        self.assertEqual(format_reconnect_countdown(12.5), "12.5s")
+        self.assertEqual(format_reconnect_countdown(59.94), "59.9s")
+        self.assertEqual(format_reconnect_countdown(60.0), "1m 0.0s")
+        self.assertEqual(format_reconnect_countdown(75.32), "1m 15.3s")
+        self.assertEqual(format_reconnect_countdown(134.8), "2m 14.8s")
+
 
 
 if __name__ == "__main__":

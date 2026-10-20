@@ -111,6 +111,7 @@ class CommandsModal(ResponsiveModalScreen[None]):
             yield Label("[bold]C-c r[/]          : Save selected code snippet directly to disk", classes="cmd_row")
             yield Label("[bold]C-c f[/]          : Insert file content from disk as snippet", classes="cmd_row")
             yield Label("[bold]C-c g[/]          : Scan repository & open Git tree selector", classes="cmd_row")
+            yield Label("[bold]C-c k[/]          : Emergency Interrupt (halt active generation / retry)", classes="cmd_row")
             # for later exploration by gemini
             # yield Label("[bold]C-c .[/]          : Toggle Fork mode to fork turns", classes="cmd_row")
             yield Label("[bold]Alt+n / Alt+p[/]  : Navigate next / previous snippet", classes="cmd_row")
@@ -137,6 +138,7 @@ class CommandsModal(ResponsiveModalScreen[None]):
             yield Label("[bold]/state [tier][/]     : Introspect app state (visual|runtime|workflow|all)", classes="cmd_row")
             yield Label("[bold]/diff[/]             : Inspect git status and diff preview", classes="cmd_row")
             yield Label("[bold]/tokens[/]           : Session stats and token estimation", classes="cmd_row")
+            yield Label("[bold]/abort[/]            : Emergency interrupt active generation / retry countdown", classes="cmd_row")
             yield Label("[bold]/reboot[/]           : In-place console application restart", classes="cmd_row")
             yield Label("[bold]/clear[/]            : Clear chat feed", classes="cmd_row")
 

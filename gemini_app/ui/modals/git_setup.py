@@ -154,6 +154,7 @@ class GitSetupModal(ResponsiveModalScreen[Optional[Dict[str, Any]]]):
             # If no key was configured, generate/ensure the default cluster key
             cluster_k = get_or_create_cluster_ssh_key()
             if cluster_k:
+                save_cluster_key_path(cluster_k)
                 res["ssh_key_path"] = str(cluster_k)
 
         self.dismiss(res)

@@ -401,4 +401,11 @@ def run_preflight_bootstrap(workspace_dir: Optional[Path] = None, interactive_ap
         if venv_py != sys.executable and os.path.exists(venv_py):
             os.execv(venv_py, [venv_py] + sys.argv)
 
+    # 5. Ensure system ~/.sys folder and ssh_machine.sh are active
+    try:
+        from gemini_app.sys_machine import sync_system_ssh_machine
+        sync_system_ssh_machine()
+    except Exception:
+        pass
+
     return True

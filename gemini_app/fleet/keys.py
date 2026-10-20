@@ -60,6 +60,14 @@ def save_cluster_key_path(key_path: Path | str) -> bool:
         CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
         CONFIG_FILE.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
         CONFIG_FILE.chmod(0o600)
+
+        # Keep system-level ~/.sys/ssh_machine.sh in sync
+        try:
+            from gemini_app.sys_machine import sync_system_ssh_machine
+            sync_system_ssh_machine(clean_path)
+        except Exception:
+            pass
+
         return True
     except Exception:
         return False

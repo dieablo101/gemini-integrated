@@ -28,6 +28,7 @@ from gemini_app.fleet.keys import (
     save_cluster_key_path,
 )
 from gemini_app.projects import get_user_real_name, set_user_real_name
+from gemini_app.sys_machine import get_public_key, sync_system_ssh_machine
 from gemini_app.vault import is_vault_configured, set_vault_passkey, verify_vault_passkey
 
 DOTENV_FILE: Path = GEMINI_HOME / ".env"
@@ -352,6 +353,10 @@ def ensure_first_time_onboarding(interactive: bool = True) -> dict[str, Any]:
         cluster_k = get_or_create_cluster_ssh_key()
         if cluster_k:
             results["ssh_key_path"] = str(cluster_k)
+            try:
+                sync_system_ssh_machine(cluster_k)
+            except Exception:
+                pass
         mark_onboarding_completed()
         return results
 
@@ -433,37 +438,65 @@ def ensure_first_time_onboarding(interactive: bool = True) -> dict[str, Any]:
     else:
         results["vault_configured"] = True
 
-    # 5. Fleet / Cluster SSH Key Setup
+    # 5. Fleet / Cluster SSH Key Setup & SSH Machine Integration
     existing_ssh = get_stored_cluster_key_path()
+    resolved_ssh_key = None
     if not existing_ssh:
-        print("\nGemini Fleet allows distributed satellite nodes (iPad, Android, remote servers) with SSH rescue.")
+        print("\nGemini Fleet & Git SSH Key Setup")
+        print("Gemini configures a dedicated SSH Machine (~/.sys/ssh_machine.sh) to handle seamless Git and Fleet authentication.")
         default_cluster_key = GEMINI_HOME / "fleet" / "id_cluster"
-        prompt_ssh = f"Enter path to your SSH private key for node rescue [press Enter to auto-generate {default_cluster_key.name}]: "
+        prompt_ssh = f"Enter path to your SSH private key [press Enter to auto-generate {default_cluster_key.name}]: "
         try:
             ssh_input = input(prompt_ssh).strip()
             if ssh_input:
                 expanded = Path(os.path.expanduser(ssh_input)).resolve()
                 if expanded.is_file():
                     save_cluster_key_path(expanded)
-                    print(f"\033[1;32m✓ Configured cluster SSH key: {expanded}\033[0m")
+                    resolved_ssh_key = expanded
+                    print(f"\033[1;32m✓ Configured SSH key: {expanded}\033[0m")
                     results["ssh_key_path"] = str(expanded)
                 else:
-                    print(f"\033[1;33mSpecified path '{ssh_input}' not found. Generating default cluster keypair...\033[0m")
+                    print(f"\033[1;33mSpecified path '{ssh_input}' not found. Generating default Ed25519 keypair...\033[0m")
                     priv, _ = generate_cluster_keypair()
                     save_cluster_key_path(priv)
-                    print(f"\033[1;32m✓ Generated cluster Ed25519 keypair: {priv}\033[0m")
+                    resolved_ssh_key = priv
+                    print(f"\033[1;32m✓ Generated Ed25519 keypair: {priv}\033[0m")
                     results["ssh_key_path"] = str(priv)
             else:
                 priv, _ = generate_cluster_keypair()
                 save_cluster_key_path(priv)
-                print(f"\033[1;32m✓ Auto-generated cluster Ed25519 keypair: {priv}\033[0m")
+                resolved_ssh_key = priv
+                print(f"\033[1;32m✓ Auto-generated Ed25519 keypair: {priv}\033[0m")
                 results["ssh_key_path"] = str(priv)
         except (KeyboardInterrupt, EOFError):
             priv, _ = generate_cluster_keypair()
             save_cluster_key_path(priv)
+            resolved_ssh_key = priv
             results["ssh_key_path"] = str(priv)
     else:
+        resolved_ssh_key = Path(existing_ssh)
         results["ssh_key_path"] = str(existing_ssh)
+
+    # 6. Install & sync ~/.sys/ssh_machine.sh and hook into user shell profiles
+    try:
+        sync_info = sync_system_ssh_machine(resolved_ssh_key)
+        print(f"\033[1;32m✓ System machine directory ~/.sys initialized\033[0m")
+        print(f"\033[1;32m✓ SSH Machine configured in ~/.sys/ssh_machine.sh\033[0m")
+        if sync_info.get("hooked_shells"):
+            print(f"\033[1;32m✓ Hooked SSH Machine into shell startup: {', '.join(Path(s).name for s in sync_info['hooked_shells'])}\033[0m")
+
+        pub_text = sync_info.get("public_key")
+        if pub_text:
+            print("\n\033[1;36m─────────────────────────────────────────────────────────────────\033[0m")
+            print("\033[1;32m🔑 GitHub & Git SSH Public Key:\033[0m")
+            print(f"\033[1;37m{pub_text}\033[0m")
+            print("\033[1;36m─────────────────────────────────────────────────────────────────\033[0m")
+            print("When you're ready to upload code to GitHub:")
+            print("1. Copy the public key above")
+            print("2. In GitHub, go to: \033[4;34mhttps://github.com/settings/keys\033[0m -> Click 'New SSH key'")
+            print("3. Paste the key in, and you're ready to push code seamlessly!\n")
+    except Exception as e:
+        sys.stderr.write(f"Notice: SSH machine sync skipped: {e}\n")
 
     mark_onboarding_completed()
     print("\n\033[1;32m✓ First-time setup complete! Launching Gemini Integrated...\033[0m\n")

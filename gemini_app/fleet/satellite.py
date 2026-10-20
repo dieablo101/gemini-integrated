@@ -27,6 +27,39 @@ from gemini_app.fleet.security import (
 )
 
 
+def _get_git_info_fast(repo_dir: Optional[Path] = None) -> tuple[str, str]:
+    """Reads git branch and commit in pure Python without spawning subprocesses (safe for emulators)."""
+    base = repo_dir or Path.cwd()
+    git_dir = base / ".git"
+    if not git_dir.is_dir():
+        return "unknown", "unknown"
+    try:
+        head_file = git_dir / "HEAD"
+        if not head_file.exists():
+            return "unknown", "unknown"
+        head_content = head_file.read_text(encoding="utf-8").strip()
+        if head_content.startswith("ref:"):
+            ref_path = head_content.split(":", 1)[1].strip()
+            branch = ref_path.split("/")[-1]
+            ref_file = git_dir / ref_path
+            if ref_file.exists():
+                commit = ref_file.read_text(encoding="utf-8").strip()[:7]
+            else:
+                packed = git_dir / "packed-refs"
+                commit = "unknown"
+                if packed.exists():
+                    for line in packed.read_text(encoding="utf-8").splitlines():
+                        if line and not line.startswith(("#", "^")) and ref_path in line:
+                            commit = line.split()[0][:7]
+                            break
+            return commit, branch
+        elif len(head_content) >= 7:
+            return head_content[:7], "detached"
+    except Exception:
+        pass
+    return "unknown", "unknown"
+
+
 def collect_telemetry() -> Dict[str, Any]:
     """Collects system capabilities and status using standard library only."""
     uname = platform.uname()
@@ -42,28 +75,8 @@ def collect_telemetry() -> Dict[str, Any]:
         except Exception:
             pass
 
-    # Check git repository commit if running from inside git directory
-    git_commit = "unknown"
-    git_branch = "unknown"
-    try:
-        res = subprocess.run(
-            ["git", "rev-parse", "--short", "HEAD"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if res.returncode == 0:
-            git_commit = res.stdout.strip()
-        branch_res = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if branch_res.returncode == 0:
-            git_branch = branch_res.stdout.strip()
-    except Exception:
-        pass
+    # Read git status using pure Python to avoid fork/exec crashes in iSH emulator
+    git_commit, git_branch = _get_git_info_fast()
 
     return {
         "hostname": socket.gethostname(),
@@ -561,11 +574,10 @@ class SatelliteNode:
                             self.hud.show_toast(f"Upgrade failed: {res.get('error', 'unknown')}", duration=5.0)
                     elif key.lower() == "r":
                         # Force screen clear & redraw
-                        sys.stdout.write("\033[2J\033[H")
-                        sys.stdout.flush()
+                        self.hud.render_loop_tick(force_redraw=True)
 
-                # Low-power tick sleep
-                time.sleep(0.25)
+                # Low-power tick sleep (optimized for iOS/mobile battery and memory stability)
+                time.sleep(0.3)
 
                 # Reconnect attempt if disconnected
                 if not self._running:

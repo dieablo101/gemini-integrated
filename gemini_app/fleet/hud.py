@@ -122,6 +122,7 @@ class SatelliteHUD:
 
         self._running = False
         self._orig_termios = None
+        self._last_rendered_frame: Optional[str] = None
 
     def update_telemetry(self, data: Dict[str, Any]) -> None:
         """Updates internal mothership telemetry cache."""
@@ -342,10 +343,12 @@ class SatelliteHUD:
             pass
         return None
 
-    def render_loop_tick(self) -> Optional[str]:
-        """Renders one frame and checks for keypress, clearing to bottom to prevent ghost lines."""
+    def render_loop_tick(self, force_redraw: bool = False) -> Optional[str]:
+        """Renders one frame and checks for keypress, clearing to bottom only if content changed."""
         frame = self.render()
-        # Home cursor, clear to end of screen, and write frame cleanly
-        sys.stdout.write(f"\033[H\033[J{frame}")
-        sys.stdout.flush()
+        if force_redraw or frame != self._last_rendered_frame:
+            # Home cursor, clear to end of screen, and write frame cleanly
+            sys.stdout.write(f"\033[H\033[J{frame}")
+            sys.stdout.flush()
+            self._last_rendered_frame = frame
         return self.check_keyboard_input()

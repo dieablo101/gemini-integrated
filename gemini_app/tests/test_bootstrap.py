@@ -8,6 +8,7 @@ import unittest
 from gemini_app.bootstrap import (
     check_python_dependencies,
     detect_linux_distro,
+    is_constrained_platform,
     is_running_in_venv,
     persist_api_key,
 )
@@ -15,6 +16,15 @@ from gemini_app.system_deps import detect_os, parse_os_release
 
 
 class TestBootstrap(unittest.TestCase):
+    def test_is_constrained_platform_boolean(self):
+        result = is_constrained_platform()
+        self.assertIsInstance(result, bool)
+
+    def test_check_python_dependencies_without_genai(self):
+        # When check_genai=False, textual, rich, pyperclip are checked
+        missing = check_python_dependencies(check_genai=False)
+        self.assertEqual(missing, [])
+
     def test_detect_linux_distro_returns_structure(self):
         distro = detect_linux_distro()
         self.assertIn("system", distro)

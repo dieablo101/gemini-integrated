@@ -249,9 +249,49 @@ def is_running_in_venv() -> bool:
     )
 
 
-def check_python_dependencies() -> List[str]:
+def is_constrained_platform() -> bool:
+    """Detects whether running on a constrained, emulated, or 32-bit platform.
+
+    Catches platforms such as iPad iSH (32-bit musl), 32-bit ARM/Termux, or low-memory
+    emulators where Rust toolchains and PyPI source builds (e.g. pydantic-core) fail.
+    """
+    # 1. 32-bit architecture check
+    if sys.maxsize <= 2**32:
+        return True
+
+    # 2. iSH environment check
+    if os.path.exists("/proc/ish"):
+        return True
+    try:
+        u = platform.uname()
+        if "ish" in u.release.lower() or "ish" in u.version.lower():
+            return True
+    except Exception:
+        pass
+
+    # 3. iOS mounted paths
+    if Path("/mnt/ipad").exists():
+        return True
+
+    # 4. Termux on 32-bit or constrained Android
+    if os.environ.get("TERMUX_VERSION") or Path("/data/data/com.termux").exists():
+        if platform.machine().lower() in ("i386", "i686", "armv7l", "armv6l", "aarch32"):
+            return True
+
+    # 5. Machine architecture
+    if platform.machine().lower() in ("i386", "i686", "armv7l", "armv6l", "armhf"):
+        return True
+
+    return False
+
+
+def check_python_dependencies(check_genai: Optional[bool] = None) -> List[str]:
     """Returns list of missing critical Python package imports."""
-    required = ["textual", "google.genai", "rich", "pyperclip"]
+    required = ["textual", "rich", "pyperclip"]
+    if check_genai is None:
+        check_genai = not is_constrained_platform()
+    if check_genai:
+        required.append("google.genai")
     missing = []
     for pkg in required:
         try:
@@ -266,15 +306,19 @@ def ensure_virtualenv_and_dependencies(workspace_dir: Optional[Path] = None) -> 
 
     If not currently running in a venv, creates or locates .venv and returns its python binary path.
     """
+    constrained = is_constrained_platform()
     REQUIRED_PIP_PACKAGES = [
         "textual>=0.50.0",
-        "google-genai>=1.0.0",
         "rich>=13.0.0",
         "pyperclip>=1.8.0",
-        "setuptools>=61.0",
-        "wheel",
-        "build",
     ]
+    if not constrained:
+        REQUIRED_PIP_PACKAGES.extend([
+            "google-genai>=1.0.0",
+            "setuptools>=61.0",
+            "wheel",
+            "build",
+        ])
 
     # If running in an active venv and dependencies are present, all is good
     if is_running_in_venv():
@@ -282,7 +326,10 @@ def ensure_virtualenv_and_dependencies(workspace_dir: Optional[Path] = None) -> 
         if not missing:
             return sys.executable
         # Install missing dependencies into current venv
-        subprocess.run([sys.executable, "-m", "pip", "install", "-q"] + missing, check=False)
+        try:
+            subprocess.run([sys.executable, "-m", "pip", "install", "-q"] + missing, check=False)
+        except Exception:
+            pass
         return sys.executable
 
     # Locate or create .venv

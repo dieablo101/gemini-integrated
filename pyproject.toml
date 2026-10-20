@@ -46,6 +46,7 @@ dev = [
 [project.scripts]
 gemini-integrated = "gemini_app.main:main"
 gemini = "gemini_app.main:main"
+gemini-satellite = "gemini_app.fleet.satellite:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

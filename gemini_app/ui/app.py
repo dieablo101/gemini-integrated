@@ -20,8 +20,14 @@ from typing import Callable
 from uuid import uuid4
 
 import pyperclip
-from google import genai
-from google.genai import types
+try:
+    from google import genai
+    from google.genai import types
+    GENAI_AVAILABLE = True
+except ImportError:
+    genai = None  # type: ignore
+    types = None  # type: ignore
+    GENAI_AVAILABLE = False
 from rich.cells import cell_len
 from rich.console import RenderableType
 from rich.syntax import Syntax
@@ -184,7 +190,10 @@ class ChatApp(App):
         if api_key:
             os.environ["GEMINI_API_KEY"] = api_key
         try:
-            self.client = genai.Client()
+            if GENAI_AVAILABLE and genai is not None:
+                self.client = genai.Client()
+            else:
+                self.client = None
         except Exception:
             self.client = None
 
@@ -275,8 +284,11 @@ class ChatApp(App):
             if key:
                 save_gemini_api_key(key)
                 try:
-                    self.client = genai.Client()
-                    self.notify("Gemini API Key updated and saved to env variables & ~/.bashrc!", title="API Key Configured")
+                    if GENAI_AVAILABLE and genai is not None:
+                        self.client = genai.Client()
+                        self.notify("Gemini API Key updated and saved to env variables & ~/.bashrc!", title="API Key Configured")
+                    else:
+                        self.notify("Gemini API Key saved (GenAI SDK not installed on this device).", title="API Key Saved")
                 except Exception as e:
                     self.notify(f"Client init warning: {e}", severity="warning")
         self.push_screen(ApiKeyModal(), _on_key_submitted)
@@ -2873,6 +2885,16 @@ class ChatApp(App):
         self._abort_requested = False
         chat_id_snapshot = self.current_chat_id
         working_dir_snapshot = self.get_effective_working_dir()
+
+        if not GENAI_AVAILABLE or genai is None or types is None:
+            self.app.call_from_thread(
+                self.post_message,
+                RequestFailed(
+                    "Google GenAI SDK is unavailable on this architecture (constrained 32-bit/musl).\n"
+                    "Run in satellite node mode to connect to Mothership: python3 gemini-integrated.py node"
+                ),
+            )
+            return
 
         def _begin_request():
             self._request_phase = "connecting"

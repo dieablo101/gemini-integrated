@@ -28,6 +28,24 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 # Autonomous Environment Trampoline
 # -----------------------------------------------------------------------------
 
+def _is_constrained_platform() -> bool:
+    """Detects constrained 32-bit/iSH/musl platform where Rust pip builds fail."""
+    if sys.maxsize <= 2**32:
+        return True
+    if os.path.exists("/proc/ish"):
+        return True
+    try:
+        import platform
+        u = platform.uname()
+        if "ish" in u.release.lower() or "ish" in u.version.lower():
+            return True
+    except Exception:
+        pass
+    if Path("/mnt/ipad").exists():
+        return True
+    return False
+
+
 def _ensure_runtime_environment() -> None:
     """Ensures google.genai is importable.
     
@@ -41,6 +59,10 @@ def _ensure_runtime_environment() -> None:
         return  # Current interpreter is fully equipped!
     except ImportError:
         pass
+
+    # If running on a constrained platform (e.g. iPad iSH), do not attempt source pip builds
+    if _is_constrained_platform():
+        return
 
     script_dir = Path(__file__).resolve().parent
     candidates = [

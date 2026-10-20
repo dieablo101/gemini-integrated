@@ -82,6 +82,15 @@ fi
 chmod +x "$INSTALL_DIR/gemini-integrated.py"
 chmod +x "$INSTALL_DIR/emergency_terminal.py"
 
+# Pre-install emergency CLI dependency (google-genai) so recovery works out-of-the-box in any shell
+if command -v python3 >/dev/null 2>&1; then
+    if ! python3 -c "import google.genai" >/dev/null 2>&1; then
+        echo -e "⚡ Installing emergency recovery dependency (google-genai)..."
+        python3 -m pip install --break-system-packages google-genai >/dev/null 2>&1 || \
+        python3 -m pip install --user google-genai >/dev/null 2>&1 || true
+    fi
+fi
+
 # Create symlinks in ~/.local/bin
 echo -e "⚡ Creating executable links in ${BIN_DIR}..."
 ln -sf "$INSTALL_DIR/gemini-integrated.py" "$BIN_DIR/gemini-integrated"

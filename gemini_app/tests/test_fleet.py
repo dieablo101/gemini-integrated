@@ -100,6 +100,7 @@ class TestFleetTelemetryAndHUD(unittest.TestCase):
         self.assertIn("192.168.1.90:7331", rendered)
         self.assertIn("abc1234", rendered)
         self.assertIn("AI COGNITIVE STREAM", rendered)
+        self.assertIn("Topic:", rendered)
         self.assertIn("Fleet HUD", rendered)
         self.assertIn("Testing layout", rendered)
         self.assertIn("LIVE 18ms", rendered)

@@ -278,6 +278,13 @@ class ChatApp(App):
             "backup": lambda _: self._cmd_backup_now(),
         }
 
+    @property
+    def current_topic(self) -> str:
+        """Returns the active notes topic or fallback."""
+        if hasattr(self, "notes_manager") and self.notes_manager:
+            return getattr(self.notes_manager, "active_topic", "general") or "general"
+        return "general"
+
     def action_configure_api_key(self) -> None:
         """Opens ApiKeyModal to update or configure the Google Gemini API Key."""
         def _on_key_submitted(key: str | None) -> None:

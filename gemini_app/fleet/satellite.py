@@ -578,7 +578,7 @@ class SatelliteNode:
                             self.hud.render_loop_tick(force_redraw=True)
 
                     # Low-power tick sleep (optimized for iOS/mobile battery and memory stability)
-                    time.sleep(0.4)
+                    time.sleep(0.75)
 
                     # Reconnect attempt if disconnected
                     if not self._running:

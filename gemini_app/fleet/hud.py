@@ -344,11 +344,15 @@ class SatelliteHUD:
         return None
 
     def render_loop_tick(self, force_redraw: bool = False) -> Optional[str]:
-        """Renders one frame and checks for keypress, clearing to bottom only if content changed."""
+        """Renders one frame and checks for keypress.
+        
+        Overwrites screen in place using cursor home (\033[H) without \033[J (erase)
+        to prevent Cocoa text storage layout crashes in iOS iSH.
+        """
         frame = self.render()
         if force_redraw or frame != self._last_rendered_frame:
-            # Home cursor, clear to end of screen, and write frame cleanly
-            sys.stdout.write(f"\033[H\033[J{frame}")
+            # Home cursor and overwrite lines cleanly without screen-clearing churn
+            sys.stdout.write(f"\033[H{frame}")
             sys.stdout.flush()
             self._last_rendered_frame = frame
         return self.check_keyboard_input()

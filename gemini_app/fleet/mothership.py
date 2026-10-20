@@ -15,6 +15,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from gemini_app.fleet.protocol import DEFAULT_PORT, FleetMessage
+from gemini_app.fleet.telemetry import collect_mothership_telemetry
 
 
 class ConnectedSatellite:
@@ -49,14 +50,25 @@ class ConnectedSatellite:
 class MothershipServer:
     """TCP server running on the Mothership, maintaining fleet registry."""
 
-    def __init__(self, host: str = "0.0.0.0", port: int = DEFAULT_PORT) -> None:
+    def __init__(
+        self,
+        host: str = "0.0.0.0",
+        port: int = DEFAULT_PORT,
+        auto_broadcast_telemetry: bool = True,
+        broadcast_interval: float = 3.0,
+    ) -> None:
         self.host = host
         self.port = port
+        self.auto_broadcast_telemetry = auto_broadcast_telemetry
+        self.broadcast_interval = broadcast_interval
+
         self.nodes: Dict[str, ConnectedSatellite] = {}
         self.lock = threading.Lock()
         self.server_sock: Optional[socket.socket] = None
         self._running = False
         self._accept_thread: Optional[threading.Thread] = None
+        self._telemetry_thread: Optional[threading.Thread] = None
+        self._cognitive_override: Dict[str, Any] = {}
 
     def start(self) -> bool:
         """Binds and starts accepting incoming satellite node connections."""
@@ -69,8 +81,14 @@ class MothershipServer:
             s.listen(10)
             self.server_sock = s
             self._running = True
+
             self._accept_thread = threading.Thread(target=self._accept_loop, daemon=True)
             self._accept_thread.start()
+
+            if self.auto_broadcast_telemetry:
+                self._telemetry_thread = threading.Thread(target=self._telemetry_broadcast_loop, daemon=True)
+                self._telemetry_thread.start()
+
             sys.stdout.write(f"[mothership] Fleet server listening on {self.host}:{self.port}\n")
             return True
         except Exception as exc:
@@ -86,6 +104,18 @@ class MothershipServer:
             except Exception:
                 if not self._running:
                     break
+
+    def _telemetry_broadcast_loop(self) -> None:
+        """Periodically streams host telemetry and cognitive updates to connected satellites."""
+        while self._running:
+            try:
+                time.sleep(self.broadcast_interval)
+                with self.lock:
+                    if not self.nodes:
+                        continue
+                self.broadcast_telemetry()
+            except Exception:
+                pass
 
     def _handle_client(self, conn: socket.socket, addr: tuple[str, int]) -> None:
         buf = ""
@@ -114,6 +144,18 @@ class MothershipServer:
                                 self.nodes[node_id] = satellite
                             sys.stdout.write(f"[mothership] Satellite registered: '{node_id}' from {addr}\n")
 
+                            # Send immediate telemetry greeting so HUD populates right away
+                            init_telem = collect_mothership_telemetry(
+                                cognitive_override=self._cognitive_override,
+                                satellites_info=self.list_nodes(),
+                            )
+                            greet = FleetMessage(
+                                msg_type=FleetMessage.TYPE_TELEMETRY,
+                                node_id="mothership",
+                                payload={"mothership_telemetry": init_telem},
+                            )
+                            satellite.send(greet)
+
                         elif msg.type == FleetMessage.TYPE_HEARTBEAT:
                             with self.lock:
                                 if node_id in self.nodes:
@@ -134,6 +176,27 @@ class MothershipServer:
                                     if req_id in sat.response_events:
                                         sat.response_events[req_id].set()
 
+                        elif msg.type == FleetMessage.TYPE_COMMAND:
+                            # Handle incoming commands from satellite (e.g. telemetry requests or pings)
+                            action = msg.payload.get("action", "")
+                            resp_payload: Dict[str, Any] = {"status": "ok", "action": action}
+                            if action == "ping":
+                                resp_payload["pong"] = time.time()
+                            elif action == "mothership_telemetry":
+                                resp_payload["mothership_telemetry"] = collect_mothership_telemetry(
+                                    cognitive_override=self._cognitive_override,
+                                    satellites_info=self.list_nodes(),
+                                )
+                            reply = FleetMessage(
+                                msg_type=FleetMessage.TYPE_RESPONSE,
+                                node_id="mothership",
+                                payload=resp_payload,
+                                msg_id=f"resp-{msg.msg_id}",
+                            )
+                            with self.lock:
+                                if node_id in self.nodes:
+                                    self.nodes[node_id].send(reply)
+
                         elif msg.type == FleetMessage.TYPE_DISCONNECT:
                             sys.stdout.write(f"[mothership] Satellite requested disconnect: '{node_id}'\n")
                             return
@@ -153,6 +216,50 @@ class MothershipServer:
                 conn.close()
             except Exception:
                 pass
+
+    def broadcast(self, msg: FleetMessage) -> int:
+        """Sends a FleetMessage to all currently connected satellites."""
+        sent_count = 0
+        with self.lock:
+            for sat in list(self.nodes.values()):
+                if sat.send(msg):
+                    sent_count += 1
+        return sent_count
+
+    def broadcast_telemetry(self, cognitive_override: Optional[Dict[str, Any]] = None) -> int:
+        """Pushes current host telemetry and cognitive state to all satellites."""
+        if cognitive_override:
+            self._cognitive_override.update(cognitive_override)
+        telem = collect_mothership_telemetry(
+            cognitive_override=self._cognitive_override,
+            satellites_info=self.list_nodes(),
+        )
+        msg = FleetMessage(
+            msg_type=FleetMessage.TYPE_TELEMETRY,
+            node_id="mothership",
+            payload={"mothership_telemetry": telem},
+        )
+        return self.broadcast(msg)
+
+    def push_cognitive_event(self, event_text: str, details: Optional[Dict[str, Any]] = None) -> int:
+        """Pushes an event toast/log entry across the fleet."""
+        payload = {"event": event_text, "timestamp": time.time(), "details": details or {}}
+        msg = FleetMessage(
+            msg_type=FleetMessage.TYPE_EVENT,
+            node_id="mothership",
+            payload=payload,
+        )
+        return self.broadcast(msg)
+
+    def set_cognitive_state(self, state_desc: str, task: str, thought: str = "", tool: str = "none") -> None:
+        """Updates internal cognitive state and broadcasts immediately."""
+        self._cognitive_override.update({
+            "state_desc": state_desc,
+            "task": task,
+            "thought": thought,
+            "tool": tool,
+        })
+        self.broadcast_telemetry()
 
     def list_nodes(self) -> List[Dict[str, Any]]:
         """Returns snapshot list of currently connected satellite nodes."""
@@ -216,6 +323,35 @@ class MothershipServer:
         resp["rtt_ms"] = elapsed_ms
         return resp
 
+    def upgrade_node(
+        self,
+        node_id: str,
+        target_ref: str = "origin/main",
+        force: bool = False,
+        timeout: float = 45.0,
+    ) -> Dict[str, Any]:
+        """Sends atomic 3-stage upgrade command to a specific node."""
+        return self.send_command(
+            node_id=node_id,
+            action="fleet_upgrade",
+            params={"target_ref": target_ref, "force": force},
+            timeout=timeout,
+        )
+
+    def upgrade_all(
+        self,
+        target_ref: str = "origin/main",
+        force: bool = False,
+        timeout: float = 45.0,
+    ) -> Dict[str, Dict[str, Any]]:
+        """Sends atomic 3-stage upgrade command to all connected nodes."""
+        with self.lock:
+            node_ids = list(self.nodes.keys())
+        results = {}
+        for nid in node_ids:
+            results[nid] = self.upgrade_node(nid, target_ref=target_ref, force=force, timeout=timeout)
+        return results
+
     def stop(self) -> None:
         """Shuts down server socket and disconnects connected satellites."""
         self._running = False
@@ -237,6 +373,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Gemini Mothership Fleet Server")
     parser.add_argument("--host", default="0.0.0.0", help="Binding host address")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="Binding TCP port")
+    parser.add_argument("--upgrade", metavar="NODE_ID", help="Dispatch atomic upgrade to specific satellite node")
+    parser.add_argument("--upgrade-all", action="store_true", help="Dispatch atomic upgrade to all active satellite nodes")
     args = parser.parse_args()
 
     server = MothershipServer(host=args.host, port=args.port)

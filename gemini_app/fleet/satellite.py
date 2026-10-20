@@ -26,7 +26,7 @@ def collect_telemetry() -> Dict[str, Any]:
     """Collects system capabilities and status using standard library only."""
     uname = platform.uname()
     total_b, used_b, free_b = shutil.disk_usage("/")
-    
+
     # Check for iOS filesystem mount point
     ipad_mount = Path("/mnt/ipad")
     has_ipad_mount = ipad_mount.is_dir()
@@ -106,6 +106,143 @@ def check_github_repo(remote_url: str = "https://github.com/dieablo101/gemini-in
         return {"ok": False, "error": str(exc)}
 
 
+def execute_fleet_upgrade(
+    target_ref: str = "origin/main",
+    force: bool = False,
+    repo_dir: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Executes atomic 3-stage safety gated upgrade on the local node repository.
+
+    Stage 1: Fetch target remote ref safely.
+    Stage 2: Fast-forward checkout/merge into clean state.
+    Stage 3: Pre-flight syntax (py_compile) and import verification.
+             Rolls back atomically via git reset if pre-flight fails!
+    """
+    cwd = repo_dir or Path.cwd()
+
+    # Get current commit
+    res_old = subprocess.run(
+        ["git", "rev-parse", "--short", "HEAD"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    if res_old.returncode != 0:
+        return {"status": "error", "stage": "initial", "error": "Not a valid git repository"}
+    old_commit = res_old.stdout.strip()
+
+    # Stage 1: Fetch
+    branch_target = target_ref.split("/")[-1] if "/" in target_ref else target_ref
+    fetch_res = subprocess.run(
+        ["git", "fetch", "origin", branch_target],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if fetch_res.returncode != 0:
+        return {
+            "status": "error",
+            "stage": "fetch",
+            "error": f"Git fetch failed: {fetch_res.stderr.strip()}",
+        }
+
+    # Stage 2: Fast-Forward Merge / Reset
+    merge_cmd = ["git", "reset", "--hard", f"origin/{branch_target}"] if force else ["git", "merge", "--ff-only", "FETCH_HEAD"]
+    merge_res = subprocess.run(
+        merge_cmd,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    if merge_res.returncode != 0:
+        # Fallback reset if force
+        if not force:
+            return {
+                "status": "error",
+                "stage": "checkout",
+                "error": f"Merge failed (working tree not fast-forwardable): {merge_res.stderr.strip()}",
+            }
+        reset_res = subprocess.run(
+            ["git", "reset", "--hard", f"origin/{branch_target}"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if reset_res.returncode != 0:
+            return {
+                "status": "error",
+                "stage": "checkout",
+                "error": f"Reset failed: {reset_res.stderr.strip()}",
+            }
+
+    # Stage 3: Pre-Flight Syntax & Import Validation Gate
+    py_files = [str(p) for p in cwd.glob("gemini_app/**/*.py")]
+    for top_py in ("gemini-integrated.py", "__main__.py"):
+        if (cwd / top_py).exists():
+            py_files.append(top_py)
+
+    if py_files:
+        compile_res = subprocess.run(
+            [sys.executable, "-m", "py_compile"] + py_files[:50],  # Sample compile
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        if compile_res.returncode != 0:
+            # Atomic rollback!
+            subprocess.run(["git", "reset", "--hard", old_commit], cwd=cwd, capture_output=True)
+            return {
+                "status": "error",
+                "stage": "syntax_validation",
+                "error": f"Pre-flight py_compile failed: {compile_res.stderr.strip()}",
+                "rolled_back": True,
+                "current_commit": old_commit,
+            }
+
+    # Test import check
+    import_res = subprocess.run(
+        [sys.executable, "-c", "import gemini_app; from gemini_app.fleet.satellite import SatelliteNode; print('VERIFIED')"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    if import_res.returncode != 0 or "VERIFIED" not in import_res.stdout:
+        # Atomic rollback!
+        subprocess.run(["git", "reset", "--hard", old_commit], cwd=cwd, capture_output=True)
+        return {
+            "status": "error",
+            "stage": "import_validation",
+            "error": f"Pre-flight import check failed: {import_res.stderr.strip()}",
+            "rolled_back": True,
+            "current_commit": old_commit,
+        }
+
+    # Successful upgrade
+    res_new = subprocess.run(
+        ["git", "rev-parse", "--short", "HEAD"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    new_commit = res_new.stdout.strip() if res_new.returncode == 0 else "updated"
+
+    return {
+        "status": "ok",
+        "stage": "completed",
+        "old_commit": old_commit,
+        "new_commit": new_commit,
+        "upgraded": old_commit != new_commit,
+        "message": f"Pre-flight verified. Upgraded {old_commit} -> {new_commit}",
+    }
+
+
 class SatelliteNode:
     """Satellite client connecting to the Mothership."""
 
@@ -119,7 +256,7 @@ class SatelliteNode:
         self.mothership_host = mothership_host
         self.mothership_port = mothership_port
         self.heartbeat_interval = heartbeat_interval
-        
+
         # Derive an intuitive default node id
         if not node_id:
             h = socket.gethostname().lower()
@@ -135,6 +272,7 @@ class SatelliteNode:
         self._heartbeat_thread: Optional[threading.Thread] = None
         self._listener_thread: Optional[threading.Thread] = None
         self._write_lock = threading.Lock()
+        self.hud = None  # SatelliteHUD instance if running in HUD mode
 
     def connect(self, timeout: float = 5.0) -> bool:
         """Establishes TCP connection to the Mothership."""
@@ -144,8 +282,12 @@ class SatelliteNode:
             s.connect((self.mothership_host, self.mothership_port))
             s.settimeout(None)  # Switch to blocking for threads
             self.sock = s
+            if self.hud:
+                self.hud.set_connection_status(True)
             return True
         except Exception as exc:
+            if self.hud:
+                self.hud.set_connection_status(False)
             sys.stderr.write(f"[satellite] Connection failed to {self.mothership_host}:{self.mothership_port}: {exc}\n")
             return False
 
@@ -199,6 +341,25 @@ class SatelliteNode:
             remote = params.get("remote", "https://github.com/dieablo101/gemini-integrated.git")
             result_payload["git_check"] = check_github_repo(remote)
 
+        elif action == "fleet_upgrade":
+            target_ref = params.get("target_ref", "origin/main")
+            force = params.get("force", False)
+            if self.hud:
+                self.hud.show_toast(f"Upgrading from {target_ref}...", duration=5.0)
+            upgrade_res = execute_fleet_upgrade(target_ref=target_ref, force=force)
+            result_payload.update(upgrade_res)
+
+            # If upgrade succeeded and code was updated, trigger scheduled reboot
+            if upgrade_res.get("status") == "ok" and upgrade_res.get("upgraded"):
+                def _do_reboot():
+                    time.sleep(1.0)
+                    if os.environ.get("GEMINI_WATCHDOG") == "1":
+                        sys.exit(42)
+                    else:
+                        os.execv(sys.executable, [sys.executable] + sys.argv)
+
+                threading.Thread(target=_do_reboot, daemon=True).start()
+
         elif action == "shutdown":
             result_payload["message"] = "Node shutting down cleanly"
             self._running = False
@@ -223,7 +384,10 @@ class SatelliteNode:
             try:
                 data = self.sock.recv(4096)
                 if not data:
-                    sys.stdout.write("[satellite] Connection closed by Mothership.\n")
+                    if self.hud:
+                        self.hud.set_connection_status(False)
+                    else:
+                        sys.stdout.write("[satellite] Connection closed by Mothership.\n")
                     self._running = False
                     break
                 buf += data.decode("utf-8", errors="replace")
@@ -237,11 +401,19 @@ class SatelliteNode:
                         if msg.type == FleetMessage.TYPE_COMMAND:
                             resp = self.handle_command(msg)
                             self.send_message(resp)
+                        elif msg.type == FleetMessage.TYPE_TELEMETRY:
+                            if self.hud:
+                                self.hud.update_telemetry(msg.payload.get("mothership_telemetry", msg.payload))
+                        elif msg.type == FleetMessage.TYPE_EVENT:
+                            if self.hud:
+                                self.hud.log_event(msg.payload.get("event", "Event received"))
                     except Exception as err:
                         sys.stderr.write(f"[satellite] Error handling message: {err}\n")
             except Exception:
                 if self._running:
                     self._running = False
+                if self.hud:
+                    self.hud.set_connection_status(False)
                 break
 
     def _heartbeat_loop(self) -> None:
@@ -278,8 +450,87 @@ class SatelliteNode:
         self._heartbeat_thread = threading.Thread(target=self._heartbeat_loop, daemon=True)
         self._heartbeat_thread.start()
 
-        sys.stdout.write(f"[satellite] Node '{self.node_id}' online and connected to {self.mothership_host}:{self.mothership_port}\n")
+        if not self.hud:
+            sys.stdout.write(f"[satellite] Node '{self.node_id}' online and connected to {self.mothership_host}:{self.mothership_port}\n")
         return True
+
+    def run_hud(self) -> None:
+        """Launches the interactive real-time Telemetry HUD for landscape mobile terminals."""
+        from gemini_app.fleet.hud import SatelliteHUD
+
+        mothership_str = f"{self.mothership_host}:{self.mothership_port}"
+        self.hud = SatelliteHUD(
+            node_id=self.node_id,
+            mothership_addr=mothership_str,
+            on_upgrade_request=lambda: execute_fleet_upgrade(),
+        )
+
+        # Connect
+        if not self.start():
+            self.hud.set_connection_status(False)
+
+        self.hud.start_raw_terminal()
+        last_ping_time = 0.0
+
+        try:
+            while True:
+                # Periodic ping measurement
+                now = time.time()
+                if self._running and (now - last_ping_time > 5.0):
+                    last_ping_time = now
+                    # Measure RTT
+                    t0 = time.perf_counter()
+                    ping_msg = FleetMessage(
+                        msg_type=FleetMessage.TYPE_COMMAND,
+                        node_id=self.node_id,
+                        payload={"action": "ping"},
+                    )
+                    if self.send_message(ping_msg):
+                        rtt_ms = (time.perf_counter() - t0) * 1000.0
+                        self.hud.set_connection_status(True, ping_ms=round(rtt_ms, 1))
+
+                # Render frame and check non-blocking input
+                key = self.hud.render_loop_tick()
+                if key:
+                    if key.lower() == "q":
+                        break
+                    elif key.lower() == "u":
+                        self.hud.show_toast("Checking & upgrading node...", duration=4.0)
+                        self.hud.render_loop_tick()
+                        res = execute_fleet_upgrade()
+                        if res.get("status") == "ok":
+                            if res.get("upgraded"):
+                                self.hud.show_toast(f"Upgraded to {res['new_commit']}! Rebooting...", duration=3.0)
+                                self.hud.render_loop_tick()
+                                time.sleep(1.0)
+                                if os.environ.get("GEMINI_WATCHDOG") == "1":
+                                    sys.exit(42)
+                                else:
+                                    os.execv(sys.executable, [sys.executable] + sys.argv)
+                            else:
+                                self.hud.show_toast("Node is already up to date.", duration=3.0)
+                        else:
+                            self.hud.show_toast(f"Upgrade failed: {res.get('error', 'unknown')}", duration=5.0)
+                    elif key.lower() == "r":
+                        # Force screen clear & redraw
+                        sys.stdout.write("\033[2J\033[H")
+                        sys.stdout.flush()
+
+                # Low-power tick sleep
+                time.sleep(0.25)
+
+                # Reconnect attempt if disconnected
+                if not self._running:
+                    self.hud.set_connection_status(False)
+                    time.sleep(1.5)
+                    self.start()
+
+        except KeyboardInterrupt:
+            pass
+        finally:
+            if self.hud:
+                self.hud.restore_terminal()
+            self.stop()
 
     def run_forever(self) -> None:
         """Blocks while satellite is running; handles Ctrl+C cleanly."""
@@ -305,7 +556,8 @@ class SatelliteNode:
             except Exception:
                 pass
             self.sock = None
-        sys.stdout.write(f"[satellite] Node '{self.node_id}' stopped.\n")
+        if not self.hud:
+            sys.stdout.write(f"[satellite] Node '{self.node_id}' stopped.\n")
 
 
 def main() -> int:
@@ -315,7 +567,16 @@ def main() -> int:
     parser.add_argument("--node-id", default=None, help="Explicit node identifier")
     parser.add_argument("--interval", type=float, default=15.0, help="Heartbeat interval in seconds")
     parser.add_argument("--once", action="store_true", help="Send single registration/telemetry probe and exit")
+    parser.add_argument("--hud", "--monitor", action="store_true", help="Run in interactive Live Telemetry HUD mode")
+    parser.add_argument("--upgrade", action="store_true", help="Run atomic 3-stage self-upgrade against origin/main and exit")
     args = parser.parse_args()
+
+    if args.upgrade:
+        print("[satellite] Initiating 3-stage pre-flight upgrade...")
+        res = execute_fleet_upgrade()
+        print(f"Status: {res.get('status')}")
+        print(f"Message: {res.get('message', res.get('error'))}")
+        return 0 if res.get("status") == "ok" else 1
 
     node = SatelliteNode(
         mothership_host=args.mothership,
@@ -336,6 +597,10 @@ def main() -> int:
         node.send_message(reg)
         print(f"Probe registered successfully as '{node.node_id}'.")
         node.stop()
+        return 0
+
+    if args.hud:
+        node.run_hud()
         return 0
 
     if not node.start():

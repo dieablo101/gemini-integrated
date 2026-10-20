@@ -19,6 +19,8 @@ class FleetMessage:
     TYPE_RESPONSE = "response"
     TYPE_DISCONNECT = "disconnect"
     TYPE_ERROR = "error"
+    TYPE_TELEMETRY = "telemetry"
+    TYPE_EVENT = "event"
 
     def __init__(
         self,

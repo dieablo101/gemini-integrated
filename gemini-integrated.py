@@ -3,7 +3,7 @@
 
 Autonomously bootstraps virtual environment, pip dependencies,
 system dependencies, and API key on first launch.
-Handles subcommands (satellite/node, mothership, probe) cleanly
+Handles subcommands (hud/monitor, satellite/node, mothership, upgrade) cleanly
 without requiring heavy UI or API dependencies.
 """
 
@@ -113,17 +113,22 @@ def print_help() -> None:
 
 Usage:
   python3 gemini-integrated.py [options]
+  python3 gemini-integrated.py hud [options]
   python3 gemini-integrated.py node [options]
   python3 gemini-integrated.py mothership [options]
+  python3 gemini-integrated.py upgrade
 
 Subcommands:
+  hud, monitor            Run live Telemetry and AI Cognitive Monitor HUD
   node, satellite         Run as lightweight distributed satellite node
   mothership              Run fleet mothership command-and-control server
+  upgrade                 Perform atomic 3-stage pre-flight upgrade on local node
 
-Node Options:
+Node / HUD Options:
   --mothership HOST       Mothership IP/host (default: 192.168.1.90)
   --port PORT             Mothership TCP port (default: 7331)
   --interval SECONDS      Heartbeat telemetry interval in seconds (default: 15.0)
+  --hud, --monitor        Enable interactive landscape-friendly HUD dashboard
   --once                  Send single registration/telemetry probe and exit
   --node-id ID            Override satellite node identifier
 
@@ -149,7 +154,31 @@ if __name__ == "__main__":
         print(f"gemini-integrated v{__version__}")
         sys.exit(0)
 
-    # 2. Check for node/satellite mode anywhere in CLI arguments
+    # 2. Check for HUD / Monitor mode
+    hud_tokens = {"hud", "monitor", "--hud", "--monitor"}
+    matched_hud = [tok for tok in sys.argv[1:] if tok in hud_tokens]
+    if matched_hud:
+        for tok in matched_hud:
+            sys.argv.remove(tok)
+        # Ensure --hud is in sys.argv for satellite parser
+        if "--hud" not in sys.argv:
+            sys.argv.append("--hud")
+        from gemini_app.fleet.satellite import main as satellite_main
+        sys.exit(satellite_main())
+
+    # 3. Check for upgrade command
+    if "upgrade" in argv_set or "--upgrade" in argv_set:
+        for tok in ["upgrade", "--upgrade"]:
+            if tok in sys.argv:
+                sys.argv.remove(tok)
+        from gemini_app.fleet.satellite import execute_fleet_upgrade
+        print("[gemini] Initiating 3-stage pre-flight node upgrade...")
+        res = execute_fleet_upgrade()
+        print(f"Status: {res.get('status')}")
+        print(f"Message: {res.get('message', res.get('error'))}")
+        sys.exit(0 if res.get("status") == "ok" else 1)
+
+    # 4. Check for node/satellite mode anywhere in CLI arguments
     satellite_tokens = {"--node", "-n", "--satellite", "node", "satellite"}
     matched_sat = [tok for tok in sys.argv[1:] if tok in satellite_tokens]
     if matched_sat:
@@ -158,7 +187,7 @@ if __name__ == "__main__":
         from gemini_app.fleet.satellite import main as satellite_main
         sys.exit(satellite_main())
 
-    # 3. Check for mothership server mode
+    # 5. Check for mothership server mode
     mothership_tokens = {"--mothership-server", "--fleet-server", "mothership"}
     matched_mother = [tok for tok in sys.argv[1:] if tok in mothership_tokens]
     if matched_mother:
@@ -167,7 +196,7 @@ if __name__ == "__main__":
         from gemini_app.fleet.mothership import main as mothership_main
         sys.exit(mothership_main())
 
-    # 4. If on a constrained platform without google-genai, auto-route gracefully
+    # 6. If on a constrained platform without google-genai, auto-route gracefully
     if is_constrained_platform():
         try:
             import google.genai
@@ -177,9 +206,11 @@ if __name__ == "__main__":
                 sys.stdout.write(
                     "⚡ Constrained mobile platform detected (iPad iSH / 32-bit musl).\n"
                     "   Local Google GenAI SDK requires Rust wheels not supported on this device.\n"
-                    "   Auto-launching Satellite Node to connect with Mothership...\n"
+                    "   Auto-launching Live Telemetry HUD to connect with Mothership...\n"
                     "   (Pass --ui to force local terminal UI)\n\n"
                 )
+                if "--hud" not in sys.argv:
+                    sys.argv.append("--hud")
                 from gemini_app.fleet.satellite import main as satellite_main
                 sys.exit(satellite_main())
 

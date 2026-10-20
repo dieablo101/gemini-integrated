@@ -6,12 +6,17 @@ remote compute workers).
 """
 
 from gemini_app.fleet.protocol import DEFAULT_PORT, FleetMessage
-from gemini_app.fleet.satellite import SatelliteNode
+from gemini_app.fleet.satellite import SatelliteNode, execute_fleet_upgrade
 from gemini_app.fleet.mothership import MothershipServer
+from gemini_app.fleet.hud import SatelliteHUD
+from gemini_app.fleet.telemetry import collect_mothership_telemetry
 
 __all__ = [
     "DEFAULT_PORT",
     "FleetMessage",
     "SatelliteNode",
     "MothershipServer",
+    "SatelliteHUD",
+    "execute_fleet_upgrade",
+    "collect_mothership_telemetry",
 ]

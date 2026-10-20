@@ -1,7 +1,7 @@
 """Fleet Nodes Registry and Remote SSH Rescue Engine.
 
 Manages persistent node configurations, active status tracking, and autonomous
-SSH rescue/reboot mechanisms using the dieablo SSH credentials.
+SSH rescue/reboot mechanisms using configured cluster SSH credentials.
 """
 
 from __future__ import annotations
@@ -218,7 +218,7 @@ def execute_ssh_rescue(
     custom_cmd: str = "",
     timeout: int = 15,
 ) -> Dict[str, Any]:
-    """Connects to a remote node over SSH using the dieablo key to check, restart, or reboot it."""
+    """Connects to a remote node over SSH using the cluster key to check, restart, or reboot it."""
     registry = load_nodes_registry()
     node = registry.get(node_id)
 

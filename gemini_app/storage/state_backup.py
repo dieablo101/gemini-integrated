@@ -103,15 +103,30 @@ def log_backup_event(message: str) -> None:
 
 def get_git_credentials() -> tuple[str, str]:
     """Retrieves user's git name and email from state or global git config."""
-    name = "Kyle Gallagher"
-    email = "kidlucrid@gmail.com"
+    name = ""
+    email = ""
     if STATE_FILE.is_file():
         try:
             data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
-            name = data.get("git_name") or data.get("user_realname") or name
-            email = data.get("git_email") or email
+            name = data.get("git_name") or data.get("user_realname") or data.get("user_real_name") or ""
+            email = data.get("git_email") or data.get("user_email") or ""
         except Exception:
             pass
+
+    if not name or not email:
+        from gemini_app.onboarding import get_git_config, get_stored_git_email, get_stored_user_real_name
+        if not name:
+            name = get_stored_user_real_name() or get_git_config("user.name") or ""
+        if not email:
+            email = get_stored_git_email() or get_git_config("user.email") or ""
+
+    if not name:
+        import getpass
+        name = getpass.getuser()
+    if not email:
+        import getpass
+        email = f"{getpass.getuser()}@localhost"
+
     return name, email
 
 

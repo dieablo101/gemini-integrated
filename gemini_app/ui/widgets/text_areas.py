@@ -712,6 +712,6 @@ class ExpandingInput(EmacsBaseTextArea):
         self.app.query_one("#snippet_preview", SnippetPreview).hide_preview()
 
 # ---------------------------------------------------------------------------
-# Dedicated Mind Map Screen (Bilateral Cognition & Steering Console)
+# Dedicated Mind Map Screen (Bilateral Cognition & Telemetry Console)
 # ---------------------------------------------------------------------------
 

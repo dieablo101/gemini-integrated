@@ -554,13 +554,14 @@ class ChatApp(App):
     def accent_color(self) -> str:
         return THEMES.get(self.active_palette_name, THEMES[DEFAULT_PALETTE])["accent"]
 
-    def set_theme(self, palette_name: str, notify_user: bool = True) -> bool:
+    def set_theme(self, palette_name: str, notify_user: bool = True, save_state: bool = True) -> bool:
         theme_clean = palette_name.strip().lower()
         if theme_clean not in THEMES:
             return False
 
         self.active_palette_name = theme_clean
-        self._save_to_state("ui_theme", theme_clean)
+        if save_state:
+            self._save_to_state("ui_theme", theme_clean)
 
         stack = getattr(self, "screen_stack", None) or getattr(self, "_screen_stack", [])
         for sc in list(stack):
@@ -699,9 +700,21 @@ class ChatApp(App):
     ) -> None:
         self._nav_indicator_action = action
         self._nav_indicator_palette = palette or None
+
+        pal_key = palette or getattr(self, "active_palette_name", DEFAULT_PALETTE)
+        if action in ("navbar", "nav", "flash", "pulse"):
+            try:
+                banner = self.query_one("#feed_nav_banner", Static)
+                for p in THEMES:
+                    banner.remove_class(f"flash-{p}")
+                banner.add_class(f"flash-{pal_key}")
+                banner.add_class("nav-pulse")
+            except Exception:
+                pass
+
         self.update_feed_nav_banner()
 
-        if toast_message:
+        if toast_message and not getattr(self, "_suppress_ambient_toasts", False):
             accent = (
                 THEMES.get(palette, {}).get("accent", self.accent_color)
                 if palette
@@ -718,7 +731,43 @@ class ChatApp(App):
         self._nav_indicator_action = None
         self._nav_indicator_palette = None
         self._nav_indicator_timer = None
+        try:
+            banner = self.query_one("#feed_nav_banner", Static)
+            for p in THEMES:
+                banner.remove_class(f"flash-{p}")
+            banner.remove_class("nav-pulse")
+            banner.styles.background = "#141414"
+            banner.styles.color = "#ffffff"
+            banner.refresh()
+        except Exception:
+            pass
         self.update_feed_nav_banner()
+
+    def pulse_theme(self, palette_name: str, duration: float = 2.0) -> None:
+        """Temporarily pulses the whole console theme without overwriting state.json."""
+        pal_clean = palette_name.strip().lower()
+        if pal_clean not in THEMES:
+            return
+
+        current_theme = getattr(self, "active_palette_name", DEFAULT_PALETTE)
+        stack = getattr(self, "screen_stack", None) or getattr(self, "_screen_stack", [])
+        for sc in list(stack):
+            for t in THEMES:
+                sc.remove_class(f"theme-{t}")
+            sc.add_class(f"theme-{pal_clean}")
+
+        self.update_feed_nav_banner()
+        self._update_footer_markup()
+
+        def _revert():
+            for sc in list(stack):
+                for t in THEMES:
+                    sc.remove_class(f"theme-{t}")
+                sc.add_class(f"theme-{current_theme}")
+            self.update_feed_nav_banner()
+            self._update_footer_markup()
+
+        self.set_timer(max(0.5, duration), _revert)
 
     def copy_to_clipboard(self, text: str) -> None:
         try:
@@ -957,8 +1006,25 @@ class ChatApp(App):
                     "Esc / C-c .: Cancel",
                 ]
                 content = self._render_flow_nav_banner(items, sep_markup, sep_plain, avail_w)
+            elif getattr(self, "_nav_indicator_action", None) in ("navbar", "nav", "flash", "pulse"):
+                banner.remove_class("fork-active")
+                banner.styles.background = indicator_accent
+                banner.styles.color = "#000000"
+                sep_markup = "[bold #000000]|[/]"
+                sep_plain = "|"
+                items = [
+                    "[bold #000000]↑/↓: Scroll[/]",
+                    "[bold #000000]Shift+↑/↓: Viewport[/]",
+                    "[bold #000000]PgUp/PgDn: Cards[/]",
+                    "[bold #000000]Home/End: Edge[/]",
+                    "[bold #000000]M-n/M-p: Snippets[/]",
+                    "[bold #000000]C-c m: Mind[/]",
+                ]
+                content = self._render_flow_nav_banner(items, sep_markup, sep_plain, avail_w)
             else:
                 banner.remove_class("fork-active")
+                banner.styles.background = "#141414"
+                banner.styles.color = "#ffffff"
                 sep_markup = f"[not bold {base_accent}]|[/]"
                 sep_plain = "|"
 
@@ -991,12 +1057,11 @@ class ChatApp(App):
                     if self._nav_indicator_action == "mind"
                     else "C-c m: Mind"
                 )
-                # for later exploration by gemini
-                # fork_item = (
-                #     f"[bold {indicator_accent} reverse] C-c .: Fork [/]"
-                #     if self._nav_indicator_action == "fork"
-                #     else "C-c .: Fork"
-                # )
+                fork_item = (
+                    f"[bold {indicator_accent} reverse] C-c .: Fork [/]"
+                    if self._nav_indicator_action == "fork"
+                    else "C-c .: Fork"
+                )
 
                 items = [
                     f"{up_scroll}/{dn_scroll}: Scroll",
@@ -1005,10 +1070,12 @@ class ChatApp(App):
                     edge_item,
                     snippets_item,
                     mind_item,
+                    fork_item,
                 ]
                 content = self._render_flow_nav_banner(items, sep_markup, sep_plain, avail_w)
 
             banner.update(content)
+            banner.refresh()
         except Exception:
             pass
 
@@ -2947,11 +3014,8 @@ class ChatApp(App):
     # Cognitive Expansion & Collision Engine
     # -----------------------------------------------------------------------
 
-    def steer_mind_state(self, steer_prompt: str) -> None:
-        self.ask_gemini(is_mind_steer=True, steer_instruction=steer_prompt)
-
     @work(exclusive=True, thread=True)
-    def ask_gemini(self, is_mind_steer: bool = False, steer_instruction: str = "") -> None:
+    def ask_gemini(self) -> None:
         self._abort_requested = False
         chat_id_snapshot = self.current_chat_id
         working_dir_snapshot = self.get_effective_working_dir()
@@ -3187,6 +3251,7 @@ class ChatApp(App):
             duration: float = 3.0,
             message: str = "",
         ) -> dict:
+            self._suppress_ambient_toasts = True
             act = (action or "accent_talk").lower().strip()
             if act in ("theme", "set_theme"):
                 def _do_theme():
@@ -3204,7 +3269,7 @@ class ChatApp(App):
                 def _do_nav_pulse():
                     apply_accent_talk(
                         self,
-                        target=target if target != "all" else "edge",
+                        target="navbar" if target in ("all", "navbar", "nav", "banner") else target,
                         palette=palette,
                         duration=duration,
                         message=message,
@@ -3240,20 +3305,6 @@ class ChatApp(App):
             slice_count = 11
 
         recent_turns = list(self.history[-slice_count:])
-
-        if is_mind_steer:
-            steer_block = {
-                "turn_id": f"steer_{uuid4().hex[:8]}",
-                "role": "user",
-                "text": (
-                    f"## SYSTEM COGNITIVE RECALIBRATION REQUEST\n"
-                    f"The user has submitted an explicit steering course-correction:\n"
-                    f"\"{steer_instruction}\"\n\n"
-                    f"Re-evaluate the project trajectory. Update your GEMINI MIND STATE, "
-                    f"the USER MIND STATE, the tree_state anchor list, and the visual tree."
-                ),
-            }
-            recent_turns.append(steer_block)
 
         payload = []
         for t in recent_turns:
@@ -3328,8 +3379,7 @@ class ChatApp(App):
             f'  "tree_state": ["T...", "F:..."],\n'
             f'  "tree_content": "<ASCII tree showing where current conversation and files connect>"\n'
             f"}}\n"
-            f"```\n"
-            f"If this is a recalibration request, confirm the course correction in your response."
+            f"```"
         )
 
         try:
@@ -3597,20 +3647,9 @@ class ChatApp(App):
             except Exception:
                 pass
 
-            if is_mind_steer:
-                def _finalize_steer():
-                    self._stop_status_ticker()
-                    self.hide_status()
-                    self.notify("Cognitive alignment complete. Mind map updated.", timeout=3.5)
-                    # Re-refresh active screen if user is still on MindMapScreen
-                    if isinstance(self.screen, MindMapScreen):
-                        self.screen.refresh_display()
-
-                self.app.call_from_thread(_finalize_steer)
-            else:
-                self.app.call_from_thread(
-                    self.post_message, RequestFinished(clean_reply, elapsed, total_words)
-                )
+            self.app.call_from_thread(
+                self.post_message, RequestFinished(clean_reply, elapsed, total_words)
+            )
         except Exception as e:
             if self.current_chat_id != chat_id_snapshot:
                 return

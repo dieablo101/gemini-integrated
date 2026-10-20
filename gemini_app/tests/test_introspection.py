@@ -20,6 +20,16 @@ class DummyWidget:
         self.id = wid
         self.styles = MagicMock()
         self.styles.border = None
+        self.classes = set()
+
+    def refresh(self):
+        pass
+
+    def add_class(self, cls):
+        self.classes.add(cls)
+
+    def remove_class(self, cls):
+        self.classes.discard(cls)
 
 
 class DummyApp:
@@ -65,7 +75,7 @@ class DummyApp:
     def set_timer(self, delay, callback):
         self.timers.append((delay, callback))
 
-    def set_theme(self, palette, notify_user=True):
+    def set_theme(self, palette, notify_user=True, save_state=True):
         self.active_palette_name = palette
         return True
 

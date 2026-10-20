@@ -79,7 +79,7 @@ gemini
 
 ### 1. Persistent Cognitive Mind Map & Topological Graph
 - **Bilateral Mind Anchors**: Tracks `GEMINI MIND STATE`, `USER MIND STATE`, and active file/turn anchors (`tree_state`) in persistent memory.
-- **Visual Mind Screen (`C-c m`)**: Full-screen interactive dashboard with live ASCII relation trees, cognitive state inspection, and manual steering / course-correction.
+- **Visual Mind Screen (`C-c m`)**: Full-screen interactive dashboard with live ASCII relation trees, cognitive state inspection, and real-time fleet node vitals.
 
 ### 2. Tri-Modal Relational Notes Engine
 - **Three Unified Scopes**:
@@ -117,7 +117,7 @@ gemini
 | Keybinding | Action |
 | :--- | :--- |
 | `C-c c` | Open Keyboard Shortcuts Cheat Sheet |
-| `C-c m` | Open Cognitive Mind Map & Steering Screen |
+| `C-c m` | Open Cognitive Mind Map Screen |
 | `C-c [` | Toggle Tri-Modal Notes Panel |
 | `Alt + n` / `Alt + p` | Navigate Snippets (Next / Previous) |
 | `C-c r` | Save Active Snippet to Disk |

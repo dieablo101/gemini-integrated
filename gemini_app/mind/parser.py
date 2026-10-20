@@ -44,8 +44,7 @@ def build_system_instruction(
         f'  "tree_state": ["T...", "F:..."],\n'
         f'  "tree_content": "<ASCII tree showing where current conversation and files connect>"\n'
         f"}}\n"
-        f"```\n"
-        f"If this is a recalibration request, confirm the course correction in your response."
+        f"```"
     )
 
 
@@ -91,14 +90,3 @@ def extract_mind_map(
         "tree_content": tree_content,
         "tree_state": tree_state,
     }
-
-
-def format_recalibration_prompt(steer_instruction: str) -> str:
-    """Formats explicit user steering instruction for cognitive recalibration."""
-    return (
-        f"## SYSTEM COGNITIVE RECALIBRATION REQUEST\n"
-        f"The user has submitted an explicit steering course-correction:\n"
-        f'"{steer_instruction}"\n\n'
-        f"Re-evaluate the project trajectory. Update your GEMINI MIND STATE, "
-        f"the USER MIND STATE, the tree_state anchor list, and the visual tree."
-    )

@@ -1,4 +1,4 @@
-"""Full-screen interactive Cognitive Mind Map view with steering input bar and live reactive animation watcher."""
+"""Full-screen interactive Cognitive Mind Map view and live reactive animation watcher."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.timer import Timer
-from textual.widgets import Input, Label, Markdown, Static
+from textual.widgets import Label, Markdown, Static
 
 from gemini_app.config import DEFAULT_PALETTE, MOBILE_BREAKPOINT, SPINNER_FRAMES, THEMES
 from gemini_app.introspection import ANIMATION_FRAMES
@@ -178,18 +178,6 @@ class MindMapScreen(Screen):
         width: 100%;
         margin-bottom: 1;
     }
-    #mind_input_bar {
-        height: auto;
-        min-height: 3;
-        width: 100%;
-        padding: 0 1 1 1;
-        background: #000000;
-    }
-    #mind_input {
-        width: 100%;
-        background: #000000;
-        color: #ffffff;
-    }
     """
 
     def __init__(self, *args, **kwargs) -> None:
@@ -209,7 +197,6 @@ class MindMapScreen(Screen):
         self._update_screen_classes()
         self.refresh_display()
         self._live_watch_timer = self.set_interval(0.6, self._on_live_watch_tick)
-        self.query_one("#mind_input", Input).focus()
 
     def on_unmount(self) -> None:
         if self._live_watch_timer:
@@ -324,22 +311,6 @@ class MindMapScreen(Screen):
                 with Vertical(id="mind_nodes_card"):
                     yield Label("── NETWORK / NODES ──", classes="mind_header")
                     yield Markdown(id="mind_nodes_text")
-
-        with Vertical(id="mind_input_bar"):
-            yield Input(
-                placeholder="Steer Mind State: e.g. Focus purely on XML engine, scaffold parser...",
-                id="mind_input",
-            )
-
-    @on(Input.Submitted, "#mind_input")
-    def on_steer_submitted(self, event: Input.Submitted) -> None:
-        raw = event.value.strip()
-        if not raw:
-            return
-        self.query_one("#mind_input", Input).value = ""
-        if hasattr(self.app, "steer_mind_state"):
-            self.app.steer_mind_state(raw)
-        self.notify("Cognitive steering sent to Gemini...", timeout=2.5)
 
     def action_back_to_chat(self) -> None:
         self.app.pop_screen()

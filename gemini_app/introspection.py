@@ -238,13 +238,15 @@ def apply_accent_talk(
             }
         else:
             prev_theme = getattr(app, "active_palette_name", DEFAULT_PALETTE)
-            if hasattr(app, "set_theme"):
-                app.set_theme(pal_clean, notify_user=False)
-            if message and hasattr(app, "notify"):
-                app.notify(f"[{accent}]{message}[/]", timeout=duration)
+            if hasattr(app, "pulse_theme"):
+                app.pulse_theme(pal_clean, duration=duration)
+            elif hasattr(app, "set_theme"):
+                app.set_theme(pal_clean, notify_user=False, save_state=False)
+                if hasattr(app, "set_timer"):
+                    app.set_timer(duration, lambda: app.set_theme(prev_theme, notify_user=False, save_state=False))
 
-            if hasattr(app, "set_timer"):
-                app.set_timer(duration, lambda: app.set_theme(prev_theme, notify_user=False))
+            if message and hasattr(app, "notify") and not getattr(app, "_suppress_ambient_toasts", False):
+                app.notify(f"[{accent}]{message}[/]", timeout=duration)
 
             return {
                 "status": "success",
@@ -255,7 +257,7 @@ def apply_accent_talk(
                 "message": f"Global theme pulsed to '{pal_clean}' for {duration:.1f}s.",
             }
 
-    # Navbar navigation item triggers (e.g. edge, cards, snippets, mind, fork)
+    # Navbar navigation item triggers (e.g. edge, cards, snippets, mind, fork, navbar, nav, flash)
     nav_targets = (
         "edge",
         "edge_home",
@@ -266,6 +268,10 @@ def apply_accent_talk(
         "fork",
         "scroll",
         "viewport",
+        "navbar",
+        "nav",
+        "flash",
+        "banner",
     )
     if target_clean in nav_targets:
         nav_action = target_clean
@@ -273,10 +279,12 @@ def apply_accent_talk(
             nav_action = "scroll_down"
         elif nav_action == "viewport":
             nav_action = "page_down"
+        elif nav_action in ("nav", "flash", "banner"):
+            nav_action = "navbar"
 
         if hasattr(app, "trigger_nav_indicator"):
             app.trigger_nav_indicator(
-                nav_action, toast_message=message, palette=pal_clean, duration=duration
+                nav_action, toast_message=message if not getattr(app, "_suppress_ambient_toasts", False) else "", palette=pal_clean, duration=duration
             )
 
         return {
@@ -317,29 +325,52 @@ def apply_accent_talk(
         widgets = list(app.query(selector)) if hasattr(app, "query") else []
         for w in widgets:
             if getattr(w, "id", None) == "feed_nav_banner":
-                orig_color = w.styles.color
-                w.styles.color = accent
+                if hasattr(app, "trigger_nav_indicator"):
+                    app.trigger_nav_indicator(
+                        "navbar", toast_message=message if not getattr(app, "_suppress_ambient_toasts", False) else "", palette=pal_clean, duration=duration
+                    )
                 applied = True
+            elif getattr(w, "id", None) == "custom_footer":
+                orig_bg = getattr(w.styles, "background", None)
+                w.styles.background = accent
+                applied = True
+                if hasattr(w, "refresh"):
+                    w.refresh()
                 if duration > 0 and hasattr(app, "set_timer"):
-                    def _reset_nav(target_widget=w, prev_c=orig_color):
+                    def _reset_footer(target_widget=w, prev_bg=orig_bg):
                         try:
-                            target_widget.styles.color = prev_c
+                            target_widget.styles.background = prev_bg
+                            if hasattr(target_widget, "refresh"):
+                                target_widget.refresh()
                         except Exception:
                             pass
-                    app.set_timer(duration, _reset_nav)
+                    app.set_timer(duration, _reset_footer)
             else:
+                orig_b = getattr(w.styles, "border", None)
                 w.styles.border = ("round", accent)
+                if hasattr(w, "add_class"):
+                    w.add_class(f"border-{pal_clean}")
                 applied = True
+                if hasattr(w, "refresh"):
+                    w.refresh()
 
                 if duration > 0 and hasattr(app, "set_timer"):
-                    def _reset_border(target_widget=w):
+                    def _reset_border(target_widget=w, prev_border=orig_b, pal=pal_clean):
                         try:
-                            target_widget.styles.border = None
+                            if hasattr(target_widget, "remove_class"):
+                                target_widget.remove_class(f"border-{pal}")
+                            if prev_border is not None:
+                                target_widget.styles.border = prev_border
+                            else:
+                                acc = getattr(app, "accent_color", "#ff3333")
+                                target_widget.styles.border = ("round", acc)
+                            if hasattr(target_widget, "refresh"):
+                                target_widget.refresh()
                         except Exception:
                             pass
                     app.set_timer(duration, _reset_border)
 
-        if message and hasattr(app, "notify"):
+        if message and hasattr(app, "notify") and not getattr(app, "_suppress_ambient_toasts", False):
             app.notify(f"[{accent}]{message}[/]", timeout=max(2.0, duration))
 
     except Exception as e:
@@ -391,7 +422,7 @@ def start_mind_animation(
     if screen and type(screen).__name__ == "MindMapScreen" and hasattr(screen, "_on_live_watch_tick"):
         screen._on_live_watch_tick()
 
-    if message and hasattr(app, "notify"):
+    if message and hasattr(app, "notify") and not getattr(app, "_suppress_ambient_toasts", False):
         acc = THEMES[pal_clean]["accent"]
         app.notify(f"[{acc}]{message}[/]", title=f"Mind Animation: {eff_clean.title()}", timeout=dur)
 

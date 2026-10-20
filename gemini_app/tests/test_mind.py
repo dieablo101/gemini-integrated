@@ -5,7 +5,6 @@ import unittest
 from gemini_app.mind.parser import (
     build_system_instruction,
     extract_mind_map,
-    format_recalibration_prompt,
 )
 
 
@@ -59,12 +58,6 @@ class TestMind(unittest.TestCase):
         self.assertEqual(clean_text, reply)
         self.assertEqual(meta["gemini_state"], "Default Gem")
         self.assertEqual(meta["user_state"], "Default User")
-
-    def test_format_recalibration_prompt(self):
-        steer = "Stop refactoring, focus on tests."
-        prompt = format_recalibration_prompt(steer)
-        self.assertIn("SYSTEM COGNITIVE RECALIBRATION REQUEST", prompt)
-        self.assertIn("Stop refactoring, focus on tests.", prompt)
 
 
 if __name__ == "__main__":

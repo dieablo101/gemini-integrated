@@ -57,7 +57,7 @@ class RequestFailed(Message):
 
 
 class MindMapRecalibrated(Message):
-    """Fired when a model response or user steering recalibrates the cognitive mind map."""
+    """Fired when a model response updates the cognitive mind map."""
 
     def __init__(self, gemini_state: str, user_state: str, tree_content: str, tree_state: list) -> None:
         super().__init__()

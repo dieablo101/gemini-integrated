@@ -167,6 +167,24 @@ def generate_theme_css_rules() -> str:
         .theme-{name} #feed_nav_banner.fork-active {{
             background: {banner};
         }}
+        .theme-{name} #feed_nav_banner.nav-pulse {{
+            background: {acc} !important;
+            color: #000000 !important;
+        }}
+        .theme-{name} #feed_nav_banner.flash-red {{ background: #ff3333 !important; color: #000000 !important; }}
+        .theme-{name} #feed_nav_banner.flash-blue {{ background: #3399ff !important; color: #000000 !important; }}
+        .theme-{name} #feed_nav_banner.flash-green {{ background: #33cc66 !important; color: #000000 !important; }}
+        .theme-{name} #feed_nav_banner.flash-orange {{ background: #ff8800 !important; color: #000000 !important; }}
+        .theme-{name} #feed_nav_banner.flash-purple {{ background: #bb55ff !important; color: #000000 !important; }}
+        .theme-{name} #feed_nav_banner.flash-yellow {{ background: #ffcc00 !important; color: #000000 !important; }}
+        .theme-{name} #feed_nav_banner.flash-pink {{ background: #ff55aa !important; color: #000000 !important; }}
+        .theme-{name} #feed.border-pink, .theme-{name} #input.border-pink {{ border: round #ff55aa !important; }}
+        .theme-{name} #feed.border-purple, .theme-{name} #input.border-purple {{ border: round #bb55ff !important; }}
+        .theme-{name} #feed.border-blue, .theme-{name} #input.border-blue {{ border: round #3399ff !important; }}
+        .theme-{name} #feed.border-green, .theme-{name} #input.border-green {{ border: round #33cc66 !important; }}
+        .theme-{name} #feed.border-orange, .theme-{name} #input.border-orange {{ border: round #ff8800 !important; }}
+        .theme-{name} #feed.border-yellow, .theme-{name} #input.border-yellow {{ border: round #ffcc00 !important; }}
+        .theme-{name} #feed.border-red, .theme-{name} #input.border-red {{ border: round #ff3333 !important; }}
         .theme-{name} #feed MarkdownFence.active-snippet {{
             border: solid {acc} !important;
         }}
@@ -454,12 +472,6 @@ def generate_theme_css_rules() -> str:
         }}
         .theme-{name} .mind_header {{
             color: {acc};
-        }}
-        .theme-{name} #mind_input {{
-            border: solid {acc};
-        }}
-        .theme-{name} #mind_input:focus {{
-            border: solid {acc};
         }}
 
         /* Boot Screen Theming */

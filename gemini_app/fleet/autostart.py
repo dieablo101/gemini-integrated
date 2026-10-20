@@ -4,7 +4,8 @@ Ensures that whenever a satellite node is deployed on a machine, it starts
 automatically on system boot, runs continuously in the background, and pings
 the Mothership without manual intervention.
 
-Supports systemd (user/system), OpenRC (Alpine/iSH), macOS launchd, and cron (@reboot).
+Supports systemd (user/system), OpenRC (Alpine Linux), iSH (iOS Alpine),
+macOS launchd, and cron (@reboot).
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ import platform
 import shutil
 import subprocess
 import sys
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 
 SYSTEMD_SERVICE_TEMPLATE = """[Unit]
@@ -41,6 +42,29 @@ OPENRC_LOCAL_TEMPLATE = """#!/bin/sh
 # Automatically launched by OpenRC / local.d on boot
 cd {work_dir} || exit 1
 nohup {python_bin} {script_path} node --mothership {mothership} --interval {interval} > /var/log/gemini-satellite.log 2>&1 &
+"""
+
+ISH_AUTOSTART_BLOCK_START = "# === Gemini Bilateral Satellite Node Autostart ==="
+ISH_AUTOSTART_BLOCK_END = "# === End Gemini Satellite ==="
+
+ISH_HOOK_TEMPLATE = """{start_marker}
+# Keep iSH awake in background via iOS location service
+if [ -e /dev/location ] && ! pgrep -f 'cat /dev/location' >/dev/null 2>&1; then
+    cat /dev/location >/dev/null 2>&1 &
+fi
+
+# Launch Gemini background node if neither node nor hud is running
+_is_gemini_running() {{
+    pgrep -f '[g]emini-integrated.*(node|satellite|hud)' >/dev/null 2>&1 || \\
+    ps aux 2>/dev/null | grep -E '[g]emini-integrated.*(node|satellite|hud)' >/dev/null 2>&1 || \\
+    ps 2>/dev/null | grep -E '[g]emini-integrated.*(node|satellite|hud)' >/dev/null 2>&1
+}}
+
+if ! _is_gemini_running; then
+    cd {work_dir} 2>/dev/null || cd /root/gemini-integrated 2>/dev/null || true
+    nohup {python_bin} {script_path} node --mothership {mothership} --interval {interval} > /var/log/gemini-satellite.log 2>&1 &
+fi
+{end_marker}
 """
 
 LAUNCHD_PLIST_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
@@ -80,11 +104,22 @@ def detect_init_system() -> str:
     if sys.platform == "darwin":
         return "launchd"
 
-    # 2. Check for OpenRC or iSH/Alpine
-    if os.path.exists("/etc/local.d") or os.path.exists("/sbin/openrc-run") or os.path.exists("/proc/ish"):
+    # 2. Check for iSH (iOS Alpine user-mode Linux emulator)
+    if os.path.exists("/proc/ish") or os.path.exists("/dev/location"):
+        return "ish"
+    if hasattr(os, "uname"):
+        try:
+            u = os.uname()
+            if "ish" in u.release.lower() or "ish" in u.version.lower():
+                return "ish"
+        except Exception:
+            pass
+
+    # 3. Check for OpenRC (standard Alpine / Gentoo)
+    if os.path.exists("/sbin/openrc-run") or os.path.exists("/etc/init.d"):
         return "openrc"
 
-    # 3. Check for systemd
+    # 4. Check for systemd
     if shutil.which("systemctl"):
         try:
             res = subprocess.run(["systemctl", "--version"], capture_output=True, timeout=2)
@@ -93,7 +128,7 @@ def detect_init_system() -> str:
         except Exception:
             pass
 
-    # 4. Fallback to cron
+    # 5. Fallback to cron
     if shutil.which("crontab"):
         return "cron"
 
@@ -161,8 +196,87 @@ def install_autostart(
                 "message": f"Wrote {service_path}, but systemctl failed: {exc}",
             }
 
+    elif init_type == "ish":
+        # iSH (iOS Alpine Linux emulator)
+        hook_code = ISH_HOOK_TEMPLATE.format(
+            start_marker=ISH_AUTOSTART_BLOCK_START,
+            end_marker=ISH_AUTOSTART_BLOCK_END,
+            python_bin=python_bin,
+            script_path=script_path,
+            mothership=mothership,
+            interval=str(interval),
+            work_dir=work_dir,
+        )
+
+        installed_targets: List[str] = []
+
+        # 1. System profile.d hook
+        profile_d = Path("/etc/profile.d")
+        if profile_d.exists() and profile_d.is_dir():
+            sh_hook = profile_d / "gemini-satellite.sh"
+            try:
+                sh_hook.write_text(f"#!/bin/sh\n{hook_code}\n", encoding="utf-8")
+                sh_hook.chmod(0o755)
+                installed_targets.append(str(sh_hook))
+            except Exception:
+                pass
+
+        # 2. Append to shell profile files for interactive/login shells
+        profile_candidates = [
+            Path("/root/.profile"),
+            Path("/root/.ashrc"),
+            Path.home() / ".profile",
+            Path.home() / ".ashrc",
+            Path.home() / ".bashrc",
+        ]
+        seen_paths = set()
+        for p in profile_candidates:
+            resolved = str(p.resolve()) if p.exists() else str(p)
+            if resolved in seen_paths:
+                continue
+            seen_paths.add(resolved)
+            try:
+                existing = p.read_text(encoding="utf-8") if p.exists() else ""
+                if ISH_AUTOSTART_BLOCK_START not in existing:
+                    new_content = existing.rstrip() + f"\n\n{hook_code}\n"
+                    p.write_text(new_content, encoding="utf-8")
+                    p.chmod(0o755)
+                    installed_targets.append(str(p))
+                else:
+                    installed_targets.append(f"{p} (already present)")
+            except Exception:
+                pass
+
+        # 3. Also populate /etc/local.d if possible
+        try:
+            local_d = Path("/etc/local.d")
+            local_d.mkdir(parents=True, exist_ok=True)
+            local_script = local_d / "gemini-satellite.start"
+            local_script.write_text(f"#!/bin/sh\n{hook_code}\n", encoding="utf-8")
+            local_script.chmod(0o755)
+            installed_targets.append(str(local_script))
+        except Exception:
+            pass
+
+        # 4. Launch immediately in background if not already running
+        try:
+            launch_cmd = (
+                f"cd {work_dir} && "
+                f"nohup {python_bin} {script_path} node --mothership {mothership} --interval {interval} > /var/log/gemini-satellite.log 2>&1 &"
+            )
+            subprocess.Popen(["/bin/sh", "-c", launch_cmd], start_new_session=True)
+        except Exception:
+            pass
+
+        return {
+            "status": "ok",
+            "init": "ish",
+            "installed_targets": installed_targets,
+            "message": f"iSH autostart installed across {len(installed_targets)} profile hooks. Node launched in background.",
+        }
+
     elif init_type == "openrc":
-        # OpenRC / Alpine / iSH
+        # Standard OpenRC / Alpine / Gentoo
         local_d = Path("/etc/local.d")
         if not local_d.exists():
             try:
@@ -182,29 +296,13 @@ def install_autostart(
             start_script.write_text(content, encoding="utf-8")
             start_script.chmod(0o755)
 
-            # In iSH or mobile containers without active OpenRC daemon, also hook /etc/profile.d/
-            profile_d = Path("/etc/profile.d")
-            if profile_d.exists() and profile_d.is_dir():
-                prof_hook = profile_d / "gemini-satellite.sh"
-                hook_code = (
-                    f"#!/bin/sh\n"
-                    f"# Gemini satellite autostart hook\n"
-                    f"pgrep -f 'gemini-integrated.*(node|hud)' >/dev/null || "
-                    f"nohup {python_bin} {script_path} node --mothership {mothership} --interval {interval} >/dev/null 2>&1 &\n"
-                )
-                try:
-                    prof_hook.write_text(hook_code, encoding="utf-8")
-                    prof_hook.chmod(0o755)
-                except Exception:
-                    pass
-
             # Try to start it now
             subprocess.Popen(["/bin/sh", str(start_script)], start_new_session=True)
             return {
                 "status": "ok",
                 "init": "openrc",
                 "service_file": str(start_script),
-                "message": f"Boot script installed at {start_script} (OpenRC local.d & profile.d). Will run on system boot.",
+                "message": f"Boot script installed at {start_script} (OpenRC local.d). Will run on system boot.",
             }
         except Exception as exc:
             return {
@@ -283,6 +381,47 @@ def remove_autostart() -> Dict[str, Any]:
             pass
         return {"status": "ok", "message": "systemd satellite service disabled."}
 
+    elif init_type == "ish":
+        cleaned = []
+        p_hook = Path("/etc/profile.d/gemini-satellite.sh")
+        if p_hook.exists():
+            try:
+                p_hook.unlink()
+                cleaned.append(str(p_hook))
+            except Exception:
+                pass
+
+        profile_candidates = [
+            Path("/root/.profile"),
+            Path("/root/.ashrc"),
+            Path.home() / ".profile",
+            Path.home() / ".ashrc",
+            Path.home() / ".bashrc",
+        ]
+        for p in profile_candidates:
+            if p.exists():
+                try:
+                    text = p.read_text(encoding="utf-8")
+                    if ISH_AUTOSTART_BLOCK_START in text:
+                        # Strip block between start and end
+                        import re
+                        pattern = re.escape(ISH_AUTOSTART_BLOCK_START) + r".*?" + re.escape(ISH_AUTOSTART_BLOCK_END)
+                        stripped = re.sub(pattern, "", text, flags=re.DOTALL).strip() + "\n"
+                        p.write_text(stripped, encoding="utf-8")
+                        cleaned.append(str(p))
+                except Exception:
+                    pass
+
+        local_script = Path("/etc/local.d/gemini-satellite.start")
+        if local_script.exists():
+            try:
+                local_script.unlink()
+                cleaned.append(str(local_script))
+            except Exception:
+                pass
+
+        return {"status": "ok", "message": f"iSH autostart cleaned from {len(cleaned)} targets."}
+
     elif init_type == "openrc":
         start_script = Path("/etc/local.d/gemini-satellite.start")
         if start_script.exists():
@@ -317,12 +456,37 @@ def check_autostart_status() -> Dict[str, Any]:
         except Exception:
             pass
 
+    elif init == "ish":
+        has_prof_d = Path("/etc/profile.d/gemini-satellite.sh").exists()
+        has_root_prof = False
+        p_root = Path("/root/.profile")
+        if p_root.exists():
+            try:
+                has_root_prof = ISH_AUTOSTART_BLOCK_START in p_root.read_text(encoding="utf-8")
+            except Exception:
+                pass
+        status_info["installed"] = has_prof_d or has_root_prof
+
+        try:
+            ps_res = subprocess.run(["ps", "aux"], capture_output=True, text=True)
+            status_info["running"] = (
+                "gemini-integrated.py node" in ps_res.stdout
+                or "gemini-integrated.py satellite" in ps_res.stdout
+                or "gemini-integrated.py hud" in ps_res.stdout
+            )
+        except Exception:
+            pass
+
     elif init == "openrc":
         p = Path("/etc/local.d/gemini-satellite.start")
         status_info["installed"] = p.exists()
         try:
             ps_res = subprocess.run(["ps", "aux"], capture_output=True, text=True)
-            status_info["running"] = "gemini-integrated.py node" in ps_res.stdout or "gemini-integrated.py hud" in ps_res.stdout
+            status_info["running"] = (
+                "gemini-integrated.py node" in ps_res.stdout
+                or "gemini-integrated.py satellite" in ps_res.stdout
+                or "gemini-integrated.py hud" in ps_res.stdout
+            )
         except Exception:
             pass
 

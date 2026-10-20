@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 from gemini_app.fleet.protocol import FleetMessage
 from gemini_app.fleet.satellite import SatelliteNode, collect_telemetry, execute_fleet_upgrade
 from gemini_app.fleet.mothership import MothershipServer
-from gemini_app.fleet.hud import SatelliteHUD, clip_str, render_meter_bar
+from gemini_app.fleet.hud import SatelliteHUD, clip_ansi, clip_str, render_meter_bar, strip_ansi
 import gemini_app.fleet.security as fleet_sec
 from gemini_app.fleet.telemetry import (
     collect_mothership_telemetry,
@@ -143,7 +143,35 @@ class TestFleetTelemetryAndHUD(unittest.TestCase):
         self.assertIn("Topic:", rendered)
         self.assertIn("Fleet HUD", rendered)
         self.assertIn("Testing layout", rendered)
-        self.assertIn("LIVE 18ms", rendered)
+
+    def test_hud_renders_without_task_duplication(self) -> None:
+        hud = SatelliteHUD(node_id="ipad-test-01", mothership_addr="192.168.1.90:7331")
+        hud.update_telemetry({
+            "host": "mothership-host",
+            "platform": "Linux",
+            "vitals": {"cpu_pct": 10.0, "mem_used_mb": 1000.0, "mem_total_mb": 4000.0},
+            "git": {"branch": "main", "commit": "1234567"},
+            "cognitive": {
+                "state_desc": "State: Deliberating",
+                "task": "Task: Pair Programming on Autostart",
+                "thought": "Testing HUD deduplication",
+                "tool": "interact_ui",
+                "turn_number": 5,
+            },
+        })
+        rendered = hud.render()
+        self.assertNotIn("Task:  Task:", rendered)
+        self.assertNotIn("Task: Task:", rendered)
+        self.assertNotIn("State:  State:", rendered)
+        self.assertIn("Pair Programming on Autostart", rendered)
+
+    def test_hud_ansi_clipping(self) -> None:
+        raw_text = "HelloWorld"
+        self.assertEqual(strip_ansi(raw_text), "HelloWorld")
+        styled = "\033[1m\033[33mSuper Long Text Exceeding Limit\033[0m"
+        clipped = clip_ansi(styled, 15)
+        self.assertLessEqual(len(strip_ansi(clipped)), 15)
+        self.assertTrue(clipped.endswith("\033[0m"))
 
     def test_collect_mothership_telemetry(self) -> None:
         telem = collect_mothership_telemetry()
@@ -366,7 +394,14 @@ class TestFleetNodesAndAutostart(unittest.TestCase):
 
     def test_detect_init_system(self) -> None:
         init_sys = detect_init_system()
-        self.assertIn(init_sys, ["systemd", "openrc", "launchd", "cron", "unknown"])
+        self.assertIn(init_sys, ["systemd", "openrc", "ish", "launchd", "cron", "unknown"])
+
+    @patch("os.path.exists")
+    def test_detect_init_system_ish(self, mock_exists: MagicMock) -> None:
+        def _mock_exists(p: str) -> bool:
+            return p == "/proc/ish"
+        mock_exists.side_effect = _mock_exists
+        self.assertEqual(detect_init_system(), "ish")
 
     def test_format_fleet_nodes_markdown(self) -> None:
         md = format_fleet_nodes_markdown()

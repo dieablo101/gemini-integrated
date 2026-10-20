@@ -1415,7 +1415,7 @@ class ChatApp(App):
             active_topic = getattr(self.notes_manager, "active_topic", "general") if hasattr(self, "notes_manager") else "general"
             update_cognitive_state(
                 state_desc=event.gemini_state,
-                task=event.gemini_state,
+                task=event.user_state or event.gemini_state,
                 thought="Mind map synchronized.",
                 tool="none",
                 topic=active_topic,

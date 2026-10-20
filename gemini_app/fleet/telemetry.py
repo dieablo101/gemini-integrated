@@ -220,9 +220,19 @@ def update_cognitive_state(
 
     current = get_persisted_cognitive_state()
     if state_desc is not None:
-        current["state_desc"] = state_desc
+        clean_state = state_desc.strip()
+        while clean_state.lower().startswith("state:"):
+            clean_state = clean_state[6:].strip()
+        while clean_state.startswith("•"):
+            clean_state = clean_state[1:].strip()
+        current["state_desc"] = clean_state
     if task is not None:
-        current["task"] = task
+        clean_task = task.strip()
+        while clean_task.lower().startswith("task:"):
+            clean_task = clean_task[5:].strip()
+        while clean_task.startswith("•"):
+            clean_task = clean_task[1:].strip()
+        current["task"] = clean_task
     if thought is not None:
         current["thought"] = thought
     if tool is not None:

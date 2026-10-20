@@ -271,7 +271,7 @@ class ToolRegistry:
             act = (action or "list").lower().strip()
             if act in ("list", "snapshot", "status"):
                 return get_fleet_snapshot()
-            elif act in ("rescue", "restart", "reboot", "check", "exec", "provision"):
+            elif act in ("rescue", "restart", "reboot", "check", "exec", "provision", "autostart", "install_autostart"):
                 target = node_id or "satellite-ipad"
                 res_act = "restart" if act == "rescue" else act
                 return execute_ssh_rescue(node_id=target, action=res_act, custom_cmd=command)

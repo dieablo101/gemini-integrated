@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import re
 import select
 import shutil
 import sys
@@ -37,6 +38,11 @@ BG_BLUE = "\033[48;2;30;58;138m"
 BG_DARK = "\033[48;2;15;23;42m"
 
 
+def strip_ansi(text: str) -> str:
+    """Strips ANSI escape codes from string for exact visible character measurement."""
+    return re.sub(r"\033\[[0-9;]*[a-zA-Z]", "", text)
+
+
 def clip_str(text: str, max_len: int) -> str:
     """Clips text to max_len, appending '...' if truncated."""
     if len(text) <= max_len:
@@ -44,6 +50,42 @@ def clip_str(text: str, max_len: int) -> str:
     if max_len <= 3:
         return text[:max_len]
     return text[: max_len - 3] + "..."
+
+
+def clip_ansi(text: str, max_visible_len: int) -> str:
+    """Clips text to max_visible_len while preserving ANSI formatting and closing with RESET."""
+    if max_visible_len <= 0:
+        return ""
+    raw = strip_ansi(text)
+    if len(raw) <= max_visible_len:
+        return text
+
+    target = max(1, max_visible_len - 3)
+    out: List[str] = []
+    vis = 0
+    in_esc = False
+    esc_buf: List[str] = []
+
+    for ch in text:
+        if ch == "\033":
+            in_esc = True
+            esc_buf.append(ch)
+        elif in_esc:
+            esc_buf.append(ch)
+            if ch.isalpha():
+                in_esc = False
+                out.append("".join(esc_buf))
+                esc_buf = []
+        else:
+            if vis < target:
+                out.append(ch)
+                vis += 1
+            else:
+                break
+
+    out.append("...")
+    out.append(RESET)
+    return "".join(out)
 
 
 def render_meter_bar(pct: float, width: int = 10) -> str:
@@ -105,40 +147,37 @@ class SatelliteHUD:
         self.toast_expires = time.time() + duration
 
     def _format_box_line(self, left: str, content: str, width: int) -> str:
-        """Formats a single content line enclosed in vertical box lines."""
-        # Strip ANSI codes for length calculation
-        raw_len = 0
-        in_esc = False
-        for char in content:
-            if char == "\033":
-                in_esc = True
-            elif in_esc:
-                if char.isalpha():
-                    in_esc = False
-            else:
-                raw_len += 1
-
-        inner_w = max(0, width - 4)  # 2 for '│ ', 2 for ' │'
+        """Formats a single content line enclosed in vertical box lines, guaranteeing no overflow or wrapping."""
+        inner_w = max(10, width - 4)  # 2 for '│ ', 2 for ' │'
+        clipped = clip_ansi(content, inner_w)
+        raw_len = len(strip_ansi(clipped))
         padding = max(0, inner_w - raw_len)
-        return f"{BLUE}│{RESET} {content}{' ' * padding} {BLUE}│{RESET}\n"
+        return f"{BLUE}│{RESET} {clipped}{' ' * padding} {BLUE}│{RESET}\n"
 
     def render(self) -> str:
         """Constructs full dashboard frame fitted to current terminal size."""
         term_cols, term_lines = shutil.get_terminal_size((80, 24))
-        w = max(60, min(120, term_cols))
+        w = min(120, max(38, term_cols))
 
         # Top border with title & connection pill
         if self.is_connected:
             ping_str = f" {self.last_ping_ms:.0f}ms" if self.last_ping_ms else ""
             status_pill = f"{GREEN}{BOLD}[● LIVE{ping_str}]{RESET}"
+            raw_pill_len = len(f"[● LIVE{ping_str}]")
         else:
             status_pill = f"{RED}{BOLD}[● OFFLINE]{RESET}"
+            raw_pill_len = len("[● OFFLINE]")
 
         title = f"{CYAN}{BOLD}🛰️ GEMINI HUD{RESET}"
         header_inner = f"─ {title} ─ {status_pill} "
-        raw_header_len = len("─ 🛰️ GEMINI HUD ─ [● LIVE 99ms] ") if self.is_connected else len("─ 🛰️ GEMINI HUD ─ [● OFFLINE] ")
-        dash_fill = max(0, w - 2 - raw_header_len - len(self.mothership_addr) - 3)
-        top_bar = f"{BLUE}┌{header_inner}{'─' * dash_fill} {DARK_GRAY}{self.mothership_addr}{BLUE} ─┐{RESET}\n"
+        raw_header_len = len("─ 🛰️ GEMINI HUD ─ ") + raw_pill_len + 1
+
+        rem_addr_w = max(0, w - raw_header_len - 6)
+        addr_disp = clip_str(self.mothership_addr, rem_addr_w) if rem_addr_w >= 7 else ""
+        addr_part = f" {DARK_GRAY}{addr_disp}{BLUE}" if addr_disp else ""
+        used_len = raw_header_len + (len(addr_disp) + 1 if addr_disp else 0) + 4
+        dash_fill = max(0, w - used_len)
+        top_bar = f"{BLUE}┌{header_inner}{'─' * dash_fill}{addr_part} ─┐{RESET}\n"
 
         lines = [top_bar]
 
@@ -152,7 +191,6 @@ class SatelliteHUD:
         cpu_pct = vitals.get("cpu_pct", 0.0)
         mem_used = vitals.get("mem_used_mb", 0.0)
         mem_tot = vitals.get("mem_total_mb", 0.0)
-        disk_free = vitals.get("disk_free_gb", 0.0)
 
         git_branch = git_info.get("branch", "main")
         git_sha = git_info.get("commit", "unknown")
@@ -164,7 +202,7 @@ class SatelliteHUD:
         )
         lines.append(self._format_box_line("│", line1, w))
 
-        meter = render_meter_bar(cpu_pct, width=8)
+        meter = render_meter_bar(cpu_pct, width=6 if w < 65 else 8)
         mem_str = f"{mem_used / 1024:.1f}G/{mem_tot / 1024:.1f}G" if mem_tot > 0 else "N/A"
         load_avg = vitals.get("load_avg", [0.0, 0.0, 0.0])
         ld_str = f"{load_avg[0]:.2f}" if load_avg else "?"
@@ -179,24 +217,46 @@ class SatelliteHUD:
         div_mind = f"{BLUE}├─ {PURPLE}{BOLD}🧠 AI COGNITIVE STREAM{RESET} {BLUE}{'─' * max(0, w - 26)}┤{RESET}\n"
         lines.append(div_mind)
 
-        # 2. Cognitive State
-        state_desc = cognitive.get("state_desc", "Mothership Standing By")
-        task_desc = cognitive.get("task", "Awaiting active task")
-        thought = cognitive.get("thought", "Connected and monitoring bilateral stream.")
-        tool = cognitive.get("tool", "none")
-        topic_str = cognitive.get("topic") or "fleet & satellite nodes"
-        topic_clipped = clip_str(topic_str, 24)
+        # 2. Cognitive State (Cleaning duplicated prefixes and state duplication)
+        raw_state = str(cognitive.get("state_desc") or "Standing By").strip()
+        raw_task = str(cognitive.get("task") or "Awaiting active task").strip()
+        thought = str(cognitive.get("thought") or "Connected and monitoring bilateral stream.").strip()
+        tool = str(cognitive.get("tool") or "none").strip()
+        topic_str = str(cognitive.get("topic") or "fleet & satellite nodes").strip()
+
+        # Strip redundant "Task: " / "State: " prefixes
+        clean_task = raw_task
+        while clean_task.lower().startswith("task:"):
+            clean_task = clean_task[5:].strip()
+        while clean_task.startswith("•"):
+            clean_task = clean_task[1:].strip()
+
+        clean_state = raw_state
+        while clean_state.lower().startswith("state:"):
+            clean_state = clean_state[6:].strip()
+        while clean_state.startswith("•"):
+            clean_state = clean_state[1:].strip()
+
+        # If clean_state is identical to clean_task, show a distinct informative state
+        if clean_state.lower() == clean_task.lower():
+            clean_state = "Active Processing" if tool not in ("none", "idle", "") else "Standing By"
+
+        topic_clipped = clip_str(topic_str, 20 if w < 70 else 26)
         rem_state_w = max(10, w - len(topic_clipped) - 18)
-        c_line1 = f"{BOLD}Topic:{RESET} {PURPLE}{topic_clipped}{RESET}  {BOLD}State:{RESET} {WHITE}{clip_str(state_desc, rem_state_w)}{RESET}"
-        c_line2 = f"{BOLD}Task:{RESET}  {YELLOW}{clip_str(task_desc, w - 14)}{RESET}"
-        c_line3 = f"{BOLD}Think:{RESET} {GRAY}\"{clip_str(thought, w - 15)}\"{RESET}"
+        c_line1 = f"{BOLD}Topic:{RESET} {PURPLE}{topic_clipped}{RESET}  {BOLD}State:{RESET} {WHITE}{clip_str(clean_state, rem_state_w)}{RESET}"
+        c_line2 = f"{BOLD}Task:{RESET}  {YELLOW}{clean_task}{RESET}"
+        c_line3 = f"{BOLD}Think:{RESET} {GRAY}\"{thought}\"{RESET}"
+
+        # Dynamic tool execution badge & turn counter
+        turn_num = cognitive.get("turn_number", 1)
+        turn_badge = f"{DARK_GRAY}(Turn #{turn_num}){RESET}"
         if tool in ("none", "idle", ""):
             tool_pill = f"{DARK_GRAY}[idle]{RESET}"
         elif "[done]" in tool:
             tool_pill = f"{BLUE}[{tool}]{RESET}"
         else:
             tool_pill = f"{GREEN}{BOLD}[⚡ {tool}]{RESET}"
-        c_line4 = f"{BOLD}Tool:{RESET}  {tool_pill}"
+        c_line4 = f"{BOLD}Tool:{RESET}  {tool_pill}  {turn_badge}"
 
         lines.append(self._format_box_line("│", c_line1, w))
         lines.append(self._format_box_line("│", c_line2, w))
@@ -212,11 +272,11 @@ class SatelliteHUD:
         if recent_commits:
             for c in recent_commits[:2]:
                 sha = c.get("sha", "")
-                msg = clip_str(c.get("message", ""), w - 18)
+                msg = c.get("message", "")
                 lines.append(self._format_box_line("│", f"{BLUE}• {sha}{RESET} {GRAY}{msg}{RESET}", w))
         elif self.recent_events:
             for ev in self.recent_events[-2:]:
-                lines.append(self._format_box_line("│", f"{GRAY}{clip_str(ev, w - 6)}{RESET}", w))
+                lines.append(self._format_box_line("│", f"{GRAY}{ev}{RESET}", w))
         else:
             lines.append(self._format_box_line("│", f"{DARK_GRAY}No recent activity recorded.{RESET}", w))
 
@@ -227,8 +287,9 @@ class SatelliteHUD:
             bot_inner = f"─ {toast_text} "
             raw_bot_len = len(f"─  {self.active_status_toast}  ")
         else:
-            bot_inner = f"─ {DARK_GRAY}[q:quit u:upgrade r:redraw]{RESET} "
-            raw_bot_len = len("─ [q:quit u:upgrade r:redraw] ")
+            bot_hint = "[q:quit u:upg]" if w < 55 else "[q:quit u:upgrade r:redraw]"
+            bot_inner = f"─ {DARK_GRAY}{bot_hint}{RESET} "
+            raw_bot_len = len(f"─ {bot_hint} ")
 
         bot_dash = max(0, w - 2 - raw_bot_len - len(now_str) - 3)
         bottom_bar = f"{BLUE}└{bot_inner}{'─' * bot_dash} {DARK_GRAY}{now_str}{BLUE} ─┘{RESET}\n"
@@ -246,7 +307,8 @@ class SatelliteHUD:
                     os.set_blocking(sys.stdin.fileno(), False)
                 except Exception:
                     pass
-            sys.stdout.write("\033[?1049h\033[?25l")  # Alt buffer + hide cursor
+            # Alt buffer, clear screen, home cursor, hide cursor
+            sys.stdout.write("\033[?1049h\033[2J\033[H\033[?25l")
             sys.stdout.flush()
         except Exception:
             pass
@@ -271,7 +333,6 @@ class SatelliteHUD:
         if not sys.stdin.isatty():
             return None
         try:
-            # Completely non-blocking raw read
             data = os.read(sys.stdin.fileno(), 32)
             if data:
                 return data.decode("utf-8", errors="ignore")[:1]
@@ -282,9 +343,9 @@ class SatelliteHUD:
         return None
 
     def render_loop_tick(self) -> Optional[str]:
-        """Renders one frame and checks for keypress. Returns key if pressed."""
+        """Renders one frame and checks for keypress, clearing to bottom to prevent ghost lines."""
         frame = self.render()
-        # Home cursor and write frame
-        sys.stdout.write(f"\033[H{frame}")
+        # Home cursor, clear to end of screen, and write frame cleanly
+        sys.stdout.write(f"\033[H\033[J{frame}")
         sys.stdout.flush()
         return self.check_keyboard_input()

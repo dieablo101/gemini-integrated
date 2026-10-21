@@ -337,7 +337,7 @@ def get_saved_mothership(default: Optional[str] = None) -> str:
     Resolution order:
     1. GEMINI_MOTHERSHIP environment variable
     2. ~/.gemini/config.json ("mothership_host" or "mothership")
-    3. Provided default or fallback to "192.168.1.90"
+    3. Provided default or fallback to dynamic LAN IP
     """
     env_host = os.getenv("GEMINI_MOTHERSHIP")
     if env_host and env_host.strip():
@@ -353,7 +353,7 @@ def get_saved_mothership(default: Optional[str] = None) -> str:
         except Exception:
             pass
 
-    return default or "192.168.1.90"
+    return default or get_local_lan_ip()
 
 
 def get_saved_mothership_port(default: int = DEFAULT_PORT) -> int:
@@ -477,8 +477,16 @@ class SatelliteNode:
             try:
                 self.sock.sendall(msg.serialize())
                 return True
+            except (BrokenPipeError, ConnectionResetError, OSError) as exc:
+                self._running = False
+                if self.hud:
+                    self.hud.set_connection_status(False)
+                else:
+                    sys.stderr.write(f"[satellite] Connection lost: {exc}\n")
+                return False
             except Exception as exc:
-                sys.stderr.write(f"[satellite] Send failed: {exc}\n")
+                if not self.hud:
+                    sys.stderr.write(f"[satellite] Send failed: {exc}\n")
                 return False
 
     def handle_command(self, cmd_msg: FleetMessage) -> FleetMessage:
@@ -731,7 +739,8 @@ class SatelliteNode:
                 node_id=self.node_id,
                 payload={"telemetry": collect_telemetry()},
             )
-            self.send_message(hb)
+            if not self.send_message(hb):
+                break
             time.sleep(self.heartbeat_interval)
 
     def start(self) -> bool:
@@ -844,9 +853,15 @@ class SatelliteNode:
             self.stop()
 
     def run_forever(self) -> None:
-        """Blocks while satellite is running; handles Ctrl+C cleanly."""
+        """Blocks while satellite is running; handles Ctrl+C cleanly and auto-reconnects."""
         try:
-            while self._running:
+            while True:
+                if not self._running:
+                    self.stop()
+                    sys.stdout.write(f"[satellite] Connection lost. Reconnecting to {self.mothership_host}:{self.mothership_port} in 3s...\n")
+                    time.sleep(3.0)
+                    if self.start():
+                        sys.stdout.write(f"[satellite] Reconnected successfully.\n")
                 time.sleep(0.5)
         except KeyboardInterrupt:
             sys.stdout.write("\n[satellite] Interrupt received. Shutting down...\n")

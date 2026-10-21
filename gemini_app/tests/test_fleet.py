@@ -232,7 +232,7 @@ class TestFleetNetwork(unittest.TestCase):
         fleet_nodes.NODES_REGISTRY_FILE = t_path / "nodes_registry.json"
         fleet_nodes.ACTIVE_NODES_FILE = t_path / "active_nodes.json"
 
-        self.server = MothershipServer(host="127.0.0.1", port=0, auto_broadcast_telemetry=False)
+        self.server = MothershipServer(host="127.0.0.1", port=0, auto_broadcast_telemetry=False, require_auth=True)
         self.assertTrue(self.server.start())
         self.test_port = self.server.port
 
@@ -498,6 +498,11 @@ class TestFleetNodesAndAutostart(unittest.TestCase):
         node = SatelliteNode("127.0.0.1", 7331, auto_upgrade=True)
         self.assertTrue(node.auto_upgrade)
         self.assertFalse(node._is_upgrading)
+
+    def test_find_repo_root(self) -> None:
+        from gemini_app.fleet.satellite import find_repo_root
+        root = find_repo_root()
+        self.assertTrue((root / ".git").is_dir())
 
 
 if __name__ == "__main__":

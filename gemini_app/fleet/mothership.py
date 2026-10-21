@@ -144,11 +144,9 @@ class MothershipServer:
         candidates: List[tuple[str, str]] = []
         with self.lock:
             for nid, sat in self.nodes.items():
-                node_commit = sat.telemetry.get("git_commit")
+                node_commit = sat.telemetry.get("git_commit", "unknown")
                 if (
-                    node_commit
-                    and node_commit != "unknown"
-                    and node_commit != ms_commit
+                    node_commit != ms_commit
                     and (now - self._upgrade_cooldowns.get(nid, 0.0) > 45.0)
                 ):
                     self._upgrade_cooldowns[nid] = now

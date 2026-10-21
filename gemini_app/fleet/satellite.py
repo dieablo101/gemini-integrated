@@ -7,6 +7,7 @@ using only the Python standard library.
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 from pathlib import Path
@@ -192,9 +193,12 @@ def execute_fleet_upgrade(
     force: bool = False,
     repo_dir: Optional[Path] = None,
     target_commit: Optional[str] = None,
+    bundle_b64: Optional[str] = None,
+    bundle_bytes: Optional[bytes] = None,
 ) -> Dict[str, Any]:
     """Executes atomic 3-stage safety gated upgrade on the local node repository.
 
+    Stage 0: Direct in-memory bundle unpack from Mothership (fastest, zero internet/git dependency).
     Stage 1: Fetch target remote ref safely (git fetch with tarball fallback).
     Stage 2: Fast-forward checkout/merge into clean state.
     Stage 3: Pre-flight syntax and import verification.
@@ -219,9 +223,52 @@ def execute_fleet_upgrade(
     branch_target = target_ref.split("/")[-1] if "/" in target_ref else target_ref
     is_ish = is_ish_platform()
 
-    # Stage 1 & 2: Prefer native git fetch & reset first across all platforms (except iSH where git segfaults)
+    # Stage 0: Direct in-memory bundle unpack from Mothership (fastest, zero internet/git dependency)
     git_worked = False
-    if not is_ish:
+    if bundle_b64 and not bundle_bytes:
+        try:
+            bundle_bytes = base64.b64decode(bundle_b64.encode("ascii"))
+        except Exception as exc:
+            return {
+                "status": "error",
+                "stage": "bundle_decode",
+                "error": f"Base64 decode failed: {exc}",
+            }
+
+    if bundle_bytes:
+        try:
+            import io
+            import tarfile
+            with tarfile.open(fileobj=io.BytesIO(bundle_bytes), mode="r:gz") as tar:
+                for member in tar.getmembers():
+                    clean_name = member.name.lstrip("./")
+                    if not clean_name:
+                        continue
+                    dest_path = cwd / clean_name
+                    if member.isdir():
+                        dest_path.mkdir(parents=True, exist_ok=True)
+                    elif member.isreg():
+                        dest_path.parent.mkdir(parents=True, exist_ok=True)
+                        with tar.extractfile(member) as src, open(dest_path, "wb") as dst:
+                            dst.write(src.read())
+
+            if target_commit and target_commit != "unknown":
+                try:
+                    ref_f = cwd / ".git" / "refs" / "heads" / branch_target
+                    ref_f.parent.mkdir(parents=True, exist_ok=True)
+                    ref_f.write_text(f"{target_commit.strip()}\n", encoding="utf-8")
+                except Exception:
+                    pass
+            git_worked = True
+        except Exception as exc:
+            return {
+                "status": "error",
+                "stage": "bundle_extract",
+                "error": f"Bundle extraction failed: {exc}",
+            }
+
+    # Stage 1 & 2: Prefer native git fetch & reset first across all platforms (except iSH where git segfaults)
+    if not git_worked and not is_ish:
         try:
             fetch_res = subprocess.run(
                 ["git", "fetch", "origin", branch_target],
@@ -367,7 +414,7 @@ def execute_fleet_upgrade(
         else:
             new_commit = "updated"
 
-    upgraded = (old_commit != new_commit) or (bool(target_commit) and old_commit != target_commit[:7])
+    upgraded = (old_commit != new_commit) or (bool(target_commit) and old_commit != target_commit[:7]) or force
     msg = f"Pre-flight verified. Upgraded {old_commit} -> {new_commit}" if upgraded else "Code already matches origin/main."
     return {
         "status": "ok",
@@ -625,6 +672,34 @@ class SatelliteNode:
         self._write_lock = threading.Lock()
         self.hud = None  # SatelliteHUD instance if running in HUD mode
         self._pending_ping_t0: Optional[float] = None
+        self.pending_responses: Dict[str, Any] = {}
+        self.response_events: Dict[str, threading.Event] = {}
+
+    def request_mothership_bundle(self, timeout: float = 8.0) -> tuple[Optional[str], Optional[str]]:
+        """Requests direct code bundle from Mothership over persistent TCP connection."""
+        if not self.sock or not self._running:
+            return None, None
+        req_id = f"bundle-req-{int(time.time() * 1000)}"
+        ev = threading.Event()
+        self.response_events[req_id] = ev
+        try:
+            req_msg = FleetMessage(
+                msg_type=FleetMessage.TYPE_COMMAND,
+                node_id=self.node_id,
+                payload={"action": "get_update_bundle"},
+                msg_id=req_id,
+            )
+            self.send_message(req_msg)
+            if ev.wait(timeout):
+                resp = self.pending_responses.pop(req_id, {})
+                if resp.get("status") == "ok":
+                    return resp.get("bundle_b64"), resp.get("target_commit")
+        except Exception:
+            pass
+        finally:
+            self.response_events.pop(req_id, None)
+            self.pending_responses.pop(req_id, None)
+        return None, None
 
     def connect(self, timeout: float = 4.0) -> bool:
         """Establishes TCP connection to the Mothership with automatic LAN -> WAN failover."""
@@ -744,9 +819,15 @@ class SatelliteNode:
             target_ref = params.get("target_ref", "origin/main")
             target_commit = params.get("target_commit")
             force = params.get("force", False)
+            bundle_b64 = params.get("bundle_b64")
             if self.hud:
-                self.hud.show_toast(f"Upgrading from {target_ref}...", duration=5.0)
-            upgrade_res = execute_fleet_upgrade(target_ref=target_ref, force=force, target_commit=target_commit)
+                self.hud.show_toast(f"Upgrading from Mothership ({target_commit[:7] if target_commit else target_ref})...", duration=5.0)
+            upgrade_res = execute_fleet_upgrade(
+                target_ref=target_ref,
+                force=force,
+                target_commit=target_commit,
+                bundle_b64=bundle_b64,
+            )
             result_payload.update(upgrade_res)
 
             # If upgrade succeeded and code was updated, trigger scheduled reboot
@@ -805,7 +886,13 @@ class SatelliteNode:
                 else:
                     sys.stdout.write(f"[satellite] {msg}\n")
 
-                res = execute_fleet_upgrade(target_ref="origin/main", target_commit=target_commit)
+                bundle_b64, ms_c = self.request_mothership_bundle(timeout=8.0)
+                target_c = ms_c or target_commit
+                res = execute_fleet_upgrade(
+                    target_ref="origin/main",
+                    target_commit=target_c,
+                    bundle_b64=bundle_b64,
+                )
                 if res.get("status") == "ok" and res.get("upgraded"):
                     new_c = res.get("new_commit", target_commit)
                     done_msg = f"Upgraded to {new_c}! Rebooting..."
@@ -911,6 +998,13 @@ class SatelliteNode:
                             resp = self.handle_command(msg)
                             self.send_message(resp)
                         elif msg.type == FleetMessage.TYPE_RESPONSE:
+                            req_id = msg.msg_id
+                            if req_id.startswith("resp-"):
+                                req_id = req_id[5:]
+                            if req_id in self.response_events:
+                                self.pending_responses[req_id] = msg.payload
+                                self.response_events[req_id].set()
+
                             if "pong" in msg.payload and self._pending_ping_t0:
                                 rtt_ms = (time.perf_counter() - self._pending_ping_t0) * 1000.0
                                 self._pending_ping_t0 = None

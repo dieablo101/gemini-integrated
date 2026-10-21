@@ -7,16 +7,19 @@ using only the Python standard library.
 from __future__ import annotations
 
 import argparse
+import atexit
 import base64
 import json
 import os
 from pathlib import Path
 import platform
+import select
 import shutil
 import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from typing import Any, Dict, Optional, Tuple
@@ -42,6 +45,45 @@ def is_ish_platform() -> bool:
     if Path("/mnt/ipad").exists():
         return True
     return False
+
+
+def is_termux_platform() -> bool:
+    """Detects Android Termux environment."""
+    if "com.termux" in os.environ.get("PREFIX", ""):
+        return True
+    if Path("/data/data/com.termux").exists():
+        return True
+    if "TERMUX_VERSION" in os.environ:
+        return True
+    return False
+
+
+def acquire_termux_wake_lock() -> bool:
+    """Acquires Android wake lock via termux-wake-lock to prevent CPU Doze sleep."""
+    if not is_termux_platform():
+        return False
+    if shutil.which("termux-wake-lock"):
+        try:
+            subprocess.run(["termux-wake-lock"], capture_output=True, timeout=2)
+            return True
+        except Exception:
+            pass
+    return False
+
+
+def release_termux_wake_lock() -> None:
+    """Releases Android wake lock via termux-wake-unlock."""
+    if not is_termux_platform():
+        return
+    if shutil.which("termux-wake-unlock"):
+        try:
+            subprocess.run(["termux-wake-unlock"], capture_output=True, timeout=2)
+        except Exception:
+            pass
+
+
+# Ensure wake lock is released on process exit if acquired
+atexit.register(release_termux_wake_lock)
 
 
 def find_repo_root(start: Optional[Path] = None) -> Path:
@@ -134,13 +176,21 @@ def ensure_ish_background_keepalive() -> None:
 def collect_telemetry() -> Dict[str, Any]:
     """Collects system capabilities and status using standard library only."""
     uname = platform.uname()
-    total_b, used_b, free_b = shutil.disk_usage("/")
+    try:
+        disk_path = str(Path.home()) if Path.home().exists() else "/"
+        total_b, used_b, free_b = shutil.disk_usage(disk_path)
+    except Exception:
+        total_b, used_b, free_b = shutil.disk_usage("/")
 
     # Check for iOS filesystem mount point with cached scandir guard
     has_ipad_mount, ipad_files_count = check_ipad_mount()
 
     # Read git status using pure Python to avoid fork/exec crashes in iSH emulator
     git_commit, git_branch = _get_git_info_fast()
+
+    is_ish = is_ish_platform()
+    is_termux = is_termux_platform()
+    has_wake_lock = is_termux and bool(shutil.which("termux-wake-lock"))
 
     return {
         "hostname": socket.gethostname(),
@@ -153,6 +203,9 @@ def collect_telemetry() -> Dict[str, Any]:
         "disk_total_gb": round(total_b / (1024 ** 3), 2),
         "has_ipad_mount": has_ipad_mount,
         "ipad_files_count": ipad_files_count,
+        "is_ish": is_ish,
+        "is_termux": is_termux,
+        "has_wake_lock": has_wake_lock,
         "git_commit": git_commit,
         "git_branch": git_branch,
     }
@@ -540,7 +593,7 @@ def _is_pid_running(pid: int) -> bool:
 
 def acquire_singleton_lock(mode: str = "node") -> bool:
     """Guarantees only one satellite node or HUD instance runs at a time."""
-    pid_dir = Path("/tmp")
+    pid_dir = Path(tempfile.gettempdir())
     pid_file = pid_dir / f"gemini-satellite-{mode}.pid"
     other_mode = "node" if mode == "hud" else "hud"
     other_pid_file = pid_dir / f"gemini-satellite-{other_mode}.pid"
@@ -657,8 +710,10 @@ class SatelliteNode:
         if not node_id:
             h = socket.gethostname().lower()
             m = platform.machine().lower()
-            if "ish" in h or Path("/mnt/ipad").exists():
+            if is_ish_platform():
                 node_id = f"ipad-ish-{h}"
+            elif is_termux_platform():
+                node_id = f"android-termux-{h}"
             else:
                 node_id = f"node-{m}-{h}"
         self.node_id = node_id
@@ -721,9 +776,20 @@ class SatelliteNode:
                 # Fast timeout on LAN (1.8s) when WAN fallback exists so off-wifi nodes don't stall
                 t_out = 1.8 if (route_type == "LAN" and len(candidates) > 1) else timeout
                 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                # Mobile-hardened TCP Keepalive (detects carrier/Wi-Fi drops in ~20-30s instead of hanging 15+ minutes)
+                try:
+                    s.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+                    if hasattr(socket, "TCP_KEEPIDLE"):
+                        s.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 10)
+                    if hasattr(socket, "TCP_KEEPINTVL"):
+                        s.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 5)
+                    if hasattr(socket, "TCP_KEEPCNT"):
+                        s.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3)
+                except Exception:
+                    pass
                 s.settimeout(t_out)
                 s.connect((host, self.mothership_port))
-                s.settimeout(None)  # Switch to blocking for threads
+                s.settimeout(None)  # Switch to blocking / select-ready for threads
                 self.sock = s
                 self.active_host = host
                 self.active_route_type = route_type
@@ -952,6 +1018,11 @@ class SatelliteNode:
         buf = ""
         while self._running:
             try:
+                if not self.sock:
+                    break
+                r, _, _ = select.select([self.sock], [], [], 2.0)
+                if not r:
+                    continue
                 data = self.sock.recv(4096)
                 if not data:
                     if self.hud:
@@ -1065,6 +1136,11 @@ class SatelliteNode:
         try:
             srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            if hasattr(socket, "SO_REUSEPORT"):
+                try:
+                    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+                except Exception:
+                    pass
             srv.bind(("0.0.0.0", DEFAULT_RENDEZVOUS_PORT))
             srv.listen(5)
             self._rendezvous_sock = srv
@@ -1187,6 +1263,10 @@ class SatelliteNode:
 
         self._running = True
 
+        # Acquire Termux wake lock on Android to prevent system Doze from killing socket
+        if is_termux_platform():
+            acquire_termux_wake_lock()
+
         self._listener_thread = threading.Thread(target=self._listen_loop, daemon=True)
         self._listener_thread.start()
 
@@ -1296,14 +1376,28 @@ class SatelliteNode:
 
     def run_forever(self) -> None:
         """Blocks while satellite is running; handles Ctrl+C cleanly and auto-reconnects."""
+        backoff = 2.0
+        max_backoff = 20.0
         try:
             while True:
                 if not self._running:
                     self.stop()
-                    sys.stdout.write(f"[satellite] Connection lost. Reconnecting to {self.mothership_host}:{self.mothership_port} in 3s...\n")
-                    time.sleep(3.0)
+                    sys.stdout.write(f"[satellite] Connection lost. Reconnecting to {self.mothership_host}:{self.mothership_port} in {int(backoff)}s...\n")
+                    time.sleep(backoff)
+                    saved_lan, saved_wan, saved_p = get_saved_mothership_endpoints()
+                    if saved_lan:
+                        self.lan_host = saved_lan
+                    if saved_wan:
+                        self.wan_host = saved_wan
+                    if saved_p:
+                        self.mothership_port = saved_p
                     if self.start():
                         sys.stdout.write(f"[satellite] Reconnected successfully.\n")
+                        backoff = 2.0
+                    else:
+                        backoff = min(backoff * 1.5, max_backoff)
+                else:
+                    backoff = 2.0
                 time.sleep(0.5)
         except KeyboardInterrupt:
             sys.stdout.write("\n[satellite] Interrupt received. Shutting down...\n")
@@ -1313,6 +1407,8 @@ class SatelliteNode:
     def stop(self) -> None:
         """Closes socket and terminates background worker threads cleanly."""
         self._running = False
+        if is_termux_platform():
+            release_termux_wake_lock()
         if self._rendezvous_sock:
             try:
                 self._rendezvous_sock.close()

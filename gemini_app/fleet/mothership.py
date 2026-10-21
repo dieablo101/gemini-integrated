@@ -125,6 +125,16 @@ class MothershipServer:
         while self._running and self.server_sock:
             try:
                 conn, addr = self.server_sock.accept()
+                try:
+                    conn.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+                    if hasattr(socket, "TCP_KEEPIDLE"):
+                        conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 10)
+                    if hasattr(socket, "TCP_KEEPINTVL"):
+                        conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 5)
+                    if hasattr(socket, "TCP_KEEPCNT"):
+                        conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3)
+                except Exception:
+                    pass
                 if self.fleet_guard.is_ip_banned(addr[0]):
                     sys.stderr.write(f"[mothership] REJECTED connection from banned IP: {addr[0]}\n")
                     try:

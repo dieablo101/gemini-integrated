@@ -509,6 +509,15 @@ class TestFleetNodesAndAutostart(unittest.TestCase):
         mock_exists.side_effect = _mock_exists
         self.assertEqual(detect_init_system(), "ish")
 
+    def test_detect_init_system_termux(self) -> None:
+        with patch.dict("os.environ", {"TERMUX_VERSION": "0.118.0"}):
+            self.assertEqual(detect_init_system(), "termux")
+
+    def test_termux_platform_detection(self) -> None:
+        from gemini_app.fleet.satellite import is_termux_platform
+        with patch.dict("os.environ", {"TERMUX_VERSION": "0.118.0"}):
+            self.assertTrue(is_termux_platform())
+
     def test_format_fleet_nodes_markdown(self) -> None:
         md = format_fleet_nodes_markdown()
         self.assertIn("Mothership Fleet", md)

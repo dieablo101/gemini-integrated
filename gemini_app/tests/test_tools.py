@@ -87,6 +87,23 @@ class TestTools(unittest.TestCase):
         self.assertEqual(res["exit_code"], 0)
         self.assertIn("runner test", res["stdout"])
 
+    def test_execute_shell_terminal_isolation(self):
+        # Verify execute_shell runs with stdin=DEVNULL and detached controlling tty
+        res = execute_shell(
+            self.work_dir,
+            command='python3 -c "import sys; print(\'ISATTY:\', sys.stdin.isatty())"',
+        )
+        self.assertEqual(res["exit_code"], 0)
+        self.assertIn("ISATTY: False", res["stdout"])
+
+        # Verify child process cannot open /dev/tty (preventing sudo prompts on row 0)
+        res_tty = execute_shell(
+            self.work_dir,
+            command='python3 -c "open(\'/dev/tty\', \'r\')"',
+        )
+        self.assertNotEqual(res_tty["exit_code"], 0)
+        self.assertIn("No such device or address", res_tty["stderr"])
+
     def test_expand_mind(self):
         history = [
             {"turn_id": "turn_1", "role": "user", "text": "Turn 1 content"},

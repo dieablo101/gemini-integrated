@@ -180,15 +180,22 @@ def install_system_dependencies(packages: list[str] | None = None) -> dict[str, 
     cmd: list[str] = []
 
     if not is_root and shutil.which("sudo"):
-        cmd.append("sudo")
+        cmd.extend(["sudo", "-n"])
 
     if pkg_mgr == "apt-get":
         # Prepend non-interactive environment if apt
-        update_cmd = (["sudo"] if not is_root and shutil.which("sudo") else []) + ["apt-get", "update", "-y"]
+        update_cmd = (["sudo", "-n"] if not is_root and shutil.which("sudo") else []) + ["apt-get", "update", "-y"]
         try:
             env = os.environ.copy()
             env["DEBIAN_FRONTEND"] = "noninteractive"
-            subprocess.run(update_cmd, check=False, capture_output=True, env=env)
+            subprocess.run(
+                update_cmd,
+                check=False,
+                capture_output=True,
+                env=env,
+                stdin=subprocess.DEVNULL,
+                start_new_session=True,
+            )
         except Exception:
             pass
         cmd.extend(["apt-get", "install", "-y", *resolved_packages])
@@ -211,7 +218,15 @@ def install_system_dependencies(packages: list[str] | None = None) -> dict[str, 
     try:
         env = os.environ.copy()
         env["DEBIAN_FRONTEND"] = "noninteractive"
-        res = subprocess.run(cmd, capture_output=True, text=True, check=True, env=env)
+        res = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=True,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+        )
         return {
             "status": "success",
             "installed_packages": resolved_packages,

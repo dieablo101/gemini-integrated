@@ -522,6 +522,10 @@ class EmergencyToolbox:
                 env["PATH"] = f"{venv_bin}:{env.get('PATH', '')}"
                 env["VIRTUAL_ENV"] = str(venv_bin.parent)
 
+            env["DEBIAN_FRONTEND"] = "noninteractive"
+            env["GIT_TERMINAL_PROMPT"] = "0"
+            env["SUDO_PROMPT"] = ""
+
             res = subprocess.run(
                 command,
                 shell=True,
@@ -530,6 +534,8 @@ class EmergencyToolbox:
                 text=True,
                 timeout=timeout_seconds,
                 env=env,
+                stdin=subprocess.DEVNULL,
+                start_new_session=True,
             )
             status.stop()
             return {

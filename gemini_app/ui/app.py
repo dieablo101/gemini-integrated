@@ -180,6 +180,7 @@ class ChatApp(App):
 
     BINDINGS = [
         Binding("ctrl+c", "c_c_prefix_stub", "^c Commands", show=False),
+        Binding("ctrl+l", "repaint_screen", "^l Repaint Screen", show=False),
         Binding("ctrl+q", "quit", "^q Quit", show=False),
     ]
 
@@ -867,6 +868,9 @@ class ChatApp(App):
         elif key in ("ctrl+k", "k") or char == "k":
             self.action_emergency_interrupt()
             return True
+        elif key in ("ctrl+l", "l") or char == "l":
+            self.action_repaint_screen()
+            return True
         # for later exploration by gemini
         # elif key in ("period", "full_stop", ".") or char == ".":
         #     self.action_fork_chat()
@@ -1471,6 +1475,7 @@ class ChatApp(App):
         self.set_timer(1.2, self.hide_status)
 
         self.query_one("#input", ExpandingInput).focus()
+        self.refresh(layout=True)
 
     @on(RequestFailed)
     def on_request_failed(self, event: RequestFailed) -> None:
@@ -1479,6 +1484,7 @@ class ChatApp(App):
         self.notify(f"API Error: {event.error_message}", severity="error")
         self.set_timer(5.0, self.hide_status)
         self.query_one("#input", ExpandingInput).focus()
+        self.refresh(layout=True)
 
     def _read_active_chat_from_state(self) -> str | None:
         if STATE_FILE.exists():
@@ -1678,6 +1684,15 @@ class ChatApp(App):
                 legacy_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
             except Exception:
                 pass
+
+    def action_repaint_screen(self) -> None:
+        """Forces a clean redraw of the terminal screen and restores input focus."""
+        self.refresh(layout=True)
+        try:
+            self.query_one("#input", ExpandingInput).focus()
+        except Exception:
+            pass
+        self.notify("Screen repainted & input re-focused.")
 
     def action_emergency_interrupt(self) -> None:
         """Emergency interrupt: immediately cancels active requests, retry loops, and releases locks."""

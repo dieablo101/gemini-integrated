@@ -17,6 +17,14 @@ def execute_shell(working_dir: str | Path, command: str, timeout_seconds: int = 
         if venv_bin.exists():
             env["PATH"] = f"{venv_bin}:{env.get('PATH', '')}"
             env["VIRTUAL_ENV"] = str(venv_bin.parent)
+
+        # Enforce non-interactive environment to isolate child processes from the controlling terminal
+        # and prevent sudo/apt/git from prompting on /dev/tty, corrupting row 0, or intercepting keystrokes.
+        env["DEBIAN_FRONTEND"] = "noninteractive"
+        env["GIT_TERMINAL_PROMPT"] = "0"
+        env["SUDO_PROMPT"] = ""
+        env["PYTHONUNBUFFERED"] = "1"
+
         res = subprocess.run(
             command,
             shell=True,
@@ -25,6 +33,8 @@ def execute_shell(working_dir: str | Path, command: str, timeout_seconds: int = 
             text=True,
             timeout=timeout_seconds,
             env=env,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
         )
         return {
             "exit_code": res.returncode,

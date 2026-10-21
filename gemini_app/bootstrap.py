@@ -207,13 +207,20 @@ def check_and_install_distro_dependencies() -> Dict[str, Any]:
     if not results["git_found"] and pkg_mgr in packages_by_mgr:
         pkgs = packages_by_mgr[pkg_mgr]
         is_root = os.geteuid() == 0 if hasattr(os, "geteuid") else False
-        sudo_cmd = [] if is_root else (["sudo"] if shutil.which("sudo") else [])
+        sudo_cmd = [] if is_root else (["sudo", "-n"] if shutil.which("sudo") else [])
 
         cmd: list[str] = []
         if pkg_mgr == "apt-get":
             update_cmd = sudo_cmd + ["apt-get", "update", "-qq"]
             try:
-                subprocess.run(update_cmd, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                subprocess.run(
+                    update_cmd,
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    stdin=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
             except Exception:
                 pass
             cmd = sudo_cmd + ["apt-get", "install", "-y", "-qq"] + pkgs
@@ -228,7 +235,14 @@ def check_and_install_distro_dependencies() -> Dict[str, Any]:
 
         if cmd:
             try:
-                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+                proc = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                    stdin=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
                 if proc.returncode == 0:
                     results["installed"].extend(pkgs)
                     results["git_found"] = shutil.which("git") is not None

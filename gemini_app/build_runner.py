@@ -142,6 +142,8 @@ class SystemRunner:
             cwd=str(working_dir),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
             text=True,
             bufsize=1,
             env=active_env,

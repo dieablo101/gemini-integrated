@@ -47,6 +47,8 @@ dev = [
 gemini-integrated = "gemini_app.main:main"
 gemini = "gemini_app.main:main"
 gemini-satellite = "gemini_app.fleet.satellite:main"
+gemini-status = "gemini_app.task_runner:cli_main"
+gemini-runner = "gemini_app.build_runner:cli_main"
 
 [tool.setuptools.packages.find]
 where = ["."]

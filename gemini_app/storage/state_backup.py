@@ -168,6 +168,23 @@ def get_configured_backup_remote(remote_repo: str = DEFAULT_REPO_NAME) -> tuple[
     if configured_url:
         return configured_url, get_cluster_ssh_key()
 
+    # If the ~/.gemini git repo is already initialized and has an origin remote, prefer it
+    if (GEMINI_HOME / ".git").is_dir():
+        try:
+            cur_res = subprocess.run(
+                ["git", "remote", "get-url", "origin"],
+                cwd=str(GEMINI_HOME),
+                capture_output=True,
+                text=True,
+                timeout=3,
+            )
+            if cur_res.returncode == 0:
+                cur_url = cur_res.stdout.strip()
+                if "github.com" in cur_url and ".git" in cur_url and not cur_url.endswith("/.git"):
+                    return cur_url, get_cluster_ssh_key()
+        except Exception:
+            pass
+
     # Check ~/.gemini/config.json for github_user, backup_remote_url, or backup_remote
     cfg_file = GEMINI_HOME / "config.json"
     user_name = ""
@@ -186,6 +203,29 @@ def get_configured_backup_remote(remote_repo: str = DEFAULT_REPO_NAME) -> tuple[
             user_name = st.get("github_user", "").strip() or st.get("github_username", "").strip()
         except Exception:
             pass
+
+    # Detect GitHub user from main repository origin remote if possible
+    if not user_name:
+        try:
+            m_res = subprocess.run(
+                ["git", "remote", "get-url", "origin"],
+                cwd="/opt/gemini",
+                capture_output=True,
+                text=True,
+                timeout=3,
+            )
+            if m_res.returncode == 0:
+                m_match = re.search(r"github\.com[:/]([^/]+)/", m_res.stdout)
+                if m_match:
+                    user_name = m_match.group(1).strip()
+        except Exception:
+            pass
+
+    # Detect user from SSH key file name if customized
+    if not user_name:
+        ssh_k = get_cluster_ssh_key()
+        if ssh_k and ssh_k.name not in ("id_rsa", "id_ed25519", "fleet_cluster_key", "cluster_key"):
+            user_name = ssh_k.name
 
     if not user_name:
         # Default to github.com:current_user or standard fallback

@@ -374,6 +374,13 @@ class TestFleetNetwork(unittest.TestCase):
             started = satellite.start()
             self.assertTrue(started)
 
+            # Wait briefly for rendezvous listener and registration to stabilize
+            for _ in range(20):
+                if getattr(satellite, "_rendezvous_sock", None) is not None:
+                    break
+                time.sleep(0.05)
+            time.sleep(0.1)
+
             register_or_update_node(
                 node_id=node_id,
                 host="127.0.0.1",
@@ -392,6 +399,10 @@ class TestFleetNetwork(unittest.TestCase):
                 )
             self.assertIn(node_id, results)
             self.assertEqual(results[node_id]["status"], "ok")
+            for _ in range(20):
+                if satellite.lan_host == "192.168.1.250":
+                    break
+                time.sleep(0.05)
             self.assertEqual(satellite.lan_host, "192.168.1.250")
             self.assertEqual(satellite.wan_host, "72.187.118.138")
         finally:
@@ -531,16 +542,17 @@ class TestFleetNodesAndAutostart(unittest.TestCase):
             fake_service.write_text("ExecStart=/usr/bin/python3 run.py node --mothership 192.168.1.50 --interval 10\n", encoding="utf-8")
 
             with patch("gemini_app.fleet.autostart.Path.home", return_value=Path(td)):
-                # Patch systemd_paths inside update_autostart_mothership
+                # Patch systemd_paths and subprocess inside update_autostart_mothership
                 with patch("pathlib.Path.exists", return_value=True):
                     with patch("pathlib.Path.read_text", return_value=fake_service.read_text()):
                         with patch("pathlib.Path.write_text") as mock_write:
-                            res = update_autostart_mothership("192.168.1.91")
-                            self.assertTrue(res)
-                            mock_write.assert_called()
-                            written_text = mock_write.call_args[0][0]
-                            self.assertIn("--mothership 192.168.1.91", written_text)
-                            self.assertNotIn("--mothership 192.168.1.50", written_text)
+                            with patch("gemini_app.fleet.autostart.subprocess.run") as mock_subproc:
+                                res = update_autostart_mothership("192.168.1.91")
+                                self.assertTrue(res)
+                                mock_write.assert_called()
+                                written_text = mock_write.call_args[0][0]
+                                self.assertIn("--mothership 192.168.1.91", written_text)
+                                self.assertNotIn("--mothership 192.168.1.50", written_text)
 
     def test_get_local_lan_ip(self) -> None:
         ip = get_local_lan_ip()
@@ -579,6 +591,91 @@ class TestFleetNodesAndAutostart(unittest.TestCase):
         from gemini_app.fleet.satellite import find_repo_root
         root = find_repo_root()
         self.assertTrue((root / ".git").is_dir())
+
+    def test_mothership_upgrade_cooldown_escalation(self) -> None:
+        """Verifies MothershipServer tracks upgrade attempts and escalates cooldown."""
+        server = MothershipServer(host="127.0.0.1", port=0, auto_broadcast_telemetry=False)
+        sat = MagicMock()
+        sat.telemetry = {"git_commit": "old_commit_1"}
+        server.nodes["node-test-1"] = sat
+
+        with patch("gemini_app.fleet.mothership._get_git_info_fast") as mock_git:
+            mock_git.return_value = ("new_commit_9", "main")
+            with patch.object(server, "upgrade_node") as mock_up:
+                # First checkin: triggers upgrade dispatch with 45s cooldown
+                server._check_node_auto_upgrades()
+                time.sleep(0.05)
+                self.assertIn("node-test-1", server._node_upgrade_attempts)
+                self.assertEqual(server._node_upgrade_attempts["node-test-1"], ("new_commit_9", 1))
+                self.assertEqual(mock_up.call_count, 1)
+
+                # Immediately checking again should be throttled by cooldown
+                server._check_node_auto_upgrades()
+                time.sleep(0.05)
+                self.assertEqual(mock_up.call_count, 1)
+
+                # Simulate second attempt after cooldown: attempts count increases to 2
+                server._upgrade_cooldowns["node-test-1"] = time.time() - 50.0
+                server._check_node_auto_upgrades()
+                time.sleep(0.05)
+                self.assertEqual(server._node_upgrade_attempts["node-test-1"], ("new_commit_9", 2))
+                self.assertEqual(mock_up.call_count, 2)
+
+                # Now with attempts >= 2, cooldown is 120s: 50s elapse should not trigger dispatch
+                server._upgrade_cooldowns["node-test-1"] = time.time() - 50.0
+                server._check_node_auto_upgrades()
+                time.sleep(0.05)
+                self.assertEqual(mock_up.call_count, 2)
+
+                # Once node upgrades and reports new commit, attempts tracking is cleared
+                sat.telemetry = {"git_commit": "new_commit_9"}
+                server._check_node_auto_upgrades()
+                time.sleep(0.05)
+                self.assertNotIn("node-test-1", server._node_upgrade_attempts)
+
+    def test_execute_fleet_upgrade_target_commit_sync(self) -> None:
+        """Verifies execute_fleet_upgrade writes target_commit to git ref heads."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            repo_path = Path(td)
+            git_heads = repo_path / ".git" / "refs" / "heads"
+            git_heads.mkdir(parents=True, exist_ok=True)
+            (git_heads / "main").write_text("old1111\n", encoding="utf-8")
+
+            with patch("gemini_app.fleet.satellite.is_ish_platform", return_value=True):
+                with patch("gemini_app.fleet.satellite._get_git_info_fast", return_value=("old1111", "main")):
+                    with patch("urllib.request.urlopen") as mock_url:
+                        # Create valid empty tarball response
+                        import io, tarfile
+                        bio = io.BytesIO()
+                        with tarfile.open(fileobj=bio, mode="w:gz") as tar:
+                            pass
+                        bio.seek(0)
+                        mock_resp = MagicMock()
+                        mock_resp.read.return_value = bio.getvalue()
+                        mock_resp.__enter__.return_value = mock_resp
+                        mock_url.return_value = mock_resp
+
+                        with patch("subprocess.run") as mock_sub:
+                            mock_sub.return_value = MagicMock(returncode=0, stdout="VERIFIED")
+                            res = execute_fleet_upgrade(repo_dir=repo_path, target_commit="abc9999123")
+                            self.assertEqual(res.get("status"), "ok")
+                            self.assertEqual(res.get("new_commit"), "abc9999")
+                            self.assertTrue(res.get("upgraded"))
+                            ref_content = (git_heads / "main").read_text(encoding="utf-8").strip()
+                            self.assertEqual(ref_content, "abc9999123")
+
+    def test_hud_non_tty_rejection(self) -> None:
+        """Verifies main() rejects HUD mode if stdin is not an interactive TTY."""
+        import sys
+        from gemini_app.fleet.satellite import main as sat_main
+        with patch.object(sys, "argv", ["satellite.py", "--hud"]):
+            with patch("sys.stdin.isatty", return_value=False):
+                with patch("sys.stderr.write") as mock_err:
+                    ret = sat_main()
+                    self.assertEqual(ret, 1)
+                    mock_err.assert_called()
+                    self.assertIn("requires an interactive TTY", mock_err.call_args[0][0])
 
 
 if __name__ == "__main__":

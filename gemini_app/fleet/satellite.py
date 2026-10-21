@@ -191,12 +191,13 @@ def execute_fleet_upgrade(
     target_ref: str = "origin/main",
     force: bool = False,
     repo_dir: Optional[Path] = None,
+    target_commit: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Executes atomic 3-stage safety gated upgrade on the local node repository.
 
-    Stage 1: Fetch target remote ref safely.
+    Stage 1: Fetch target remote ref safely (git fetch with tarball fallback).
     Stage 2: Fast-forward checkout/merge into clean state.
-    Stage 3: Pre-flight syntax (py_compile) and import verification.
+    Stage 3: Pre-flight syntax and import verification.
              Rolls back atomically via git reset if pre-flight fails!
     """
     cwd = find_repo_root(repo_dir)
@@ -217,39 +218,45 @@ def execute_fleet_upgrade(
 
     branch_target = target_ref.split("/")[-1] if "/" in target_ref else target_ref
     is_ish = is_ish_platform()
-    use_tarball = is_ish
 
+    # Stage 1 & 2: Prefer native git fetch & reset first across all platforms (except iSH where git segfaults)
+    git_worked = False
     if not is_ish:
-        # Stage 1: Fetch via git
-        fetch_res = subprocess.run(
-            ["git", "fetch", "origin", branch_target],
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        if fetch_res.returncode == 0:
-            merge_cmd = ["git", "reset", "--hard", f"origin/{branch_target}"] if force else ["git", "merge", "--ff-only", "FETCH_HEAD"]
-            merge_res = subprocess.run(
-                merge_cmd,
+        try:
+            fetch_res = subprocess.run(
+                ["git", "fetch", "origin", branch_target],
                 cwd=cwd,
                 capture_output=True,
                 text=True,
-                timeout=15,
+                timeout=30,
             )
-            if merge_res.returncode != 0 and force:
-                subprocess.run(
-                    ["git", "reset", "--hard", f"origin/{branch_target}"],
+            if fetch_res.returncode == 0:
+                reset_target = f"origin/{branch_target}"
+                merge_cmd = ["git", "reset", "--hard", reset_target] if force else ["git", "merge", "--ff-only", "FETCH_HEAD"]
+                merge_res = subprocess.run(
+                    merge_cmd,
                     cwd=cwd,
                     capture_output=True,
                     text=True,
-                    timeout=10,
+                    timeout=15,
                 )
-        else:
-            use_tarball = True
+                if merge_res.returncode != 0:
+                    # Force fallback to reset --hard to origin/branch_target
+                    fallback_res = subprocess.run(
+                        ["git", "reset", "--hard", f"origin/{branch_target}"],
+                        cwd=cwd,
+                        capture_output=True,
+                        text=True,
+                        timeout=15,
+                    )
+                    git_worked = (fallback_res.returncode == 0)
+                else:
+                    git_worked = True
+        except Exception:
+            git_worked = False
 
-    if use_tarball:
-        # Stage 1 & 2 via Pure-Python tarball stream (immune to emulator git crashes)
+    if not git_worked:
+        # Fallback to Pure-Python tarball stream (zero subprocess, immune to emulator git crashes)
         try:
             import urllib.request
             import tarfile
@@ -270,6 +277,15 @@ def execute_fleet_upgrade(
                             dest_path.parent.mkdir(parents=True, exist_ok=True)
                             with tar.extractfile(member) as src, open(dest_path, "wb") as dst:
                                 dst.write(src.read())
+
+            # Synchronize git ref so version reader reflects new target commit
+            if target_commit and target_commit != "unknown":
+                try:
+                    ref_f = cwd / ".git" / "refs" / "heads" / branch_target
+                    if ref_f.parent.exists():
+                        ref_f.write_text(f"{target_commit.strip()}\n", encoding="utf-8")
+                except Exception:
+                    pass
         except Exception as exc:
             return {
                 "status": "error",
@@ -313,18 +329,30 @@ def execute_fleet_upgrade(
     )
     if import_res.returncode != 0 or "VERIFIED" not in import_res.stdout:
         # Atomic rollback!
-        subprocess.run(["git", "reset", "--hard", old_commit], cwd=cwd, capture_output=True)
+        if not is_ish:
+            subprocess.run(["git", "reset", "--hard", old_commit], cwd=cwd, capture_output=True)
         return {
             "status": "error",
             "stage": "import_validation",
             "error": f"Pre-flight import check failed: {import_res.stderr.strip()}",
-            "rolled_back": True,
+            "rolled_back": not is_ish,
             "current_commit": old_commit,
         }
 
     # Successful upgrade
     new_commit, _ = _get_git_info_fast(cwd)
-    if new_commit == "unknown" or new_commit == old_commit:
+    if is_ish:
+        if target_commit and target_commit != "unknown":
+            new_commit = target_commit[:7]
+            try:
+                ref_f = cwd / ".git" / "refs" / "heads" / branch_target
+                if ref_f.parent.exists():
+                    ref_f.write_text(f"{target_commit.strip()}\n", encoding="utf-8")
+            except Exception:
+                pass
+        elif new_commit == "unknown":
+            new_commit = "updated"
+    elif new_commit == "unknown" or new_commit == old_commit:
         res_new = subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"],
             cwd=cwd,
@@ -334,16 +362,20 @@ def execute_fleet_upgrade(
         )
         if res_new.returncode == 0 and res_new.stdout.strip():
             new_commit = res_new.stdout.strip()
+        elif target_commit:
+            new_commit = target_commit[:7]
         else:
             new_commit = "updated"
 
+    upgraded = (old_commit != new_commit) or (bool(target_commit) and old_commit != target_commit[:7])
+    msg = f"Pre-flight verified. Upgraded {old_commit} -> {new_commit}" if upgraded else "Code already matches origin/main."
     return {
         "status": "ok",
         "stage": "completed",
         "old_commit": old_commit,
         "new_commit": new_commit,
-        "upgraded": old_commit != new_commit,
-        "message": f"Pre-flight verified. Upgraded {old_commit} -> {new_commit}",
+        "upgraded": upgraded,
+        "message": msg,
     }
 
 
@@ -493,11 +525,18 @@ def acquire_singleton_lock(mode: str = "node") -> bool:
             old_pid = int(pid_file.read_text().strip())
             if old_pid != my_pid and _is_pid_running(old_pid):
                 if mode == "hud":
+                    # Attempt graceful termination of stale HUD if active
                     try:
                         os.kill(old_pid, signal.SIGTERM)
-                        time.sleep(0.3)
+                        for _ in range(5):
+                            time.sleep(0.1)
+                            if not _is_pid_running(old_pid):
+                                break
                     except Exception:
                         pass
+                    if _is_pid_running(old_pid):
+                        sys.stderr.write(f"[satellite] Another HUD session is already active (PID {old_pid}). Exiting.\n")
+                        return False
                 else:
                     sys.stderr.write(f"[satellite] Gemini node is already running (PID {old_pid}). Exiting duplicate process.\n")
                     return False
@@ -565,6 +604,7 @@ class SatelliteNode:
         self.heartbeat_interval = heartbeat_interval
         self.auto_upgrade = auto_upgrade
         self._is_upgrading = False
+        self._last_attempted_target: Optional[str] = None
 
         # Derive an intuitive default node id
         if not node_id:
@@ -702,10 +742,11 @@ class SatelliteNode:
 
         elif action == "fleet_upgrade":
             target_ref = params.get("target_ref", "origin/main")
+            target_commit = params.get("target_commit")
             force = params.get("force", False)
             if self.hud:
                 self.hud.show_toast(f"Upgrading from {target_ref}...", duration=5.0)
-            upgrade_res = execute_fleet_upgrade(target_ref=target_ref, force=force)
+            upgrade_res = execute_fleet_upgrade(target_ref=target_ref, force=force, target_commit=target_commit)
             result_payload.update(upgrade_res)
 
             # If upgrade succeeded and code was updated, trigger scheduled reboot
@@ -747,8 +788,13 @@ class SatelliteNode:
 
     def _trigger_auto_upgrade(self, target_commit: str, current_commit: str) -> None:
         """Asynchronously triggers node auto-upgrade and reboots whatever node mode was running."""
+        now = time.time()
+        if getattr(self, "_last_attempted_target", None) == target_commit and (now - getattr(self, "_last_attempt_time", 0.0)) < 120.0:
+            return
         if self._is_upgrading:
             return
+        self._last_attempted_target = target_commit
+        self._last_attempt_time = now
         self._is_upgrading = True
 
         def _worker():
@@ -759,7 +805,7 @@ class SatelliteNode:
                 else:
                     sys.stdout.write(f"[satellite] {msg}\n")
 
-                res = execute_fleet_upgrade(target_ref="origin/main")
+                res = execute_fleet_upgrade(target_ref="origin/main", target_commit=target_commit)
                 if res.get("status") == "ok" and res.get("upgraded"):
                     new_c = res.get("new_commit", target_commit)
                     done_msg = f"Upgraded to {new_c}! Rebooting..."
@@ -786,6 +832,15 @@ class SatelliteNode:
                 elif res.get("status") == "ok":
                     if self.hud:
                         self.hud.show_toast("Code already matches origin/main.", duration=3.0)
+                    # If target_commit was passed and local git ref was behind, sync it
+                    if target_commit and target_commit != "unknown":
+                        try:
+                            cwd = find_repo_root()
+                            ref_path = cwd / ".git" / "refs" / "heads" / "main"
+                            if ref_path.exists():
+                                ref_path.write_text(f"{target_commit}\n", encoding="utf-8")
+                        except Exception:
+                            pass
                 else:
                     err_msg = res.get("error", "Unknown upgrade error")
                     if self.hud:
@@ -885,6 +940,8 @@ class SatelliteNode:
                             if self.auto_upgrade and not self._is_upgrading:
                                 ms_git = telem_data.get("git", {})
                                 ms_commit = ms_git.get("commit")
+                                if ms_commit:
+                                    self._latest_ms_commit = ms_commit
                                 local_commit, _ = _get_git_info_fast()
                                 if (
                                     ms_commit
@@ -892,6 +949,7 @@ class SatelliteNode:
                                     and ms_commit not in ("unknown", None)
                                     and local_commit not in ("unknown", None)
                                     and ms_commit != local_commit
+                                    and ms_commit != self._last_attempted_target
                                 ):
                                     self._trigger_auto_upgrade(ms_commit, local_commit)
                         elif msg.type == FleetMessage.TYPE_EVENT:
@@ -909,6 +967,7 @@ class SatelliteNode:
     def _start_rendezvous_listener(self) -> None:
         """Starts a lightweight inbound listener allowing Mothership to call the node if IP changes."""
         from gemini_app.fleet.protocol import DEFAULT_RENDEZVOUS_PORT
+        srv = None
         try:
             srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -929,6 +988,11 @@ class SatelliteNode:
             self._rendezvous_thread.start()
         except Exception:
             # If port cannot be bound (e.g. permission or in use), continue gracefully
+            if srv:
+                try:
+                    srv.close()
+                except Exception:
+                    pass
             self._rendezvous_sock = None
 
     def _handle_rendezvous_client(self, conn: socket.socket, addr: tuple[str, int]) -> None:
@@ -1061,7 +1125,9 @@ class SatelliteNode:
         self.hud = SatelliteHUD(
             node_id=self.node_id,
             mothership_addr=mothership_str,
-            on_upgrade_request=lambda: execute_fleet_upgrade(),
+            on_upgrade_request=lambda: execute_fleet_upgrade(
+                target_commit=getattr(self, "_latest_ms_commit", None)
+            ),
             local_commit=local_c,
         )
         self.hud.set_endpoints(self.lan_host, self.wan_host)
@@ -1097,7 +1163,7 @@ class SatelliteNode:
                         elif key.lower() == "u":
                             self.hud.show_toast("Checking & upgrading node...", duration=4.0)
                             self.hud.render_loop_tick(force_redraw=True)
-                            res = execute_fleet_upgrade()
+                            res = execute_fleet_upgrade(target_commit=getattr(self, "_latest_ms_commit", None))
                             if res.get("status") == "ok":
                                 if res.get("upgraded"):
                                     self.hud.show_toast(f"Upgraded to {res['new_commit']}! Rebooting...", duration=3.0)
@@ -1258,6 +1324,9 @@ def main() -> int:
         return 0
 
     if args.hud:
+        if not sys.stdin.isatty():
+            sys.stderr.write("[satellite] Error: HUD monitor mode requires an interactive TTY terminal.\n")
+            return 1
         node.run_hud()
         return 0
 

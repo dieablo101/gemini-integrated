@@ -284,10 +284,18 @@ class SatelliteHUD:
         else:
             git_disp = f"{git_branch}@{git_sha[:7]} [{clean_tag}]"
 
+        bat_info = self.local_vitals.get("battery") or {}
+        bat_pct = bat_info.get("percentage")
+        bat_str = ""
+        if bat_pct is not None:
+            chg_icon = "⚡" if bat_info.get("charging") else "%"
+            bat_color = GREEN if bat_pct > 30 else (YELLOW if bat_pct > 15 else RED)
+            bat_str = f"  {BOLD}Bat:{RESET} {bat_color}{bat_pct}{chg_icon}{RESET}"
+
         line2 = (
             f"{BOLD}CPU:{RESET} {meter} ({DARK_GRAY}ld:{ld_str}{RESET})  "
             f"{BOLD}RAM:{RESET} {WHITE}{mem_str}{RESET}  "
-            f"{BOLD}Git:{RESET} {BLUE}{git_disp}{RESET}"
+            f"{BOLD}Git:{RESET} {BLUE}{git_disp}{RESET}{bat_str}"
         )
         lines.append(self._format_box_line(b_v, line2, w))
 

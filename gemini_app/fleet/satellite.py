@@ -173,6 +173,95 @@ def ensure_ish_background_keepalive() -> None:
     pass
 
 
+def get_memory_info_fast() -> tuple[Optional[int], Optional[int]]:
+    """Reads MemTotal and MemAvailable in MB directly from /proc/meminfo in pure Python."""
+    try:
+        meminfo = Path("/proc/meminfo")
+        if meminfo.exists():
+            total = None
+            avail = None
+            for line in meminfo.read_text(encoding="utf-8", errors="replace").splitlines():
+                if line.startswith("MemTotal:"):
+                    total = int(line.split()[1]) // 1024
+                elif line.startswith("MemAvailable:"):
+                    avail = int(line.split()[1]) // 1024
+                elif line.startswith("MemFree:") and avail is None:
+                    avail = int(line.split()[1]) // 1024
+                if total is not None and avail is not None:
+                    break
+            return total, avail
+    except Exception:
+        pass
+    return None, None
+
+
+def get_battery_info() -> Dict[str, Any]:
+    """Safely inspects battery and charging status across mobile platforms without crashing."""
+    info: Dict[str, Any] = {"percentage": None, "charging": None, "temperature": None}
+    # 1. Termux API check
+    if is_termux_platform() and shutil.which("termux-battery-status"):
+        try:
+            res = subprocess.run(
+                ["termux-battery-status"],
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            if res.returncode == 0 and res.stdout.strip():
+                b_json = json.loads(res.stdout.strip())
+                info["percentage"] = b_json.get("percentage")
+                status = str(b_json.get("status", "")).upper()
+                info["charging"] = (status == "CHARGING" or b_json.get("plugged") in ("PLUGGED_AC", "PLUGGED_USB", "PLUGGED_WIRELESS"))
+                info["temperature"] = b_json.get("temperature")
+                return info
+        except Exception:
+            pass
+
+    # 2. Linux /sys/class/power_supply fallback
+    try:
+        ps_dir = Path("/sys/class/power_supply")
+        if ps_dir.is_dir():
+            for b_name in ("battery", "BAT0", "BAT1"):
+                b_path = ps_dir / b_name
+                if b_path.is_dir():
+                    cap_f = b_path / "capacity"
+                    stat_f = b_path / "status"
+                    if cap_f.exists():
+                        try:
+                            info["percentage"] = int(cap_f.read_text().strip())
+                        except Exception:
+                            pass
+                    if stat_f.exists():
+                        try:
+                            info["charging"] = stat_f.read_text().strip().lower() in ("charging", "full")
+                        except Exception:
+                            pass
+                    return info
+    except Exception:
+        pass
+    return info
+
+
+def get_local_route_info() -> Dict[str, Any]:
+    """Retrieves local interface IP and route classification (LAN vs Cellular/Roaming)."""
+    local_ip = "127.0.0.1"
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(0.5)
+        # Connect to 8.8.8.8:80 (UDP probe doesn't transmit packets, queries routing kernel table)
+        s.connect(("8.8.8.8", 80))
+        local_ip = s.getsockname()[0]
+        s.close()
+    except Exception:
+        pass
+    is_lan = is_lan_address(local_ip)
+    return {
+        "local_ip": local_ip,
+        "is_lan": is_lan,
+        "network_type": "LAN (Wi-Fi/Ethernet)" if is_lan else "Roaming / Cellular",
+    }
+
+
 def collect_telemetry() -> Dict[str, Any]:
     """Collects system capabilities and status using standard library only."""
     uname = platform.uname()
@@ -192,6 +281,10 @@ def collect_telemetry() -> Dict[str, Any]:
     is_termux = is_termux_platform()
     has_wake_lock = is_termux and bool(shutil.which("termux-wake-lock"))
 
+    battery = get_battery_info()
+    route_info = get_local_route_info()
+    mem_total_mb, mem_avail_mb = get_memory_info_fast()
+
     return {
         "hostname": socket.gethostname(),
         "system": uname.system,
@@ -206,6 +299,10 @@ def collect_telemetry() -> Dict[str, Any]:
         "is_ish": is_ish,
         "is_termux": is_termux,
         "has_wake_lock": has_wake_lock,
+        "battery": battery,
+        "route": route_info,
+        "mem_total_mb": mem_total_mb,
+        "mem_avail_mb": mem_avail_mb,
         "git_commit": git_commit,
         "git_branch": git_branch,
     }
@@ -1247,10 +1344,13 @@ class SatelliteNode:
     def _heartbeat_loop(self) -> None:
         """Sends periodic heartbeats with telemetry to Mothership."""
         while self._running:
+            telem = collect_telemetry()
+            if self.hud:
+                self.hud.local_vitals = telem
             hb = FleetMessage(
                 msg_type=FleetMessage.TYPE_HEARTBEAT,
                 node_id=self.node_id,
-                payload={"telemetry": collect_telemetry()},
+                payload={"telemetry": telem},
             )
             if not self.send_message(hb):
                 break
@@ -1304,6 +1404,7 @@ class SatelliteNode:
             ),
             local_commit=local_c,
         )
+        self.hud.local_vitals = collect_telemetry()
         self.hud.set_endpoints(self.lan_host, self.wan_host)
 
         # Connect
@@ -1358,11 +1459,25 @@ class SatelliteNode:
                     # Low-power tick sleep (optimized for iOS/mobile battery and memory stability)
                     time.sleep(tick_delay)
 
+                    # Periodic memory garbage collection (safeguard against iOS iSH emulator memory creep)
+                    hud_ticks = getattr(self, "_hud_ticks", 0) + 1
+                    self._hud_ticks = hud_ticks
+                    if hud_ticks % 30 == 0:
+                        import gc
+                        gc.collect()
+
                     # Reconnect attempt if disconnected
                     if not self._running:
                         self.hud.set_connection_status(False)
                         self.stop()
                         time.sleep(2.0)
+                        saved_lan, saved_wan, saved_p = get_saved_mothership_endpoints()
+                        if saved_lan:
+                            self.lan_host = saved_lan
+                        if saved_wan:
+                            self.wan_host = saved_wan
+                        if saved_p:
+                            self.mothership_port = saved_p
                         self.start()
                 except Exception:
                     time.sleep(0.5)

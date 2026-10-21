@@ -30,6 +30,7 @@ DEFAULT_COPYRIGHT_HOLDER: str = "Kyle Gallagher"
 STATE_FILE: Path = GEMINI_HOME / "state.json"
 COGNITIVE_STATE_FILE: Path = GEMINI_HOME / "cognitive_state.json"
 SOCKET_PATH: Path = GEMINI_HOME / "gemini_textual.sock"
+ACTIVE_TASK_FILE: Path = GEMINI_HOME / "active_task.json"
 
 FORK_HEADER_TEXT: str = "## This chat is a fork of another / previous chat"
 WIRE_CONTINUATION_PROMPT: str = "[Continuing conversation context]"

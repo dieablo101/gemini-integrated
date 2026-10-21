@@ -55,6 +55,7 @@ from textual.widgets.text_area import Selection
 from textual.widgets.tree import TreeNode
 
 from gemini_app.config import (
+    ACTIVE_TASK_FILE,
     ARCHIVE_DIR,
     CENTER_SCREEN_MODE,
     CHATS_DIR,
@@ -1192,6 +1193,8 @@ class ChatApp(App):
         self.push_screen(BootScreen())
         # Check daily backup interval every hour
         self.set_interval(3600.0, self._check_daily_backup)
+        # Periodically reconcile background runner status
+        self.set_interval(5.0, self._restore_active_background_task)
         self.call_after_refresh(self._initial_startup_load)
 
     async def _initial_startup_load(self) -> None:
@@ -1300,6 +1303,32 @@ class ChatApp(App):
                 turn_number=self.total_conversation_turns,
                 topic=getattr(self, "current_topic", "general"),
             )
+        except Exception:
+            pass
+
+        self._restore_active_background_task()
+
+    def _restore_active_background_task(self) -> None:
+        if not ACTIVE_TASK_FILE.exists():
+            return
+        try:
+            data = json.loads(ACTIVE_TASK_FILE.read_text(encoding="utf-8"))
+            pid = data.get("pid")
+            text = data.get("text")
+            is_running = False
+            if pid:
+                try:
+                    os.kill(pid, 0)
+                    is_running = True
+                except (OSError, ProcessLookupError):
+                    is_running = False
+
+            if is_running and text:
+                self._background_task_status = text
+                self.set_runner_status_text(text)
+            else:
+                ACTIVE_TASK_FILE.unlink(missing_ok=True)
+                self.hide_runner_status()
         except Exception:
             pass
 
@@ -1515,6 +1544,9 @@ class ChatApp(App):
         self.save_current_chat()
 
     async def start_socket_server(self) -> None:
+        if "unittest" in sys.modules or os.environ.get("GEMINI_TEST_MODE"):
+            return
+
         if SOCKET_PATH.exists():
             SOCKET_PATH.unlink()
 
@@ -1836,8 +1868,8 @@ class ChatApp(App):
 
         if self._server:
             self._server.close()
-        if SOCKET_PATH.exists():
-            SOCKET_PATH.unlink(missing_ok=True)
+            if SOCKET_PATH.exists():
+                SOCKET_PATH.unlink(missing_ok=True)
 
     def _get_ancestor_lineage(self, parent_id: str | None) -> list[dict]:
         ancestors: list[dict] = []

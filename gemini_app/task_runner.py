@@ -12,10 +12,12 @@ import argparse
 import json
 import socket
 import sys
+import os
 from pathlib import Path
+import time
 from typing import Any, Dict, Optional
 
-from gemini_app.config import GEMINI_HOME, SOCKET_PATH
+from gemini_app.config import ACTIVE_TASK_FILE, GEMINI_HOME, SOCKET_PATH
 
 TASK_LOG_PATH = GEMINI_HOME / "task_runner.log"
 
@@ -70,6 +72,24 @@ def update_status(
     duration: float = 3.5,
 ) -> bool:
     """Updates the console's live status bar, with optional toast and navbar pulse."""
+    if clear:
+        try:
+            if ACTIVE_TASK_FILE.exists():
+                ACTIVE_TASK_FILE.unlink(missing_ok=True)
+        except Exception:
+            pass
+    elif text:
+        try:
+            ACTIVE_TASK_FILE.parent.mkdir(parents=True, exist_ok=True)
+            task_info = {
+                "pid": os.getpid(),
+                "text": text,
+                "timestamp": time.time(),
+            }
+            ACTIVE_TASK_FILE.write_text(json.dumps(task_info), encoding="utf-8")
+        except Exception:
+            pass
+
     payload: Dict[str, Any] = {
         "action": "status",
         "text": text,
@@ -111,6 +131,11 @@ def notify_chat(
 
 def clear_status() -> bool:
     """Clears the live status bar in the console."""
+    try:
+        if ACTIVE_TASK_FILE.exists():
+            ACTIVE_TASK_FILE.unlink(missing_ok=True)
+    except Exception:
+        pass
     return send_console_event({"action": "status", "clear": True})
 
 

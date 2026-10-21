@@ -3402,6 +3402,34 @@ class ChatApp(App):
                 return {"status": "success", "action": "mood", "palette": palette, "message": message, "duration": duration}
             elif act in ("inspect", "introspect"):
                 return get_console_state(self, tier="all")
+            elif act in ("prompt_password", "password_modal", "request_password"):
+                import threading
+                done_ev = threading.Event()
+                result_box: dict[str, Any] = {"password": None, "cancelled": False}
+
+                def _do_prompt():
+                    def _on_submit(entered: str | None) -> None:
+                        if entered is not None:
+                            result_box["password"] = entered
+                        else:
+                            result_box["cancelled"] = True
+                        done_ev.set()
+
+                    self.push_screen(
+                        PasswordModal(
+                            title=palette or "🔐 Vault Password Authentication",
+                            message=message or "Enter passkey to access salted vault file:",
+                        ),
+                        _on_submit,
+                    )
+
+                self.app.call_from_thread(_do_prompt)
+                done_ev.wait(timeout=180.0)
+                if result_box["cancelled"]:
+                    return {"status": "cancelled", "message": "Password prompt cancelled by user."}
+                if result_box["password"] is None:
+                    return {"status": "timeout", "message": "Password prompt timed out."}
+                return {"status": "success", "password": result_box["password"]}
             return {"status": "error", "message": f"Unknown UI interaction action '{action}'."}
 
         tool_reg = ToolRegistry(

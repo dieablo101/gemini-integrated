@@ -77,6 +77,43 @@ class TestPasswordModal(unittest.IsolatedAsyncioTestCase):
     async def test_alias_compatibility(self):
         self.assertIs(PasswordPromptModal, PasswordModal)
 
+    async def test_password_modal_salted_file_access(self):
+        """Verifies that passkey submitted via PasswordModal successfully decrypts a salted payload."""
+        from gemini_app.vault import encrypt_bytes, decrypt_bytes
+
+        secret_data = b"INTEGRITY_CHECK_OK: salted-vault-node-payload-42"
+        test_passkey = "S3cur3P@ssw0rd!2025"
+
+        # Encrypt with PBKDF2-HMAC-SHA256 salt
+        encrypted_salted_file = encrypt_bytes(secret_data, test_passkey)
+        self.assertTrue(
+            encrypted_salted_file.startswith(b"F1:") or encrypted_salted_file.startswith(b"S1:"),
+            "Payload must contain salted format header",
+        )
+
+        modal = PasswordModal(
+            title="🔐 Salted File Decryption Test",
+            message="Enter passkey to decrypt test file:",
+        )
+        app = PasswordModalTestApp(modal)
+        async with app.run_test(size=(100, 30)) as pilot:
+            inp = modal.query_one("#password_input", Input)
+            inp.value = test_passkey
+            await pilot.click("#password_submit_btn")
+            await pilot.pause()
+
+            # Verify passkey returned
+            self.assertEqual(app.dismissed_result, test_passkey)
+
+            # Access and decrypt salted file
+            decrypted = decrypt_bytes(encrypted_salted_file, app.dismissed_result)
+            self.assertEqual(decrypted, secret_data)
+
+            # Verify invalid passkey fails integrity check
+            with self.assertRaises((ValueError, Exception)):
+                decrypt_bytes(encrypted_salted_file, "wrong_password_attempt")
+
+
 
 if __name__ == "__main__":
     unittest.main()

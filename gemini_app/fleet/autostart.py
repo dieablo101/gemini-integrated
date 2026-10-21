@@ -48,6 +48,30 @@ nohup {python_bin} {script_path} node --mothership {mothership} --interval {inte
 ISH_AUTOSTART_BLOCK_START = "# === Gemini Bilateral Satellite Node Autostart ==="
 ISH_AUTOSTART_BLOCK_END = "# === End Gemini Satellite ==="
 
+TERMUX_AUTOSTART_BLOCK_START = "# === Gemini Bilateral Satellite Node Autostart (Termux) ==="
+TERMUX_AUTOSTART_BLOCK_END = "# === End Gemini Satellite (Termux) ==="
+
+TERMUX_BOOT_TEMPLATE = """#!/data/data/com.termux/files/usr/bin/sh
+# Gemini Bilateral Satellite Node Boot Autostart (Termux:Boot)
+if command -v termux-wake-lock >/dev/null 2>&1; then
+    termux-wake-lock
+fi
+cd {work_dir} || exit 1
+nohup {python_bin} {script_path} node --mothership {mothership} --interval {interval} > {work_dir}/satellite.log 2>&1 &
+"""
+
+TERMUX_HOOK_TEMPLATE = """{start_marker}
+# Launch Gemini background node only if not already running
+if ! pgrep -f 'gemini-integrated.py' >/dev/null 2>&1; then
+    if command -v termux-wake-lock >/dev/null 2>&1; then
+        termux-wake-lock
+    fi
+    cd {work_dir} 2>/dev/null || true
+    nohup {python_bin} {script_path} node --mothership {mothership} --interval {interval} > {work_dir}/satellite.log 2>&1 &
+fi
+{end_marker}
+"""
+
 ISH_HOOK_TEMPLATE = """{start_marker}
 # Do not run in non-interactive sessions (e.g. scp, sftp, non-interactive ssh)
 case "$-" in
@@ -96,7 +120,11 @@ LAUNCHD_PLIST_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
 
 def detect_init_system() -> str:
     """Detects the primary init/daemon system available on this host."""
-    # 1. Check for macOS launchd
+    # 1. Check for Android Termux
+    if "com.termux" in os.environ.get("PREFIX", "") or Path("/data/data/com.termux").exists() or "TERMUX_VERSION" in os.environ:
+        return "termux"
+
+    # 2. Check for macOS launchd
     if sys.platform == "darwin":
         return "launchd"
 
@@ -172,10 +200,11 @@ def update_autostart_mothership(new_mothership: str, port: Optional[int] = None)
             except Exception:
                 pass
 
-    # 2. iSH profile.d and shell profile files
+    # 2. iSH, Termux, and shell profile files
     profile_candidates = [
         Path("/etc/profile.d/gemini-satellite.sh"),
         Path("/etc/local.d/gemini-satellite.start"),
+        Path.home() / ".termux" / "boot" / "gemini-satellite.sh",
         Path("/root/.profile"),
         Path("/root/.ashrc"),
         Path.home() / ".profile",
@@ -278,6 +307,73 @@ def install_autostart(
                 "service_file": str(service_path),
                 "message": f"Wrote {service_path}, but systemctl failed: {exc}",
             }
+
+    elif init_type == "termux":
+        installed_targets = []
+        # 1. Termux:Boot autostart (~/.termux/boot/gemini-satellite.sh)
+        termux_boot_dir = Path.home() / ".termux" / "boot"
+        try:
+            termux_boot_dir.mkdir(parents=True, exist_ok=True)
+            boot_script = termux_boot_dir / "gemini-satellite.sh"
+            boot_content = TERMUX_BOOT_TEMPLATE.format(
+                python_bin=python_bin,
+                script_path=script_path,
+                mothership=mothership,
+                interval=str(interval),
+                work_dir=work_dir,
+            )
+            boot_script.write_text(boot_content, encoding="utf-8")
+            boot_script.chmod(0o755)
+            installed_targets.append(str(boot_script))
+        except Exception:
+            pass
+
+        # 2. Shell profile hook (~/.bashrc, ~/.profile)
+        hook_code = TERMUX_HOOK_TEMPLATE.format(
+            start_marker=TERMUX_AUTOSTART_BLOCK_START,
+            end_marker=TERMUX_AUTOSTART_BLOCK_END,
+            python_bin=python_bin,
+            script_path=script_path,
+            mothership=mothership,
+            interval=str(interval),
+            work_dir=work_dir,
+        )
+        for p in [Path.home() / ".bashrc", Path.home() / ".profile"]:
+            try:
+                existing = p.read_text(encoding="utf-8") if p.exists() else ""
+                if TERMUX_AUTOSTART_BLOCK_START not in existing:
+                    new_content = existing.rstrip() + f"\n\n{hook_code}\n"
+                    p.write_text(new_content, encoding="utf-8")
+                    p.chmod(0o755)
+                    installed_targets.append(str(p))
+                else:
+                    installed_targets.append(f"{p} (already present)")
+            except Exception:
+                pass
+
+        # 3. Acquire Termux wake lock to prevent CPU Doze suspension
+        if shutil.which("termux-wake-lock"):
+            try:
+                subprocess.run(["termux-wake-lock"], capture_output=True, timeout=2)
+            except Exception:
+                pass
+
+        # 4. Launch background node immediately if not running
+        try:
+            launch_cmd = (
+                f"cd {work_dir} && "
+                f"nohup {python_bin} {script_path} node --mothership {mothership} --interval {interval} > {work_dir}/satellite.log 2>&1 &"
+            )
+            subprocess.Popen(["/bin/sh", "-c", launch_cmd], start_new_session=True)
+        except Exception:
+            pass
+
+        return {
+            "status": "ok",
+            "init": "termux",
+            "installed_targets": installed_targets,
+            "message": f"Termux autostart installed (Termux:Boot & shell hooks). Wake-lock active.",
+        }
 
     elif init_type == "ish":
         # iSH (iOS Alpine Linux emulator)
@@ -464,6 +560,37 @@ def remove_autostart() -> Dict[str, Any]:
             pass
         return {"status": "ok", "message": "systemd satellite service disabled."}
 
+    elif init_type == "termux":
+        cleaned = []
+        boot_script = Path.home() / ".termux" / "boot" / "gemini-satellite.sh"
+        if boot_script.exists():
+            try:
+                boot_script.unlink()
+                cleaned.append(str(boot_script))
+            except Exception:
+                pass
+
+        for p in [Path.home() / ".bashrc", Path.home() / ".profile"]:
+            if p.exists():
+                try:
+                    text = p.read_text(encoding="utf-8")
+                    if TERMUX_AUTOSTART_BLOCK_START in text:
+                        import re
+                        pattern = re.escape(TERMUX_AUTOSTART_BLOCK_START) + r".*?" + re.escape(TERMUX_AUTOSTART_BLOCK_END)
+                        stripped = re.sub(pattern, "", text, flags=re.DOTALL).strip() + "\n"
+                        p.write_text(stripped, encoding="utf-8")
+                        cleaned.append(str(p))
+                except Exception:
+                    pass
+
+        if shutil.which("termux-wake-unlock"):
+            try:
+                subprocess.run(["termux-wake-unlock"], capture_output=True, timeout=2)
+            except Exception:
+                pass
+
+        return {"status": "ok", "message": f"Termux autostart cleaned from {len(cleaned)} targets. Wake lock released."}
+
     elif init_type == "ish":
         cleaned = []
         p_hook = Path("/etc/profile.d/gemini-satellite.sh")
@@ -536,6 +663,29 @@ def check_autostart_status() -> Dict[str, Any]:
             status_info["installed"] = "enabled" in res.stdout
             active_res = subprocess.run(cmd_prefix + ["is-active", "gemini-satellite.service"], capture_output=True, text=True)
             status_info["running"] = "active" in active_res.stdout
+        except Exception:
+            pass
+
+    elif init == "termux":
+        boot_script = Path.home() / ".termux" / "boot" / "gemini-satellite.sh"
+        has_bashrc = False
+        p_bash = Path.home() / ".bashrc"
+        if p_bash.exists():
+            try:
+                has_bashrc = TERMUX_AUTOSTART_BLOCK_START in p_bash.read_text(encoding="utf-8")
+            except Exception:
+                pass
+        status_info["installed"] = boot_script.exists() or has_bashrc
+
+        try:
+            ps_res = subprocess.run(["ps", "-ef"], capture_output=True, text=True)
+            if ps_res.returncode != 0:
+                ps_res = subprocess.run(["ps", "aux"], capture_output=True, text=True)
+            status_info["running"] = (
+                "gemini-integrated.py node" in ps_res.stdout
+                or "gemini-integrated.py satellite" in ps_res.stdout
+                or "gemini-integrated.py hud" in ps_res.stdout
+            )
         except Exception:
             pass
 

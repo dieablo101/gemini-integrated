@@ -4,6 +4,12 @@
 
 export GEMINI_WATCHDOG=1
 
+# Android Termux Wake-Lock integration: keep CPU active through Doze
+if command -v termux-wake-lock >/dev/null 2>&1; then
+    termux-wake-lock
+    trap "termux-wake-unlock 2>/dev/null || true" EXIT INT TERM
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR" || exit 1
 

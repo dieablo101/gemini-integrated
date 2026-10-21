@@ -335,7 +335,7 @@ class MothershipServer:
                                     greet = FleetMessage(
                                         msg_type=FleetMessage.TYPE_TELEMETRY,
                                         node_id="mothership",
-                                        payload={"mothership_telemetry": init_telem},
+                                        payload={"mothership_telemetry": init_telem, "fleet_key": self.fleet_key},
                                     )
                                     satellite.send(greet)
 

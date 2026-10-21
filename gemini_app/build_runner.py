@@ -115,7 +115,10 @@ class SystemRunner:
     ) -> subprocess.CompletedProcess:
         """Executes a command with CPU throttling and live monitoring."""
         if isinstance(cmd, str):
-            cmd_list = shlex.split(cmd)
+            if any(op in cmd for op in ("&&", "||", "|", ";", ">", "<")):
+                cmd_list = ["bash", "-c", cmd]
+            else:
+                cmd_list = shlex.split(cmd)
         else:
             cmd_list = list(cmd)
 

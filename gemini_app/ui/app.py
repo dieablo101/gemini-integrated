@@ -248,6 +248,7 @@ class ChatApp(App):
         self._reconnect_target_time: float = 0.0
         self._reconnect_attempt: int = 0
         self._reconnect_max_retries: int = 0
+        self._background_task_status: str = ""
         self._abort_requested: bool = False
 
         self._last_heartbeat_time: float = time.monotonic()
@@ -1321,9 +1322,13 @@ class ChatApp(App):
         except Exception:
             pass
 
-    def hide_status(self) -> None:
+    def hide_status(self, force: bool = False) -> None:
         try:
             status_lbl = self.query_one("#feed_status", Static)
+            if not force and getattr(self, "_background_task_status", ""):
+                status_lbl.update(self._background_task_status)
+                status_lbl.styles.display = "block"
+                return
             status_lbl.update("")
             status_lbl.styles.display = "none"
         except Exception:
@@ -1346,6 +1351,11 @@ class ChatApp(App):
         self._reconnect_target_time = 0.0
         self._reconnect_attempt = 0
         self._reconnect_max_retries = 0
+        bg_status = getattr(self, "_background_task_status", "")
+        if bg_status:
+            self.set_status_text(bg_status)
+        else:
+            self.hide_status(force=True)
 
     def _tick_status(self) -> None:
         self._last_heartbeat_time = time.monotonic()
@@ -1505,11 +1515,13 @@ class ChatApp(App):
     async def _handle_socket_client(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
-        data = await reader.read()
+        data = await reader.read(65536)
+        resp = {"status": "ok"}
         if data:
             try:
                 payload = json.loads(data.decode("utf-8"))
-                if payload.get("action") == "insert":
+                action = payload.get("action")
+                if action == "insert":
                     self.post_message(RemoteInsert(
                         text=payload.get("text", ""),
                         lang=payload.get("lang", ""),
@@ -1517,8 +1529,49 @@ class ChatApp(App):
                         start_line=payload.get("start_line"),
                         end_line=payload.get("end_line"),
                     ))
-            except Exception:
-                pass
+                elif action == "status":
+                    text = payload.get("text", "")
+                    clear = payload.get("clear", False)
+                    if clear:
+                        self._background_task_status = ""
+                        self.hide_status(force=True)
+                    elif text:
+                        self._background_task_status = text
+                        self.set_status_text(text)
+
+                    toast = payload.get("toast")
+                    if toast:
+                        title = payload.get("title", "")
+                        sev = payload.get("severity", "information")
+                        dur = float(payload.get("duration", 3.5))
+                        self.notify(toast, title=title, severity=sev, timeout=dur)
+
+                    if payload.get("pulse_nav"):
+                        pal = payload.get("palette", "purple")
+                        self.trigger_nav_indicator("navbar", palette=pal, duration=2.0)
+                elif action in ("chat_message", "notify_chat"):
+                    text = payload.get("text", "")
+                    if text:
+                        role = payload.get("role", "gemini")
+                        feed = self.query_one("#feed", FeedArea)
+                        await feed.append_message(role, text, jump_to_start=True)
+                        new_turn_id = f"turn_{uuid4().hex[:8]}"
+                        self.history.append({"turn_id": new_turn_id, "role": "model", "text": text})
+                        self.current_chat_last_index = max(0, len(self.history) - 1)
+                        self.current_chat_center_marker = new_turn_id
+                        self.save_current_chat()
+                        toast = payload.get("toast")
+                        if toast:
+                            self.notify(toast, title=payload.get("title", "Task Completed"), timeout=5.0)
+                        if payload.get("pulse_nav", True):
+                            self.trigger_nav_indicator("navbar", palette="green", duration=3.0)
+            except Exception as e:
+                resp = {"status": "error", "error": str(e)}
+        try:
+            writer.write(json.dumps(resp).encode("utf-8"))
+            await writer.drain()
+        except Exception:
+            pass
         writer.close()
         await writer.wait_closed()
 

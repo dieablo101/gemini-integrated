@@ -234,7 +234,15 @@ if __name__ == "__main__":
                 print(f"  • {n.get('node_id')} ({n.get('host')}:{n.get('ssh_port', 22)}) [{st}] SSH: {n.get('ssh_user')}@{n.get('host')} [key: {key_name}]")
         sys.exit(0)
 
-    # 4. Check for HUD / Monitor mode
+    # 4. Check for status / notify live task reporting
+    if "status" in argv_set or "notify" in argv_set:
+        for tok in ["status", "notify"]:
+            if tok in sys.argv:
+                sys.argv.remove(tok)
+        from gemini_app.task_runner import cli_main
+        sys.exit(cli_main(sys.argv[1:]))
+
+    # 5. Check for HUD / Monitor mode
     hud_tokens = {"hud", "monitor", "--hud", "--monitor"}
     matched_hud = [tok for tok in sys.argv[1:] if tok in hud_tokens]
     if matched_hud:

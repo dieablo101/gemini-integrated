@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Global helper for reporting background task progress into Gemini Console
+exec /opt/gemini/.venv/bin/python3 -m gemini_app.task_runner "$@"

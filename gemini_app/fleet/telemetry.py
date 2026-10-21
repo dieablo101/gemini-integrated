@@ -278,9 +278,66 @@ def update_cognitive_state(
     return current
 
 
+_WAN_IP_CACHE = {"ip": "", "last_check": 0.0, "is_fetching": False}
+
+
+def get_local_lan_ip() -> str:
+    """Discovers host LAN IP on the local network."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(0.5)
+        # Connect to public DNS IP (does not transmit packets, queries OS routing table)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        if ip and not ip.startswith("127."):
+            return ip
+    except Exception:
+        pass
+    return "127.0.0.1"
+
+
+def get_public_wan_ip(ttl_seconds: float = 300.0) -> str:
+    """Fetches public internet WAN IP with background caching to prevent blocking."""
+    global _WAN_IP_CACHE
+    import re
+    now = time.time()
+
+    # Return cached IP if still within TTL
+    if _WAN_IP_CACHE["ip"] and (now - _WAN_IP_CACHE["last_check"] < ttl_seconds):
+        return _WAN_IP_CACHE["ip"]
+
+    def _fetch():
+        import urllib.request
+        endpoints = [
+            "https://api.ipify.org",
+            "https://icanhazip.com",
+            "https://ifconfig.me/ip",
+        ]
+        for ep in endpoints:
+            try:
+                req = urllib.request.Request(ep, headers={"User-Agent": "Gemini-Fleet/1.0"})
+                with urllib.request.urlopen(req, timeout=2.5) as resp:
+                    ip = resp.read().decode("utf-8").strip()
+                    if ip and re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", ip):
+                        _WAN_IP_CACHE["ip"] = ip
+                        _WAN_IP_CACHE["last_check"] = time.time()
+                        break
+            except Exception:
+                continue
+        _WAN_IP_CACHE["is_fetching"] = False
+
+    if not _WAN_IP_CACHE["is_fetching"]:
+        _WAN_IP_CACHE["is_fetching"] = True
+        threading.Thread(target=_fetch, daemon=True, name="wan-ip-fetch").start()
+
+    return _WAN_IP_CACHE["ip"]
+
+
 def collect_mothership_telemetry(
     cognitive_override: Optional[Dict[str, Any]] = None,
     satellites_info: Optional[List[Dict[str, Any]]] = None,
+    port: int = 7331,
 ) -> Dict[str, Any]:
     """Assembles a full telemetry payload for Mothership broadcasting."""
     vitals = get_cpu_and_mem_vitals()
@@ -307,6 +364,11 @@ def collect_mothership_telemetry(
         "python": platform.python_version(),
         "timestamp": time.time(),
         "time_str": time.strftime("%H:%M:%S"),
+        "network": {
+            "lan_ip": get_local_lan_ip(),
+            "wan_ip": get_public_wan_ip(),
+            "port": port,
+        },
         "vitals": vitals,
         "git": git_info,
         "cognitive": cognitive,

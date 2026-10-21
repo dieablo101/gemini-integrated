@@ -49,21 +49,16 @@ ISH_AUTOSTART_BLOCK_START = "# === Gemini Bilateral Satellite Node Autostart ===
 ISH_AUTOSTART_BLOCK_END = "# === End Gemini Satellite ==="
 
 ISH_HOOK_TEMPLATE = """{start_marker}
-# Keep iSH awake in background via iOS location service
-if [ -e /dev/location ] && ! pgrep -f 'cat /dev/location' >/dev/null 2>&1; then
-    cat /dev/location >/dev/null 2>&1 &
-fi
+# Do not run in non-interactive sessions (e.g. scp, sftp, non-interactive ssh)
+case "$-" in
+    *i*) ;;
+    *) return 0 2>/dev/null || exit 0 ;;
+esac
 
-# Launch Gemini background node if neither node nor hud is running
-_is_gemini_running() {{
-    pgrep -f '[g]emini-integrated.*(node|satellite|hud)' >/dev/null 2>&1 || \\
-    ps aux 2>/dev/null | grep -E '[g]emini-integrated.*(node|satellite|hud)' >/dev/null 2>&1 || \\
-    ps 2>/dev/null | grep -E '[g]emini-integrated.*(node|satellite|hud)' >/dev/null 2>&1
-}}
-
-if ! _is_gemini_running; then
+# Launch Gemini background node only if not already running
+if ! pgrep -f 'gemini-integrated.py' >/dev/null 2>&1; then
     cd {work_dir} 2>/dev/null || cd /root/gemini-integrated 2>/dev/null || true
-    nohup {python_bin} {script_path} node --mothership {mothership} --interval {interval} > /var/log/gemini-satellite.log 2>&1 &
+    nohup {python_bin} {script_path} node --interval {interval} > /var/log/gemini-satellite.log 2>&1 &
 fi
 {end_marker}
 """

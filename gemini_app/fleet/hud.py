@@ -141,6 +141,9 @@ class SatelliteHUD:
 
         self.is_connected = False
         self.last_ping_ms: Optional[float] = None
+        self.route_info: str = ""
+        self.lan_host: Optional[str] = None
+        self.wan_host: Optional[str] = None
         self.mothership_data: Dict[str, Any] = {}
         self.local_vitals: Dict[str, Any] = {}
         self.recent_events: List[str] = []
@@ -156,11 +159,25 @@ class SatelliteHUD:
         self.mothership_data = data
         self.is_connected = True
 
-    def set_connection_status(self, connected: bool, ping_ms: Optional[float] = None) -> None:
-        """Updates connection state and latency."""
+    def set_connection_status(
+        self,
+        connected: bool,
+        ping_ms: Optional[float] = None,
+        route_info: str = "",
+    ) -> None:
+        """Updates connection state, latency, and active route."""
         self.is_connected = connected
         if ping_ms is not None:
             self.last_ping_ms = ping_ms
+        if route_info:
+            self.route_info = route_info
+
+    def set_endpoints(self, lan: Optional[str] = None, wan: Optional[str] = None) -> None:
+        """Sets discovered Mothership LAN and WAN IP endpoints."""
+        if lan:
+            self.lan_host = lan
+        if wan:
+            self.wan_host = wan
 
     def log_event(self, text: str) -> None:
         """Appends an event to the recent event history."""
@@ -176,37 +193,51 @@ class SatelliteHUD:
 
     def _format_box_line(self, left: str, content: str, width: int) -> str:
         """Formats a single content line enclosed in vertical box lines, guaranteeing no overflow or wrapping."""
+        b_v = "|" if self.is_ish else "│"
         inner_w = max(10, width - 4)  # 2 for '│ ', 2 for ' │'
         clipped = clip_ansi(content, inner_w)
         raw_len = len(strip_ansi(clipped))
         padding = max(0, inner_w - raw_len)
-        return f"{BLUE}│{RESET} {clipped}{' ' * padding} {BLUE}│{RESET}\n"
+        return f"{BLUE}{b_v}{RESET} {clipped}{' ' * padding} {BLUE}{b_v}{RESET}\n"
 
     def render(self) -> str:
         """Constructs full dashboard frame fitted to current terminal size."""
         term_cols, term_lines = shutil.get_terminal_size((80, 24))
         w = min(120, max(38, term_cols))
 
+        # Safe border glyphs (pure ASCII on iSH to prevent Cocoa NSTextStorage layout crashes)
+        b_h = "-" if self.is_ish else "─"
+        b_v = "|" if self.is_ish else "│"
+        b_tl = "+" if self.is_ish else "┌"
+        b_tr = "+" if self.is_ish else "┐"
+        b_bl = "+" if self.is_ish else "└"
+        b_br = "+" if self.is_ish else "┘"
+        b_ml = "+" if self.is_ish else "├"
+        b_mr = "+" if self.is_ish else "┤"
+        dot = "*" if self.is_ish else "●"
+        bullet = "-" if self.is_ish else "•"
+
         # Top border with title & connection pill
         if self.is_connected:
             ping_str = f" {self.last_ping_ms:.0f}ms" if self.last_ping_ms else ""
-            status_pill = f"{GREEN}{BOLD}[● LIVE{ping_str}]{RESET}"
-            raw_pill_len = len(f"[● LIVE{ping_str}]")
+            route_tag = f" {self.route_info.split()[0]}" if self.route_info else ""
+            status_pill = f"{GREEN}{BOLD}[{dot} LIVE{ping_str}{route_tag}]{RESET}"
+            raw_pill_len = len(f"[{dot} LIVE{ping_str}{route_tag}]")
         else:
-            status_pill = f"{RED}{BOLD}[● OFFLINE]{RESET}"
-            raw_pill_len = len("[● OFFLINE]")
+            status_pill = f"{RED}{BOLD}[{dot} OFFLINE]{RESET}"
+            raw_pill_len = len(f"[{dot} OFFLINE]")
 
         title_text = "[GEMINI HUD]" if self.is_ish else "🛰️ GEMINI HUD"
         title = f"{CYAN}{BOLD}{title_text}{RESET}"
-        header_inner = f"─ {title} ─ {status_pill} "
-        raw_header_len = len(f"─ {title_text} ─ ") + raw_pill_len + 1
+        header_inner = f"{b_h} {title} {b_h} {status_pill} "
+        raw_header_len = len(f"{b_h} {title_text} {b_h} ") + raw_pill_len + 1
 
         rem_addr_w = max(0, w - raw_header_len - 6)
         addr_disp = clip_str(self.mothership_addr, rem_addr_w) if rem_addr_w >= 7 else ""
         addr_part = f" {DARK_GRAY}{addr_disp}{BLUE}" if addr_disp else ""
         used_len = raw_header_len + (len(addr_disp) + 1 if addr_disp else 0) + 4
         dash_fill = max(0, w - used_len)
-        top_bar = f"{BLUE}┌{header_inner}{'─' * dash_fill}{addr_part} ─┐{RESET}\n"
+        top_bar = f"{BLUE}{b_tl}{header_inner}{b_h * dash_fill}{addr_part} {b_h}{b_tr}{RESET}\n"
 
         lines = [top_bar]
 
@@ -229,7 +260,7 @@ class SatelliteHUD:
             f"{BOLD}Host:{RESET} {WHITE}{host_name}{RESET} ({GRAY}{platform_info}{RESET})  "
             f"{BOLD}Node:{RESET} {CYAN}{self.node_id}{RESET}"
         )
-        lines.append(self._format_box_line("│", line1, w))
+        lines.append(self._format_box_line(b_v, line1, w))
 
         meter = render_meter_bar(cpu_pct, width=6 if w < 65 else 8, safe_mode=self.is_ish)
         mem_str = f"{mem_used / 1024:.1f}G/{mem_tot / 1024:.1f}G" if mem_tot > 0 else "N/A"
@@ -258,11 +289,11 @@ class SatelliteHUD:
             f"{BOLD}RAM:{RESET} {WHITE}{mem_str}{RESET}  "
             f"{BOLD}Git:{RESET} {BLUE}{git_disp}{RESET}"
         )
-        lines.append(self._format_box_line("│", line2, w))
+        lines.append(self._format_box_line(b_v, line2, w))
 
         # Divider
         mind_tag = "[AI COGNITIVE STREAM]" if self.is_ish else "🧠 AI COGNITIVE STREAM"
-        div_mind = f"{BLUE}├─ {PURPLE}{BOLD}{mind_tag}{RESET} {BLUE}{'─' * max(0, w - len(mind_tag) - 6)}┤{RESET}\n"
+        div_mind = f"{BLUE}{b_ml}{b_h} {PURPLE}{BOLD}{mind_tag}{RESET} {BLUE}{b_h * max(0, w - len(mind_tag) - 6)}{b_mr}{RESET}\n"
         lines.append(div_mind)
 
         # 2. Cognitive State (Cleaning duplicated prefixes and state duplication)
@@ -307,14 +338,14 @@ class SatelliteHUD:
             tool_pill = f"{GREEN}{BOLD}[{icon} {tool}]{RESET}"
         c_line4 = f"{BOLD}Tool:{RESET}  {tool_pill}  {turn_badge}"
 
-        lines.append(self._format_box_line("│", c_line1, w))
-        lines.append(self._format_box_line("│", c_line2, w))
-        lines.append(self._format_box_line("│", c_line3, w))
-        lines.append(self._format_box_line("│", c_line4, w))
+        lines.append(self._format_box_line(b_v, c_line1, w))
+        lines.append(self._format_box_line(b_v, c_line2, w))
+        lines.append(self._format_box_line(b_v, c_line3, w))
+        lines.append(self._format_box_line(b_v, c_line4, w))
 
         # Divider
         act_tag = "[ACTIVITY & COMMITS]" if self.is_ish else "📋 ACTIVITY & RECENT COMMITS"
-        div_act = f"{BLUE}├─ {YELLOW}{BOLD}{act_tag}{RESET} {BLUE}{'─' * max(0, w - len(act_tag) - 6)}┤{RESET}\n"
+        div_act = f"{BLUE}{b_ml}{b_h} {YELLOW}{BOLD}{act_tag}{RESET} {BLUE}{b_h * max(0, w - len(act_tag) - 6)}{b_mr}{RESET}\n"
         lines.append(div_act)
 
         # 3. Recent Commits / Activity
@@ -323,27 +354,29 @@ class SatelliteHUD:
             for c in recent_commits[:2]:
                 sha = c.get("sha", "")
                 msg = c.get("message", "")
-                lines.append(self._format_box_line("│", f"{BLUE}• {sha}{RESET} {GRAY}{msg}{RESET}", w))
+                lines.append(self._format_box_line(b_v, f"{BLUE}{bullet} {sha}{RESET} {GRAY}{msg}{RESET}", w))
         elif self.recent_events:
             for ev in self.recent_events[-2:]:
-                lines.append(self._format_box_line("│", f"{GRAY}{ev}{RESET}", w))
+                lines.append(self._format_box_line(b_v, f"{GRAY}{ev}{RESET}", w))
         else:
-            lines.append(self._format_box_line("│", f"{DARK_GRAY}No recent activity recorded.{RESET}", w))
+            lines.append(self._format_box_line(b_v, f"{DARK_GRAY}No recent activity recorded.{RESET}", w))
 
         # Bottom Bar & Footer
         now_str = time.strftime("%H:%M:%S")
         if self.active_status_toast and time.time() < self.toast_expires:
             toast_text = f"{BG_BLUE}{WHITE}{BOLD} {self.active_status_toast} {RESET}"
-            bot_inner = f"─ {toast_text} "
-            raw_bot_len = len(f"─  {self.active_status_toast}  ")
+            bot_inner = f"{b_h} {toast_text} "
+            raw_bot_len = len(f"{b_h}  {self.active_status_toast}  ")
         else:
             bot_hint = "[q:quit u:upg]" if w < 55 else "[q:quit u:upgrade r:redraw]"
-            bot_inner = f"─ {DARK_GRAY}{bot_hint}{RESET} "
-            raw_bot_len = len(f"─ {bot_hint} ")
+            bot_inner = f"{b_h} {DARK_GRAY}{bot_hint}{RESET} "
+            raw_bot_len = len(f"{b_h} {bot_hint} ")
 
         bot_dash = max(0, w - 2 - raw_bot_len - len(now_str) - 3)
-        bottom_bar = f"{BLUE}└{bot_inner}{'─' * bot_dash} {DARK_GRAY}{now_str}{BLUE} ─┘{RESET}\n"
+        bottom_bar = f"{BLUE}{b_bl}{bot_inner}{b_h * bot_dash} {DARK_GRAY}{now_str}{BLUE} {b_h}{b_br}{RESET}\n"
         lines.append(bottom_bar)
+
+        return "".join(lines)
 
         return "".join(lines)
 

@@ -482,8 +482,14 @@ class MothershipServer:
                             elif action == "exec_node":
                                 target_nid = msg.payload.get("params", {}).get("node_id", "")
                                 subcmd = msg.payload.get("params", {}).get("command", "")
+                                cmd_timeout = float(msg.payload.get("params", {}).get("timeout", 15.0))
                                 if target_nid and subcmd:
-                                    resp_payload["exec_result"] = self.send_command(target_nid, "exec", {"command": subcmd}, timeout=15.0)
+                                    resp_payload["exec_result"] = self.send_command(
+                                        target_nid,
+                                        "exec",
+                                        {"command": subcmd, "timeout": cmd_timeout},
+                                        timeout=cmd_timeout + 5.0,
+                                    )
                                 else:
                                     resp_payload["status"] = "error"
                                     resp_payload["error"] = "Missing node_id or command"

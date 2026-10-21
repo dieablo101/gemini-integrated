@@ -12,12 +12,13 @@ import os
 from pathlib import Path
 import platform
 import shutil
+import signal
 import socket
 import subprocess
 import sys
 import threading
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from gemini_app.fleet.protocol import DEFAULT_PORT, FleetMessage
 from gemini_app.fleet.security import (
@@ -123,25 +124,10 @@ def check_ipad_mount() -> tuple[bool, int]:
 
 
 def ensure_ish_background_keepalive() -> None:
-    """Touches /dev/location in background on iOS iSH to prevent iOS app suspension."""
-    if Path("/proc/ish").exists() or Path("/dev/location").exists():
-        try:
-            if not getattr(ensure_ish_background_keepalive, "_started", False):
-                def _location_keeper():
-                    try:
-                        with open("/dev/location", "r") as f:
-                            while True:
-                                line = f.readline()
-                                if not line:
-                                    break
-                                time.sleep(10.0)
-                    except Exception:
-                        pass
-                t = threading.Thread(target=_location_keeper, daemon=True, name="ish-keepalive")
-                t.start()
-                ensure_ish_background_keepalive._started = True
-        except Exception:
-            pass
+    """Safely checks environment on iOS iSH without spawning fragile kernel device threads."""
+    # Note: Long-running threads that open /dev/location in Python cause Mach thread
+    # panics and kernel faults in the iSH emulator. Shell hooks manage keepalives.
+    pass
 
 
 def collect_telemetry() -> Dict[str, Any]:
@@ -363,67 +349,72 @@ def execute_fleet_upgrade(
 CONFIG_FILE: Path = Path.home() / ".gemini" / "config.json"
 
 
+def is_lan_address(addr: Optional[str]) -> bool:
+    """Checks whether an address is a local LAN address (RFC 1918 / loopback)."""
+    if not addr or not isinstance(addr, str):
+        return False
+    a = addr.strip().lower()
+    if a in ("localhost", "127.0.0.1", "::1"):
+        return True
+    if a.startswith("192.168.") or a.startswith("10.") or a.startswith("169.254."):
+        return True
+    if a.startswith("172."):
+        parts = a.split(".")
+        if len(parts) >= 2 and parts[1].isdigit():
+            second = int(parts[1])
+            if 16 <= second <= 31:
+                return True
+    return False
+
+
 def get_config_path() -> Path:
     """Returns path to ~/.gemini/config.json."""
     return CONFIG_FILE
 
 
-def get_saved_mothership(default: Optional[str] = None) -> str:
-    """Retrieves the default mothership IP/host.
+def get_saved_mothership_endpoints() -> Tuple[Optional[str], Optional[str], int]:
+    """Retrieves saved LAN IP, WAN IP, and port from ~/.gemini/config.json."""
+    cfg_file = get_config_path()
+    lan_ip = None
+    wan_ip = None
+    port = DEFAULT_PORT
 
-    Resolution order:
-    1. GEMINI_MOTHERSHIP environment variable
-    2. ~/.gemini/config.json ("mothership_host" or "mothership")
-    3. Provided default or fallback to dynamic LAN IP
-    """
+    if cfg_file.exists():
+        try:
+            cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
+            lan_ip = cfg.get("mothership_lan")
+            wan_ip = cfg.get("mothership_wan")
+            host_saved = cfg.get("mothership_host") or cfg.get("mothership")
+            if host_saved and not lan_ip and not wan_ip:
+                if is_lan_address(host_saved):
+                    lan_ip = host_saved
+                else:
+                    wan_ip = host_saved
+            if cfg.get("mothership_port") is not None:
+                port = int(cfg["mothership_port"])
+        except Exception:
+            pass
+
     env_host = os.getenv("GEMINI_MOTHERSHIP")
-    if env_host and env_host.strip():
-        return env_host.strip()
+    if env_host:
+        if is_lan_address(env_host):
+            lan_ip = env_host.strip()
+        else:
+            wan_ip = env_host.strip()
 
-    cfg_file = get_config_path()
-    if cfg_file.exists():
-        try:
-            cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
-            saved = cfg.get("mothership_host") or cfg.get("mothership")
-            if saved and isinstance(saved, str) and saved.strip():
-                return saved.strip()
-        except Exception:
-            pass
+    env_wan = os.getenv("GEMINI_MOTHERSHIP_WAN")
+    if env_wan:
+        wan_ip = env_wan.strip()
 
-    return default or get_local_lan_ip()
+    return lan_ip, wan_ip, port
 
 
-def get_saved_mothership_port(default: int = DEFAULT_PORT) -> int:
-    """Retrieves the default mothership TCP port."""
-    env_port = os.getenv("GEMINI_PORT")
-    if env_port:
-        try:
-            return int(env_port.strip())
-        except ValueError:
-            pass
-
-    cfg_file = get_config_path()
-    if cfg_file.exists():
-        try:
-            cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
-            val = cfg.get("mothership_port")
-            if val is not None:
-                return int(val)
-        except Exception:
-            pass
-
-    return default
-
-
-def save_mothership(host: str, port: Optional[int] = None) -> bool:
-    """Persists mothership host and optional port to ~/.gemini/config.json,
-
-    and updates any installed satellite autostart service/profile hooks.
-    """
-    host = host.strip()
-    if not host:
-        return False
-
+def save_mothership_dual_endpoints(
+    lan_ip: Optional[str] = None,
+    wan_ip: Optional[str] = None,
+    port: Optional[int] = None,
+) -> bool:
+    """Persists dynamic LAN and WAN IPs to ~/.gemini/config.json."""
     cfg_file = get_config_path()
     cfg_file.parent.mkdir(parents=True, exist_ok=True)
     cfg: Dict[str, Any] = {}
@@ -433,7 +424,11 @@ def save_mothership(host: str, port: Optional[int] = None) -> bool:
         except Exception:
             cfg = {}
 
-    cfg["mothership_host"] = host
+    if lan_ip:
+        cfg["mothership_lan"] = lan_ip.strip()
+        cfg["mothership_host"] = lan_ip.strip()
+    if wan_ip:
+        cfg["mothership_wan"] = wan_ip.strip()
     if port is not None:
         cfg["mothership_port"] = int(port)
 
@@ -444,14 +439,105 @@ def save_mothership(host: str, port: Optional[int] = None) -> bool:
         sys.stderr.write(f"[satellite] Warning: could not write config file {cfg_file}: {exc}\n")
         return False
 
-    # Also update any installed autostart configuration so subsequent reboots target the new IP
-    try:
-        from gemini_app.fleet.autostart import update_autostart_mothership
-        update_autostart_mothership(host, port=port)
-    except Exception:
-        pass
+    if lan_ip:
+        try:
+            from gemini_app.fleet.autostart import update_autostart_mothership
+            update_autostart_mothership(lan_ip.strip(), port=port)
+        except Exception:
+            pass
 
     return True
+
+
+def _is_pid_running(pid: int) -> bool:
+    """Checks if a given PID is currently active."""
+    try:
+        os.kill(pid, 0)
+        return True
+    except (OSError, ProcessLookupError):
+        return False
+
+
+def acquire_singleton_lock(mode: str = "node") -> bool:
+    """Guarantees only one satellite node or HUD instance runs at a time."""
+    pid_dir = Path("/tmp")
+    pid_file = pid_dir / f"gemini-satellite-{mode}.pid"
+    other_mode = "node" if mode == "hud" else "hud"
+    other_pid_file = pid_dir / f"gemini-satellite-{other_mode}.pid"
+
+    my_pid = os.getpid()
+
+    # If starting HUD, terminate any background node daemon cleanly
+    if mode == "hud" and other_pid_file.exists():
+        try:
+            old_pid = int(other_pid_file.read_text().strip())
+            if old_pid != my_pid and _is_pid_running(old_pid):
+                try:
+                    os.kill(old_pid, signal.SIGTERM)
+                    time.sleep(0.3)
+                    if _is_pid_running(old_pid):
+                        os.kill(old_pid, signal.SIGKILL)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            other_pid_file.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    # Check same-mode PID
+    if pid_file.exists():
+        try:
+            old_pid = int(pid_file.read_text().strip())
+            if old_pid != my_pid and _is_pid_running(old_pid):
+                if mode == "hud":
+                    try:
+                        os.kill(old_pid, signal.SIGTERM)
+                        time.sleep(0.3)
+                    except Exception:
+                        pass
+                else:
+                    sys.stderr.write(f"[satellite] Gemini node is already running (PID {old_pid}). Exiting duplicate process.\n")
+                    return False
+        except Exception:
+            pass
+
+    try:
+        pid_file.write_text(str(my_pid))
+        import atexit
+        def _cleanup():
+            try:
+                if pid_file.exists():
+                    p = int(pid_file.read_text().strip())
+                    if p == my_pid:
+                        pid_file.unlink(missing_ok=True)
+            except Exception:
+                pass
+        atexit.register(_cleanup)
+        return True
+    except Exception:
+        return True
+
+
+def get_saved_mothership(default: Optional[str] = None) -> str:
+    """Retrieves the default mothership IP/host."""
+    lan_ip, wan_ip, _ = get_saved_mothership_endpoints()
+    return lan_ip or wan_ip or default or get_local_lan_ip()
+
+
+def get_saved_mothership_port(default: int = DEFAULT_PORT) -> int:
+    """Retrieves the default mothership TCP port."""
+    _, _, port = get_saved_mothership_endpoints()
+    return port or default
+
+
+def save_mothership(host: str, port: Optional[int] = None) -> bool:
+    """Persists mothership host and optional port to ~/.gemini/config.json."""
+    if is_lan_address(host):
+        return save_mothership_dual_endpoints(lan_ip=host, port=port)
+    else:
+        return save_mothership_dual_endpoints(wan_ip=host, port=port)
 
 
 class SatelliteNode:
@@ -465,8 +551,16 @@ class SatelliteNode:
         heartbeat_interval: float = 15.0,
         auto_upgrade: bool = True,
     ) -> None:
-        self.mothership_host = (mothership_host or get_saved_mothership()).strip()
-        self.mothership_port = mothership_port if mothership_port is not None else get_saved_mothership_port()
+        self._explicit_host = mothership_host.strip() if mothership_host else None
+        saved_lan, saved_wan, saved_port = get_saved_mothership_endpoints()
+        self.lan_host: Optional[str] = saved_lan or ("192.168.1.91" if self._explicit_host is None else (self._explicit_host if is_lan_address(self._explicit_host) else "192.168.1.91"))
+        self.wan_host: Optional[str] = saved_wan or (self._explicit_host if (self._explicit_host and not is_lan_address(self._explicit_host)) else None)
+
+        self.mothership_port = mothership_port if mothership_port is not None else saved_port
+        self.mothership_host = self._explicit_host or self.lan_host or self.wan_host or "192.168.1.91"
+        self.active_host: str = self.mothership_host
+        self.active_route_type: str = "LAN" if is_lan_address(self.active_host) else "WAN"
+
         self.heartbeat_interval = heartbeat_interval
         self.auto_upgrade = auto_upgrade
         self._is_upgrading = False
@@ -485,26 +579,53 @@ class SatelliteNode:
         self._running = False
         self._heartbeat_thread: Optional[threading.Thread] = None
         self._listener_thread: Optional[threading.Thread] = None
+        self._rendezvous_sock: Optional[socket.socket] = None
+        self._rendezvous_thread: Optional[threading.Thread] = None
         self._write_lock = threading.Lock()
         self.hud = None  # SatelliteHUD instance if running in HUD mode
         self._pending_ping_t0: Optional[float] = None
 
-    def connect(self, timeout: float = 5.0) -> bool:
-        """Establishes TCP connection to the Mothership."""
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(timeout)
-            s.connect((self.mothership_host, self.mothership_port))
-            s.settimeout(None)  # Switch to blocking for threads
-            self.sock = s
-            if self.hud:
-                self.hud.set_connection_status(True)
-            return True
-        except Exception as exc:
-            if self.hud:
-                self.hud.set_connection_status(False)
-            sys.stderr.write(f"[satellite] Connection failed to {self.mothership_host}:{self.mothership_port}: {exc}\n")
-            return False
+    def connect(self, timeout: float = 4.0) -> bool:
+        """Establishes TCP connection to the Mothership with automatic LAN -> WAN failover."""
+        # Candidates in priority order
+        candidates = []
+        if self._explicit_host:
+            candidates.append((self._explicit_host, "LAN" if is_lan_address(self._explicit_host) else "WAN"))
+        else:
+            if self.lan_host:
+                candidates.append((self.lan_host, "LAN"))
+            if self.wan_host and self.wan_host != self.lan_host:
+                candidates.append((self.wan_host, "WAN"))
+            if not candidates and self.mothership_host:
+                candidates.append((self.mothership_host, "LAN" if is_lan_address(self.mothership_host) else "WAN"))
+
+        last_exc = None
+        for host, route_type in candidates:
+            try:
+                # Fast timeout on LAN (1.8s) when WAN fallback exists so off-wifi nodes don't stall
+                t_out = 1.8 if (route_type == "LAN" and len(candidates) > 1) else timeout
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(t_out)
+                s.connect((host, self.mothership_port))
+                s.settimeout(None)  # Switch to blocking for threads
+                self.sock = s
+                self.active_host = host
+                self.active_route_type = route_type
+                self.mothership_host = host
+                if self.hud:
+                    self.hud.mothership_addr = f"{host}:{self.mothership_port}"
+                    self.hud.set_endpoints(self.lan_host, self.wan_host)
+                    self.hud.set_connection_status(True, route_info=f"{route_type} ({host})")
+                return True
+            except Exception as exc:
+                last_exc = exc
+                if not self.hud:
+                    sys.stderr.write(f"[satellite] Connection attempt via {route_type} ({host}:{self.mothership_port}) failed: {exc}\n")
+                continue
+
+        if self.hud:
+            self.hud.set_connection_status(False)
+        return False
 
     def send_message(self, msg: FleetMessage) -> bool:
         """Sends a framed FleetMessage over the socket."""
@@ -743,6 +864,16 @@ class SatelliteNode:
                             telem_data = msg.payload.get("mothership_telemetry", msg.payload)
                             if self.hud:
                                 self.hud.update_telemetry(telem_data)
+
+                            # Dynamic Mothership Dual-IP Discovery (LAN + WAN update)
+                            net_info = telem_data.get("network", {})
+                            if net_info:
+                                ms_lan = net_info.get("lan_ip")
+                                ms_wan = net_info.get("wan_ip")
+                                ms_port = net_info.get("port", self.mothership_port)
+                                if ms_lan or ms_wan:
+                                    self._update_dual_endpoints(ms_lan, ms_wan, ms_port)
+
                             # Autonomous check: has mothership advanced past local node git commit?
                             if self.auto_upgrade and not self._is_upgrading:
                                 ms_git = telem_data.get("git", {})
@@ -767,6 +898,98 @@ class SatelliteNode:
                 if self.hud:
                     self.hud.set_connection_status(False)
                 break
+
+    def _start_rendezvous_listener(self) -> None:
+        """Starts a lightweight inbound listener allowing Mothership to call the node if IP changes."""
+        from gemini_app.fleet.protocol import DEFAULT_RENDEZVOUS_PORT
+        try:
+            srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            srv.bind(("0.0.0.0", DEFAULT_RENDEZVOUS_PORT))
+            srv.listen(5)
+            self._rendezvous_sock = srv
+
+            def _listener():
+                while self._running and self._rendezvous_sock:
+                    try:
+                        conn, addr = self._rendezvous_sock.accept()
+                        threading.Thread(target=self._handle_rendezvous_client, args=(conn, addr), daemon=True).start()
+                    except Exception:
+                        if not self._running:
+                            break
+
+            self._rendezvous_thread = threading.Thread(target=_listener, daemon=True, name="rendezvous-listener")
+            self._rendezvous_thread.start()
+        except Exception:
+            # If port cannot be bound (e.g. permission or in use), continue gracefully
+            self._rendezvous_sock = None
+
+    def _handle_rendezvous_client(self, conn: socket.socket, addr: tuple[str, int]) -> None:
+        """Processes inbound endpoint migration notifications from Mothership."""
+        try:
+            conn.settimeout(5.0)
+            data = conn.recv(4096)
+            if not data:
+                return
+            msg = FleetMessage.deserialize(data.decode("utf-8", errors="replace"))
+            if msg.type == FleetMessage.TYPE_COMMAND and msg.payload.get("action") == "update_mothership_endpoint":
+                fleet_key = get_or_create_fleet_key()
+                sig = msg.payload.get("auth_sig")
+                ts = msg.payload.get("auth_ts", 0.0)
+                if not verify_command_signature(fleet_key, "update_mothership_endpoint", self.node_id, ts, sig):
+                    fail_resp = FleetMessage(
+                        msg_type=FleetMessage.TYPE_RESPONSE,
+                        node_id=self.node_id,
+                        payload={"status": "error", "error": "Signature rejected"},
+                    )
+                    conn.sendall(fail_resp.serialize())
+                    return
+
+                params = msg.payload.get("params", {})
+                new_lan = params.get("lan_ip")
+                new_wan = params.get("wan_ip")
+                new_port = params.get("port", DEFAULT_PORT)
+
+                self._update_dual_endpoints(new_lan, new_wan, new_port)
+
+                ack = FleetMessage(
+                    msg_type=FleetMessage.TYPE_RESPONSE,
+                    node_id=self.node_id,
+                    payload={"status": "ok", "message": "Mothership endpoints updated", "lan_ip": new_lan, "wan_ip": new_wan},
+                )
+                conn.sendall(ack.serialize())
+
+                # Trigger reconnect to the new IP
+                self._running = False
+                if self.sock:
+                    try:
+                        self.sock.close()
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    def _update_dual_endpoints(self, lan_ip: Optional[str], wan_ip: Optional[str], port: int) -> None:
+        """Dynamically caches updated LAN and WAN IPs streamed from Mothership."""
+        changed = False
+        if lan_ip and lan_ip != self.lan_host:
+            self.lan_host = lan_ip
+            changed = True
+        if wan_ip and wan_ip != self.wan_host:
+            self.wan_host = wan_ip
+            changed = True
+        if port and port != self.mothership_port:
+            self.mothership_port = port
+            changed = True
+        if changed:
+            save_mothership_dual_endpoints(self.lan_host, self.wan_host, self.mothership_port)
+            if self.hud:
+                self.hud.set_endpoints(self.lan_host, self.wan_host)
 
     def _heartbeat_loop(self) -> None:
         """Sends periodic heartbeats with telemetry to Mothership."""
@@ -801,6 +1024,8 @@ class SatelliteNode:
         self._heartbeat_thread = threading.Thread(target=self._heartbeat_loop, daemon=True)
         self._heartbeat_thread.start()
 
+        self._start_rendezvous_listener()
+
         if not self.hud:
             sys.stdout.write(f"[satellite] Node '{self.node_id}' online and connected to {self.mothership_host}:{self.mothership_port}\n")
         return True
@@ -820,6 +1045,7 @@ class SatelliteNode:
             on_upgrade_request=lambda: execute_fleet_upgrade(),
             local_commit=local_c,
         )
+        self.hud.set_endpoints(self.lan_host, self.wan_host)
 
         # Connect
         if not self.start():
@@ -908,6 +1134,12 @@ class SatelliteNode:
     def stop(self) -> None:
         """Closes socket and terminates background worker threads cleanly."""
         self._running = False
+        if self._rendezvous_sock:
+            try:
+                self._rendezvous_sock.close()
+            except Exception:
+                pass
+            self._rendezvous_sock = None
         if self.sock:
             try:
                 disc = FleetMessage(msg_type=FleetMessage.TYPE_DISCONNECT, node_id=self.node_id)
@@ -969,23 +1201,24 @@ def main() -> int:
         print(f"Message: {res.get('message', res.get('error'))}")
         return 0 if res.get("status") == "ok" else 1
 
+    # Enforce singleton lock so multiple background nodes or HUDs do not thrash terminal/threads
+    if not args.once:
+        mode = "hud" if args.hud else "node"
+        if not acquire_singleton_lock(mode):
+            return 0
+
     # When user provides --mothership, automatically persist it as the new default IP
     if args.mothership is not None:
         mothership_host = args.mothership.strip()
         save_mothership(mothership_host, port=args.port)
-        print(f"[satellite] Saved '{mothership_host}' as the new default Mothership IP.")
+        route_lbl = "LAN" if is_lan_address(mothership_host) else "WAN"
+        print(f"[satellite] Saved '{mothership_host}' as the active {route_lbl} Mothership IP.")
     else:
-        mothership_host = saved_host
-
-    if args.port is not None:
-        mothership_port = args.port
-        save_mothership(mothership_host, port=mothership_port)
-    else:
-        mothership_port = saved_port
+        mothership_host = None
 
     node = SatelliteNode(
         mothership_host=mothership_host,
-        mothership_port=mothership_port,
+        mothership_port=args.port,
         node_id=args.node_id,
         heartbeat_interval=args.interval,
         auto_upgrade=not args.no_auto_upgrade,

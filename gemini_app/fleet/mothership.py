@@ -164,6 +164,8 @@ class MothershipServer:
     def _telemetry_broadcast_loop(self) -> None:
         """Periodically streams host telemetry and cognitive updates to connected satellites."""
         last_check = 0.0
+        last_lan = ""
+        last_wan = ""
         while self._running:
             try:
                 time.sleep(self.broadcast_interval)
@@ -175,6 +177,16 @@ class MothershipServer:
                 if now - last_check > 10.0:
                     last_check = now
                     self._check_node_auto_upgrades()
+
+                    # Dynamic IP Migration Watcher: detect if Mothership IP changed
+                    from gemini_app.fleet.telemetry import get_local_lan_ip, get_public_wan_ip
+                    curr_lan = get_local_lan_ip()
+                    curr_wan = get_public_wan_ip()
+                    if last_lan and (curr_lan != last_lan or (curr_wan and last_wan and curr_wan != last_wan)):
+                        sys.stdout.write(f"[mothership] Detected Mothership IP change ({last_lan}->{curr_lan}). Reaching out to fleet...\n")
+                        self.notify_fleet_of_ip_change(new_lan_ip=curr_lan, new_wan_ip=curr_wan, port=self.port)
+                    last_lan = curr_lan
+                    last_wan = curr_wan
             except Exception:
                 pass
 
@@ -224,9 +236,14 @@ class MothershipServer:
                                 self.fleet_guard.record_auth_success(addr[0])
                                 is_authenticated = True
                                 with self.lock:
-                                    satellite = ConnectedSatellite(node_id, conn, addr)
-                                    satellite.telemetry = msg.payload.get("telemetry", {})
-                                    self.nodes[node_id] = satellite
+                                    if node_id in self.nodes and self.nodes[node_id].conn == conn:
+                                        satellite = self.nodes[node_id]
+                                        if "telemetry" in msg.payload:
+                                            satellite.telemetry.update(msg.payload["telemetry"])
+                                    else:
+                                        satellite = ConnectedSatellite(node_id, conn, addr)
+                                        satellite.telemetry = msg.payload.get("telemetry", {})
+                                        self.nodes[node_id] = satellite
                                 sys.stdout.write(f"[mothership] Satellite authenticated & registered: '{node_id}' from {addr}\n")
 
                                 ack = FleetMessage(
@@ -280,9 +297,14 @@ class MothershipServer:
                                     # Fallback: allow as unauthenticated LAN node when require_auth=False
                                     is_authenticated = True
                                     with self.lock:
-                                        satellite = ConnectedSatellite(node_id, conn, addr)
-                                        satellite.telemetry = msg.payload.get("telemetry", {})
-                                        self.nodes[node_id] = satellite
+                                        if node_id in self.nodes and self.nodes[node_id].conn == conn:
+                                            satellite = self.nodes[node_id]
+                                            if "telemetry" in msg.payload:
+                                                satellite.telemetry.update(msg.payload["telemetry"])
+                                        else:
+                                            satellite = ConnectedSatellite(node_id, conn, addr)
+                                            satellite.telemetry = msg.payload.get("telemetry", {})
+                                            self.nodes[node_id] = satellite
                                     sys.stdout.write(f"[mothership] Satellite registered (LAN mode): '{node_id}' from {addr}\n")
 
                                     ack = FleetMessage(
@@ -322,9 +344,14 @@ class MothershipServer:
                             if is_loopback or not self.require_auth:
                                 is_authenticated = True
                                 with self.lock:
-                                    satellite = ConnectedSatellite(node_id, conn, addr)
-                                    satellite.telemetry = msg.payload.get("telemetry", {})
-                                    self.nodes[node_id] = satellite
+                                    if node_id in self.nodes and self.nodes[node_id].conn == conn:
+                                        satellite = self.nodes[node_id]
+                                        if "telemetry" in msg.payload:
+                                            satellite.telemetry.update(msg.payload["telemetry"])
+                                    else:
+                                        satellite = ConnectedSatellite(node_id, conn, addr)
+                                        satellite.telemetry = msg.payload.get("telemetry", {})
+                                        self.nodes[node_id] = satellite
                                 sys.stdout.write(f"[mothership] Satellite registered: '{node_id}' from {addr}\n")
 
                                 # Persist to active nodes and update persistent registry
@@ -482,6 +509,7 @@ class MothershipServer:
         telem = collect_mothership_telemetry(
             cognitive_override=self._cognitive_override,
             satellites_info=self.list_nodes(),
+            port=self.port,
         )
         msg = FleetMessage(
             msg_type=FleetMessage.TYPE_TELEMETRY,
@@ -629,6 +657,80 @@ class MothershipServer:
         """Dispatches an SSH rescue/reboot operation to a remote node using cluster key credentials."""
         return execute_ssh_rescue(node_id=node_id, action=action, timeout=timeout)
 
+    def notify_fleet_of_ip_change(
+        self,
+        new_lan_ip: str,
+        new_wan_ip: Optional[str] = None,
+        port: Optional[int] = None,
+        timeout: float = 4.0,
+    ) -> Dict[str, Any]:
+        """Dispatches dynamic IP updates to registered satellite nodes (via Rendezvous TCP or SSH rescue)."""
+        from gemini_app.fleet.nodes import load_nodes_registry
+        from gemini_app.fleet.protocol import DEFAULT_RENDEZVOUS_PORT
+        registry = load_nodes_registry()
+        results: Dict[str, Any] = {}
+
+        p = port or self.port
+        for nid, ninfo in registry.items():
+            nhost = ninfo.get("host")
+            if not nhost:
+                continue
+
+            success = False
+            method_used = "rendezvous_tcp"
+            detail = ""
+
+            # 1. Try Rendezvous TCP port 7332
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(timeout)
+                s.connect((nhost, DEFAULT_RENDEZVOUS_PORT))
+                cmd_ts = time.time()
+                cmd_sig = compute_command_signature(self.fleet_key, "update_mothership_endpoint", nid, cmd_ts)
+                cmd = FleetMessage(
+                    msg_type=FleetMessage.TYPE_COMMAND,
+                    node_id="mothership",
+                    payload={
+                        "action": "update_mothership_endpoint",
+                        "params": {"lan_ip": new_lan_ip, "wan_ip": new_wan_ip, "port": p},
+                        "auth_sig": cmd_sig,
+                        "auth_ts": cmd_ts,
+                    },
+                )
+                s.sendall(cmd.serialize())
+                resp_line = s.recv(2048).decode("utf-8", errors="replace")
+                s.close()
+                if resp_line:
+                    resp_msg = FleetMessage.deserialize(resp_line)
+                    if resp_msg.payload.get("status") == "ok":
+                        success = True
+                        detail = "Endpoint accepted via Rendezvous listener"
+            except Exception as exc:
+                detail = f"Rendezvous TCP connection failed: {exc}"
+
+            # 2. Fallback to SSH update if TCP listener didn't succeed
+            if not success and ninfo.get("ssh_port"):
+                method_used = "ssh_tunnel"
+                py_cmd = (
+                    f"python3 -c \"from gemini_app.fleet.satellite import save_mothership_dual_endpoints; "
+                    f"save_mothership_dual_endpoints(lan_ip='{new_lan_ip}', wan_ip='{new_wan_ip or ''}', port={p})\""
+                )
+                ssh_res = execute_ssh_rescue(node_id=nid, action="exec", custom_cmd=py_cmd, timeout=8)
+                if ssh_res.get("status") == "ok":
+                    success = True
+                    detail = "Endpoint updated via SSH cluster key"
+                else:
+                    detail += f" | SSH fallback failed: {ssh_res.get('error', 'unknown error')}"
+
+            results[nid] = {
+                "host": nhost,
+                "status": "ok" if success else "failed",
+                "method": method_used,
+                "detail": detail,
+            }
+
+        return results
+
     def stop(self) -> None:
         """Shuts down server socket and disconnects connected satellites."""
         self._running = False
@@ -654,7 +756,17 @@ def main() -> int:
     parser.add_argument("--no-auth", dest="require_auth", action="store_false", help="Allow unauthenticated LAN node registration (default)")
     parser.add_argument("--upgrade", metavar="NODE_ID", help="Dispatch atomic upgrade to specific satellite node")
     parser.add_argument("--upgrade-all", action="store_true", help="Dispatch atomic upgrade to all active satellite nodes")
+    parser.add_argument("--notify-ip", metavar="LAN_IP", help="Dispatch Mothership IP migration to all registered fleet nodes")
+    parser.add_argument("--wan-ip", metavar="WAN_IP", default=None, help="Optional WAN IP for --notify-ip")
     args = parser.parse_args()
+
+    if args.notify_ip:
+        server = MothershipServer(host=args.host, port=args.port, auto_broadcast_telemetry=False)
+        print(f"[mothership] Disagreeing fleet of IP migration to LAN={args.notify_ip}, WAN={args.wan_ip}...")
+        res = server.notify_fleet_of_ip_change(new_lan_ip=args.notify_ip, new_wan_ip=args.wan_ip, port=args.port)
+        for nid, r in res.items():
+            print(f"  • {nid} ({r.get('host')}): {r.get('status')} via {r.get('method')} ({r.get('detail')})")
+        return 0
 
     server = MothershipServer(host=args.host, port=args.port, require_auth=args.require_auth)
     if not server.start():

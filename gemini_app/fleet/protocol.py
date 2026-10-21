@@ -8,6 +8,7 @@ import time
 from typing import Any, Dict, Optional
 
 DEFAULT_PORT = 7331
+DEFAULT_RENDEZVOUS_PORT = 7332
 PROTOCOL_VERSION = "1.0.0"
 
 

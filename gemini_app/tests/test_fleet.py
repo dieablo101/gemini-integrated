@@ -188,8 +188,42 @@ class TestFleetTelemetryAndHUD(unittest.TestCase):
         self.assertIn("vitals", telem)
         self.assertIn("git", telem)
         self.assertIn("cognitive", telem)
+        self.assertIn("network", telem)
+        self.assertIn("lan_ip", telem["network"])
+        self.assertIn("wan_ip", telem["network"])
+        self.assertIn("port", telem["network"])
         self.assertIn("cpu_pct", telem["vitals"])
         self.assertIn("branch", telem["git"])
+
+    def test_dual_ip_persistence_and_lan_detection(self) -> None:
+        from gemini_app.fleet.satellite import (
+            is_lan_address,
+            save_mothership_dual_endpoints,
+            get_saved_mothership_endpoints,
+            acquire_singleton_lock,
+        )
+        self.assertTrue(is_lan_address("192.168.1.91"))
+        self.assertTrue(is_lan_address("10.0.0.5"))
+        self.assertTrue(is_lan_address("172.16.0.1"))
+        self.assertTrue(is_lan_address("127.0.0.1"))
+        self.assertFalse(is_lan_address("72.187.118.138"))
+        self.assertFalse(is_lan_address("8.8.8.8"))
+
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            from gemini_app.fleet import satellite
+            orig_cfg = satellite.CONFIG_FILE
+            satellite.CONFIG_FILE = Path(td) / "config.json"
+            try:
+                save_mothership_dual_endpoints(lan_ip="192.168.1.91", wan_ip="72.187.118.138", port=7331)
+                lan, wan, p = get_saved_mothership_endpoints()
+                self.assertEqual(lan, "192.168.1.91")
+                self.assertEqual(wan, "72.187.118.138")
+                self.assertEqual(p, 7331)
+            finally:
+                satellite.CONFIG_FILE = orig_cfg
+
+        self.assertTrue(acquire_singleton_lock("test-mode"))
 
     def test_update_and_persist_cognitive_state(self) -> None:
         st = update_cognitive_state(
@@ -252,42 +286,48 @@ class TestFleetNetwork(unittest.TestCase):
             heartbeat_interval=1.0,
         )
 
-        started = satellite.start()
-        self.assertTrue(started, "Satellite node failed to start and connect")
+        try:
+            started = satellite.start()
+            self.assertTrue(started, "Satellite node failed to start and connect")
 
-        # Allow registration to propagate
-        time.sleep(0.3)
+            # Allow registration and authentication challenge to propagate
+            for _ in range(25):
+                if self.server.list_nodes():
+                    break
+                time.sleep(0.1)
 
-        # Check Mothership registry
-        nodes = self.server.list_nodes()
-        self.assertEqual(len(nodes), 1)
-        self.assertEqual(nodes[0]["node_id"], node_id)
-        self.assertIn("system", nodes[0]["telemetry"])
+            # Check Mothership registry
+            nodes = self.server.list_nodes()
+            self.assertEqual(len(nodes), 1)
+            self.assertEqual(nodes[0]["node_id"], node_id)
+            self.assertIn("system", nodes[0]["telemetry"])
 
-        # Test ping command
-        ping_resp = self.server.ping_node(node_id, timeout=3.0)
-        self.assertEqual(ping_resp.get("status"), "ok")
-        self.assertIn("pong", ping_resp)
-        self.assertIn("rtt_ms", ping_resp)
-        self.assertGreater(ping_resp["rtt_ms"], 0)
+            # Test ping command
+            ping_resp = self.server.ping_node(node_id, timeout=3.0)
+            self.assertEqual(ping_resp.get("status"), "ok", f"Ping failed: {ping_resp}")
+            self.assertIn("pong", ping_resp)
+            self.assertIn("rtt_ms", ping_resp)
+            self.assertGreater(ping_resp["rtt_ms"], 0)
 
-        # Test exec command
-        exec_resp = self.server.send_command(
-            node_id=node_id,
-            action="exec",
-            params={"command": "echo fleet_unit_test"},
-            timeout=3.0,
-        )
-        self.assertEqual(exec_resp.get("status"), "ok")
-        self.assertIn("fleet_unit_test", exec_resp.get("stdout", ""))
+            # Test exec command
+            exec_resp = self.server.send_command(
+                node_id=node_id,
+                action="exec",
+                params={"command": "echo fleet_unit_test"},
+                timeout=3.0,
+            )
+            self.assertEqual(exec_resp.get("status"), "ok")
+            self.assertIn("fleet_unit_test", exec_resp.get("stdout", ""))
 
-        # Test broadcast telemetry
-        broadcast_count = self.server.broadcast_telemetry()
-        self.assertEqual(broadcast_count, 1)
+            # Test broadcast telemetry
+            broadcast_count = self.server.broadcast_telemetry()
+            self.assertEqual(broadcast_count, 1)
 
-        # Test push cognitive event
-        event_count = self.server.push_cognitive_event("Test cognitive event")
-        self.assertEqual(event_count, 1)
+            # Test push cognitive event
+            event_count = self.server.push_cognitive_event("Test cognitive event")
+            self.assertEqual(event_count, 1)
+        finally:
+            satellite.stop()
 
         # Test Mothership receiving update_cognitive command over socket
         cmd_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -320,6 +360,42 @@ class TestFleetNetwork(unittest.TestCase):
         # Node should be dereferenced from active nodes
         nodes_after = self.server.list_nodes()
         self.assertEqual(len(nodes_after), 0)
+
+    def test_rendezvous_ip_migration_dispatch(self) -> None:
+        """Tests inbound rendezvous listener updating node endpoints when Mothership IP migrates."""
+        node_id = "test-rendezvous-node"
+        satellite = SatelliteNode(
+            mothership_host="127.0.0.1",
+            mothership_port=self.test_port,
+            node_id=node_id,
+            heartbeat_interval=1.0,
+        )
+        try:
+            started = satellite.start()
+            self.assertTrue(started)
+
+            register_or_update_node(
+                node_id=node_id,
+                host="127.0.0.1",
+                telemetry={"system": "Linux"},
+            )
+
+            # Temporarily allow 127.0.0.1 in notify_fleet_of_ip_change for test
+            with patch("gemini_app.fleet.nodes.load_nodes_registry", return_value={
+                node_id: {"host": "127.0.0.1", "ssh_port": None}
+            }):
+                results = self.server.notify_fleet_of_ip_change(
+                    new_lan_ip="192.168.1.250",
+                    new_wan_ip="72.187.118.138",
+                    port=self.test_port,
+                    timeout=2.0,
+                )
+            self.assertIn(node_id, results)
+            self.assertEqual(results[node_id]["status"], "ok")
+            self.assertEqual(satellite.lan_host, "192.168.1.250")
+            self.assertEqual(satellite.wan_host, "72.187.118.138")
+        finally:
+            satellite.stop()
 
     def test_rogue_node_rejection(self) -> None:
         """Verifies that an unauthorized node with an invalid signature is rejected."""

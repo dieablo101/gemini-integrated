@@ -60,20 +60,67 @@ def _get_git_info_fast(repo_dir: Optional[Path] = None) -> tuple[str, str]:
     return "unknown", "unknown"
 
 
+_last_ipad_check = 0.0
+_cached_ipad_files = 0
+_cached_has_mount = False
+
+
+def check_ipad_mount() -> tuple[bool, int]:
+    """Safely checks /mnt/ipad with caching to avoid iSH VFS/Cocoa file coordinator crashes."""
+    global _last_ipad_check, _cached_ipad_files, _cached_has_mount
+    now = time.time()
+    if now - _last_ipad_check < 60.0:
+        return _cached_has_mount, _cached_ipad_files
+    _last_ipad_check = now
+    try:
+        ipad_mount = Path("/mnt/ipad")
+        if ipad_mount.is_dir():
+            _cached_has_mount = True
+            count = 0
+            # Limit iteration to at most 50 files using scandir to avoid memory explosion in iSH
+            with os.scandir("/mnt/ipad") as it:
+                for _ in it:
+                    count += 1
+                    if count >= 50:
+                        break
+            _cached_ipad_files = count
+        else:
+            _cached_has_mount = False
+            _cached_ipad_files = 0
+    except Exception:
+        pass
+    return _cached_has_mount, _cached_ipad_files
+
+
+def ensure_ish_background_keepalive() -> None:
+    """Touches /dev/location in background on iOS iSH to prevent iOS app suspension."""
+    if Path("/proc/ish").exists() or Path("/dev/location").exists():
+        try:
+            if not getattr(ensure_ish_background_keepalive, "_started", False):
+                def _location_keeper():
+                    try:
+                        with open("/dev/location", "r") as f:
+                            while True:
+                                line = f.readline()
+                                if not line:
+                                    break
+                                time.sleep(10.0)
+                    except Exception:
+                        pass
+                t = threading.Thread(target=_location_keeper, daemon=True, name="ish-keepalive")
+                t.start()
+                ensure_ish_background_keepalive._started = True
+        except Exception:
+            pass
+
+
 def collect_telemetry() -> Dict[str, Any]:
     """Collects system capabilities and status using standard library only."""
     uname = platform.uname()
     total_b, used_b, free_b = shutil.disk_usage("/")
 
-    # Check for iOS filesystem mount point
-    ipad_mount = Path("/mnt/ipad")
-    has_ipad_mount = ipad_mount.is_dir()
-    ipad_files_count = 0
-    if has_ipad_mount:
-        try:
-            ipad_files_count = len(list(ipad_mount.iterdir()))
-        except Exception:
-            pass
+    # Check for iOS filesystem mount point with cached scandir guard
+    has_ipad_mount, ipad_files_count = check_ipad_mount()
 
     # Read git status using pure Python to avoid fork/exec crashes in iSH emulator
     git_commit, git_branch = _get_git_info_fast()
@@ -364,10 +411,13 @@ class SatelliteNode:
         mothership_port: Optional[int] = None,
         node_id: Optional[str] = None,
         heartbeat_interval: float = 15.0,
+        auto_upgrade: bool = True,
     ) -> None:
         self.mothership_host = (mothership_host or get_saved_mothership()).strip()
         self.mothership_port = mothership_port if mothership_port is not None else get_saved_mothership_port()
         self.heartbeat_interval = heartbeat_interval
+        self.auto_upgrade = auto_upgrade
+        self._is_upgrading = False
 
         # Derive an intuitive default node id
         if not node_id:
@@ -480,6 +530,17 @@ class SatelliteNode:
             if upgrade_res.get("status") == "ok" and upgrade_res.get("upgraded"):
                 def _do_reboot():
                     time.sleep(1.0)
+                    self._running = False
+                    if self.sock:
+                        try:
+                            self.sock.close()
+                        except Exception:
+                            pass
+                    if self.hud:
+                        try:
+                            self.hud.restore_terminal()
+                        except Exception:
+                            pass
                     if os.environ.get("GEMINI_WATCHDOG") == "1":
                         sys.exit(42)
                     else:
@@ -501,6 +562,64 @@ class SatelliteNode:
             payload=result_payload,
             msg_id=f"resp-{cmd_msg.msg_id}",
         )
+
+    def _trigger_auto_upgrade(self, target_commit: str, current_commit: str) -> None:
+        """Asynchronously triggers node auto-upgrade and reboots whatever node mode was running."""
+        if self._is_upgrading:
+            return
+        self._is_upgrading = True
+
+        def _worker():
+            try:
+                msg = f"Mothership updated ({current_commit} -> {target_commit})! Auto-updating..."
+                if self.hud:
+                    self.hud.show_toast(msg, duration=5.0)
+                else:
+                    sys.stdout.write(f"[satellite] {msg}\n")
+
+                res = execute_fleet_upgrade(target_ref="origin/main")
+                if res.get("status") == "ok" and res.get("upgraded"):
+                    new_c = res.get("new_commit", target_commit)
+                    done_msg = f"Upgraded to {new_c}! Rebooting..."
+                    if self.hud:
+                        self.hud.show_toast(done_msg, duration=3.0)
+                    else:
+                        sys.stdout.write(f"[satellite] {done_msg}\n")
+                    time.sleep(1.0)
+                    self._running = False
+                    if self.sock:
+                        try:
+                            self.sock.close()
+                        except Exception:
+                            pass
+                    if self.hud:
+                        try:
+                            self.hud.restore_terminal()
+                        except Exception:
+                            pass
+                    if os.environ.get("GEMINI_WATCHDOG") == "1":
+                        sys.exit(42)
+                    else:
+                        os.execv(sys.executable, [sys.executable] + sys.argv)
+                elif res.get("status") == "ok":
+                    if self.hud:
+                        self.hud.show_toast("Code already matches origin/main.", duration=3.0)
+                else:
+                    err_msg = res.get("error", "Unknown upgrade error")
+                    if self.hud:
+                        self.hud.show_toast(f"Auto-update: {err_msg[:40]}", duration=4.0)
+                    else:
+                        sys.stderr.write(f"[satellite] Auto-upgrade paused: {err_msg}\n")
+            except Exception as exc:
+                if self.hud:
+                    self.hud.show_toast(f"Auto-upgrade error: {exc}", duration=4.0)
+                else:
+                    sys.stderr.write(f"[satellite] Auto-upgrade exception: {exc}\n")
+            finally:
+                time.sleep(15.0)  # Rate-limit re-triggers
+                self._is_upgrading = False
+
+        threading.Thread(target=_worker, daemon=True, name="satellite-auto-upgrade").start()
 
     def _listen_loop(self) -> None:
         """Reads incoming line-delimited JSON commands from Mothership."""
@@ -561,8 +680,22 @@ class SatelliteNode:
                                 if self.hud:
                                     self.hud.set_connection_status(True, ping_ms=round(rtt_ms, 1))
                         elif msg.type == FleetMessage.TYPE_TELEMETRY:
+                            telem_data = msg.payload.get("mothership_telemetry", msg.payload)
                             if self.hud:
-                                self.hud.update_telemetry(msg.payload.get("mothership_telemetry", msg.payload))
+                                self.hud.update_telemetry(telem_data)
+                            # Autonomous check: has mothership advanced past local node git commit?
+                            if self.auto_upgrade and not self._is_upgrading:
+                                ms_git = telem_data.get("git", {})
+                                ms_commit = ms_git.get("commit")
+                                local_commit, _ = _get_git_info_fast()
+                                if (
+                                    ms_commit
+                                    and local_commit
+                                    and ms_commit not in ("unknown", None)
+                                    and local_commit not in ("unknown", None)
+                                    and ms_commit != local_commit
+                                ):
+                                    self._trigger_auto_upgrade(ms_commit, local_commit)
                         elif msg.type == FleetMessage.TYPE_EVENT:
                             if self.hud:
                                 self.hud.log_event(msg.payload.get("event", "Event received"))

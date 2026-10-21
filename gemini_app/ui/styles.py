@@ -251,6 +251,16 @@ Screen {
         border-bottom: solid red;
         display: none;
     }
+    #runner_status {
+        width: 100%;
+        height: 2;
+        padding: 0 1;
+        color: #ffaa33;
+        text-style: bold;
+        background: #10100a;
+        border-bottom: solid #332200;
+        display: none;
+    }
     #feed_nav_banner {
         width: 100%;
         height: auto;

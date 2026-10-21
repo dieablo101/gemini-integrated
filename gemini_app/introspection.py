@@ -421,6 +421,7 @@ def apply_accent_talk(
         "footer": "#custom_footer",
         "preview": "#snippet_preview",
         "status": "#feed_status",
+        "runner": "#runner_status",
         "navbar": "#feed_nav_banner",
         "nav": "#feed_nav_banner",
     }

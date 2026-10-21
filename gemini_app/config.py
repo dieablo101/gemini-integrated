@@ -160,6 +160,11 @@ def generate_theme_css_rules() -> str:
             color: {acc};
             border-bottom: solid {acc};
         }}
+        .theme-{name} #runner_status {{
+            color: #ffaa33;
+            background: #141408;
+            border-bottom: solid #332200;
+        }}
         .theme-{name} #feed_nav_banner {{
             color: #ffffff;
             background: #141414;

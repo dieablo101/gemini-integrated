@@ -1158,6 +1158,7 @@ class ChatApp(App):
                 yield FeedArea(id="feed")
                 yield NotesPanel()
             yield Static("", id="feed_status")
+            yield Static("", id="runner_status")
             yield Static("", id="feed_nav_banner")
             yield SnippetPreview(id="snippet_preview")
             yield ExpandingInput(id="input")
@@ -1329,10 +1330,22 @@ class ChatApp(App):
     def hide_status(self, force: bool = False) -> None:
         try:
             status_lbl = self.query_one("#feed_status", Static)
-            if not force and getattr(self, "_background_task_status", ""):
-                status_lbl.update(self._background_task_status)
-                status_lbl.styles.display = "block"
-                return
+            status_lbl.update("")
+            status_lbl.styles.display = "none"
+        except Exception:
+            pass
+
+    def set_runner_status_text(self, text: str) -> None:
+        try:
+            status_lbl = self.query_one("#runner_status", Static)
+            status_lbl.update(text)
+            status_lbl.styles.display = "block"
+        except Exception:
+            pass
+
+    def hide_runner_status(self) -> None:
+        try:
+            status_lbl = self.query_one("#runner_status", Static)
             status_lbl.update("")
             status_lbl.styles.display = "none"
         except Exception:
@@ -1355,11 +1368,7 @@ class ChatApp(App):
         self._reconnect_target_time = 0.0
         self._reconnect_attempt = 0
         self._reconnect_max_retries = 0
-        bg_status = getattr(self, "_background_task_status", "")
-        if bg_status:
-            self.set_status_text(bg_status)
-        else:
-            self.hide_status(force=True)
+        self.hide_status()
 
     def _tick_status(self) -> None:
         self._last_heartbeat_time = time.monotonic()
@@ -1540,10 +1549,10 @@ class ChatApp(App):
                     clear = payload.get("clear", False)
                     if clear:
                         self._background_task_status = ""
-                        self.hide_status(force=True)
+                        self.hide_runner_status()
                     elif text:
                         self._background_task_status = text
-                        self.set_status_text(text)
+                        self.set_runner_status_text(text)
 
                     toast = payload.get("toast")
                     if toast:

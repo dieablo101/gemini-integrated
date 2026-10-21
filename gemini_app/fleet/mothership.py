@@ -7,8 +7,12 @@ monitoring heartbeats, and dispatching tasks over persistent TCP sockets.
 from __future__ import annotations
 
 import argparse
+import base64
 import json
+import os
+from pathlib import Path
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -22,7 +26,7 @@ from gemini_app.fleet.security import (
     get_or_create_fleet_key,
     verify_auth_signature,
 )
-from gemini_app.fleet.satellite import _get_git_info_fast
+from gemini_app.fleet.satellite import _get_git_info_fast, find_repo_root
 from gemini_app.fleet.nodes import (
     execute_ssh_rescue,
     register_or_update_node,
@@ -154,7 +158,9 @@ class MothershipServer:
                     prev_c, attempts = self._node_upgrade_attempts.get(nid, ("", 0))
                     if prev_c != ms_commit:
                         attempts = 0
-                    if attempts >= 2:
+                    if attempts >= 3:
+                        cooldown = 300.0
+                    elif attempts >= 2:
                         cooldown = 120.0
                     else:
                         cooldown = 45.0
@@ -450,6 +456,11 @@ class MothershipServer:
                                 target_nid = msg.payload.get("params", {}).get("node_id", "")
                                 rescue_act = msg.payload.get("params", {}).get("action", "restart")
                                 resp_payload["rescue_result"] = execute_ssh_rescue(target_nid, action=rescue_act)
+                            elif action == "get_update_bundle":
+                                bundle_b64, ms_commit = self.get_repo_bundle()
+                                resp_payload["bundle_b64"] = bundle_b64
+                                resp_payload["target_commit"] = ms_commit
+                                resp_payload["status"] = "ok" if bundle_b64 else "error"
                             elif action == "upgrade_node":
                                 target_nid = msg.payload.get("params", {}).get("node_id", "")
                                 target_ref = msg.payload.get("params", {}).get("target_ref", "origin/main")
@@ -636,6 +647,49 @@ class MothershipServer:
         resp["rtt_ms"] = elapsed_ms
         return resp
 
+    def get_repo_bundle(self, repo_dir: Optional[Path] = None) -> tuple[Optional[str], str]:
+        """Creates a base64 gzipped tarball archive of HEAD for direct satellite upgrades."""
+        cwd = find_repo_root(repo_dir)
+        commit, _ = _get_git_info_fast(cwd)
+        # 1. Prefer fast git archive of HEAD
+        try:
+            res = subprocess.run(
+                ["git", "archive", "--format=tar.gz", "HEAD"],
+                cwd=cwd,
+                capture_output=True,
+                timeout=10,
+            )
+            if res.returncode == 0 and res.stdout:
+                b64 = base64.b64encode(res.stdout).decode("ascii")
+                return b64, commit
+        except Exception:
+            pass
+
+        # 2. Pure-Python tarball fallback (excluding __pycache__ and git metadata)
+        try:
+            import io
+            import tarfile
+            buf = io.BytesIO()
+            with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+                for top_f in ("gemini-integrated.py", "__main__.py", "LICENSE.txt", "README.md"):
+                    p = cwd / top_f
+                    if p.is_file():
+                        tar.add(str(p), arcname=top_f)
+                app_dir = cwd / "gemini_app"
+                if app_dir.is_dir():
+                    for root, dirs, files in os.walk(app_dir):
+                        dirs[:] = [d for d in dirs if d != "__pycache__"]
+                        for f in files:
+                            if not f.endswith(".pyc"):
+                                full = Path(root) / f
+                                arcname = str(full.relative_to(cwd))
+                                tar.add(str(full), arcname=arcname)
+            buf.seek(0)
+            b64 = base64.b64encode(buf.read()).decode("ascii")
+            return b64, commit
+        except Exception:
+            return None, commit
+
     def upgrade_node(
         self,
         node_id: str,
@@ -643,11 +697,17 @@ class MothershipServer:
         force: bool = False,
         timeout: float = 45.0,
     ) -> Dict[str, Any]:
-        """Sends atomic 3-stage upgrade command to a specific node."""
+        """Sends atomic 3-stage upgrade command to a specific node with direct Mothership bundle."""
+        bundle_b64, ms_commit = self.get_repo_bundle()
         return self.send_command(
             node_id=node_id,
             action="fleet_upgrade",
-            params={"target_ref": target_ref, "force": force},
+            params={
+                "target_ref": target_ref,
+                "target_commit": ms_commit,
+                "bundle_b64": bundle_b64,
+                "force": force,
+            },
             timeout=timeout,
         )
 

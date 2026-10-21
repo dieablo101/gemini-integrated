@@ -677,6 +677,65 @@ class TestFleetNodesAndAutostart(unittest.TestCase):
                     mock_err.assert_called()
                     self.assertIn("requires an interactive TTY", mock_err.call_args[0][0])
 
+    def test_mothership_get_repo_bundle(self) -> None:
+        """Verifies MothershipServer creates an in-memory base64 tarball bundle."""
+        server = MothershipServer(host="127.0.0.1", port=0, auto_broadcast_telemetry=False)
+        b64, commit = server.get_repo_bundle()
+        self.assertIsNotNone(b64)
+        self.assertGreater(len(b64), 100)
+        self.assertNotEqual(commit, "unknown")
+
+    def test_execute_fleet_upgrade_with_bundle(self) -> None:
+        """Verifies execute_fleet_upgrade unpacks direct Mothership bundle without network access."""
+        import tempfile, io, tarfile, base64
+        with tempfile.TemporaryDirectory() as td:
+            repo_path = Path(td)
+            git_heads = repo_path / ".git" / "refs" / "heads"
+            git_heads.mkdir(parents=True, exist_ok=True)
+            (git_heads / "main").write_text("old1111\n", encoding="utf-8")
+
+            # Create mock bundle containing a dummy file
+            bio = io.BytesIO()
+            with tarfile.open(fileobj=bio, mode="w:gz") as tar:
+                data = b"print('UPDATED_CODE')\n"
+                ti = tarfile.TarInfo("test_file.py")
+                ti.size = len(data)
+                tar.addfile(ti, io.BytesIO(data))
+            bio.seek(0)
+            mock_bundle_b64 = base64.b64encode(bio.getvalue()).decode("ascii")
+
+            with patch("gemini_app.fleet.satellite.is_ish_platform", return_value=True):
+                with patch("gemini_app.fleet.satellite._get_git_info_fast", return_value=("old1111", "main")):
+                    with patch("subprocess.run") as mock_sub:
+                        mock_sub.return_value = MagicMock(returncode=0, stdout="VERIFIED")
+                        res = execute_fleet_upgrade(
+                            repo_dir=repo_path,
+                            target_commit="bundle789",
+                            bundle_b64=mock_bundle_b64,
+                        )
+                        self.assertEqual(res.get("status"), "ok")
+                        self.assertEqual(res.get("new_commit"), "bundle7")
+                        self.assertTrue(res.get("upgraded"))
+                        self.assertTrue((repo_path / "test_file.py").exists())
+                        ref_content = (git_heads / "main").read_text(encoding="utf-8").strip()
+                        self.assertEqual(ref_content, "bundle789")
+
+    def test_mothership_upgrade_node_passes_bundle(self) -> None:
+        """Verifies upgrade_node passes target_commit and bundle_b64 in params."""
+        server = MothershipServer(host="127.0.0.1", port=0, auto_broadcast_telemetry=False)
+        with patch.object(server, "get_repo_bundle", return_value=("dummy_b64_content", "commit123")):
+            with patch.object(server, "send_command") as mock_send:
+                mock_send.return_value = {"status": "ok"}
+                res = server.upgrade_node("test-node-1")
+                self.assertEqual(res.get("status"), "ok")
+                mock_send.assert_called_once()
+                call_kwargs = mock_send.call_args.kwargs
+                self.assertEqual(call_kwargs.get("node_id"), "test-node-1")
+                self.assertEqual(call_kwargs.get("action"), "fleet_upgrade")
+                params = call_kwargs.get("params", {})
+                self.assertEqual(params.get("target_commit"), "commit123")
+                self.assertEqual(params.get("bundle_b64"), "dummy_b64_content")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -411,6 +411,14 @@ class MothershipServer:
                                 target_nid = msg.payload.get("params", {}).get("node_id", "")
                                 rescue_act = msg.payload.get("params", {}).get("action", "restart")
                                 resp_payload["rescue_result"] = execute_ssh_rescue(target_nid, action=rescue_act)
+                            elif action == "upgrade_node":
+                                target_nid = msg.payload.get("params", {}).get("node_id", "")
+                                target_ref = msg.payload.get("params", {}).get("target_ref", "origin/main")
+                                force = msg.payload.get("params", {}).get("force", False)
+                                if target_nid:
+                                    resp_payload["upgrade_result"] = self.upgrade_node(target_nid, target_ref=target_ref, force=force)
+                                else:
+                                    resp_payload["upgrade_result"] = self.upgrade_all_nodes(target_ref=target_ref, force=force)
                             elif action == "mothership_telemetry":
                                 resp_payload["mothership_telemetry"] = collect_mothership_telemetry(
                                     cognitive_override=self._cognitive_override,

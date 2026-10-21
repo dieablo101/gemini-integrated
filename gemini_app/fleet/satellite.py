@@ -278,29 +278,30 @@ def execute_fleet_upgrade(
             }
 
     # Stage 3: Pre-Flight Syntax & Import Validation Gate
-    py_files = [str(p) for p in cwd.glob("gemini_app/**/*.py")]
-    for top_py in ("gemini-integrated.py", "__main__.py"):
-        if (cwd / top_py).exists():
-            py_files.append(top_py)
+    if not is_ish:
+        py_files = [str(p) for p in cwd.glob("gemini_app/**/*.py")]
+        for top_py in ("gemini-integrated.py", "__main__.py"):
+            if (cwd / top_py).exists():
+                py_files.append(top_py)
 
-    if py_files:
-        compile_res = subprocess.run(
-            [sys.executable, "-m", "py_compile"] + py_files[:50],  # Sample compile
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            timeout=20,
-        )
-        if compile_res.returncode != 0:
-            # Atomic rollback!
-            subprocess.run(["git", "reset", "--hard", old_commit], cwd=cwd, capture_output=True)
-            return {
-                "status": "error",
-                "stage": "syntax_validation",
-                "error": f"Pre-flight py_compile failed: {compile_res.stderr.strip()}",
-                "rolled_back": True,
-                "current_commit": old_commit,
-            }
+        if py_files:
+            compile_res = subprocess.run(
+                [sys.executable, "-m", "py_compile"] + py_files[:50],  # Sample compile
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+            if compile_res.returncode != 0:
+                # Atomic rollback!
+                subprocess.run(["git", "reset", "--hard", old_commit], cwd=cwd, capture_output=True)
+                return {
+                    "status": "error",
+                    "stage": "syntax_validation",
+                    "error": f"Pre-flight py_compile failed: {compile_res.stderr.strip()}",
+                    "rolled_back": True,
+                    "current_commit": old_commit,
+                }
 
     # Test import check
     import_res = subprocess.run(

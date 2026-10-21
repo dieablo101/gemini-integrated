@@ -419,6 +419,14 @@ class MothershipServer:
                                     resp_payload["upgrade_result"] = self.upgrade_node(target_nid, target_ref=target_ref, force=force)
                                 else:
                                     resp_payload["upgrade_result"] = self.upgrade_all_nodes(target_ref=target_ref, force=force)
+                            elif action == "exec_node":
+                                target_nid = msg.payload.get("params", {}).get("node_id", "")
+                                subcmd = msg.payload.get("params", {}).get("command", "")
+                                if target_nid and subcmd:
+                                    resp_payload["exec_result"] = self.send_command(target_nid, "exec", {"command": subcmd}, timeout=15.0)
+                                else:
+                                    resp_payload["status"] = "error"
+                                    resp_payload["error"] = "Missing node_id or command"
                             elif action == "mothership_telemetry":
                                 resp_payload["mothership_telemetry"] = collect_mothership_telemetry(
                                     cognitive_override=self._cognitive_override,

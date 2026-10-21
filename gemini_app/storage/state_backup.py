@@ -38,8 +38,13 @@ GITIGNORE_CONTENT = """*.sock
 *.db-shm
 *.db-journal
 
-# Vault Security: Plaintext secret protection
-# NEVER track unencrypted secrets in git
+# Secrets, Keys & Plaintext Protection (NEVER TRACK)
+*.key
+fleet.key
+*.token
+*.secret
+*.pem
+*.env
 vault/*.txt
 vault/*.token
 vault/*.key

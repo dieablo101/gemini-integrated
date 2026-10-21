@@ -866,6 +866,12 @@ class SatelliteNode:
                             if self.hud:
                                 self.hud.update_telemetry(telem_data)
 
+                            # Adopt cluster fleet_key if shared by Mothership over LAN
+                            provided_key = msg.payload.get("fleet_key")
+                            if provided_key:
+                                from gemini_app.fleet.security import save_fleet_key
+                                save_fleet_key(provided_key)
+
                             # Dynamic Mothership Dual-IP Discovery (LAN + WAN update)
                             net_info = telem_data.get("network", {})
                             if net_info:

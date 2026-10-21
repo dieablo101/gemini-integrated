@@ -52,6 +52,20 @@ def get_or_create_fleet_key(key_path: Optional[Path] = None) -> str:
     return new_key
 
 
+def save_fleet_key(key: str, key_path: Optional[Path] = None) -> bool:
+    """Saves the cluster fleet key to disk with strict permissions."""
+    if not key or not isinstance(key, str):
+        return False
+    target_file = key_path or FLEET_KEY_FILE
+    try:
+        target_file.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        target_file.write_text(key.strip(), encoding="utf-8")
+        target_file.chmod(0o600)
+        return True
+    except Exception:
+        return False
+
+
 def get_existing_fleet_key(key_path: Optional[Path] = None) -> Optional[str]:
     """Reads existing cluster key without automatically generating a new one."""
     env_key = os.environ.get("GEMINI_FLEET_KEY", "").strip()

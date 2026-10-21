@@ -27,6 +27,21 @@ from gemini_app.fleet.security import (
 )
 
 
+def is_ish_platform() -> bool:
+    """Detects iOS iSH Alpine emulation environment to apply crash-prevention safeguards."""
+    if os.path.exists("/proc/ish"):
+        return True
+    try:
+        u = platform.uname()
+        if "ish" in u.release.lower() or "ish" in u.version.lower():
+            return True
+    except Exception:
+        pass
+    if Path("/mnt/ipad").exists():
+        return True
+    return False
+
+
 def find_repo_root(start: Optional[Path] = None) -> Path:
     """Finds the root repository directory containing .git, traversing upwards if needed."""
     curr = (start or Path.cwd()).resolve()
@@ -200,63 +215,80 @@ def execute_fleet_upgrade(
     """
     cwd = find_repo_root(repo_dir)
 
-    # Get current commit
-    res_old = subprocess.run(
-        ["git", "rev-parse", "--short", "HEAD"],
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-        timeout=5,
-    )
-    if res_old.returncode != 0:
-        return {"status": "error", "stage": "initial", "error": "Not a valid git repository"}
-    old_commit = res_old.stdout.strip()
-
-    # Stage 1: Fetch
-    branch_target = target_ref.split("/")[-1] if "/" in target_ref else target_ref
-    fetch_res = subprocess.run(
-        ["git", "fetch", "origin", branch_target],
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    if fetch_res.returncode != 0:
-        return {
-            "status": "error",
-            "stage": "fetch",
-            "error": f"Git fetch failed: {fetch_res.stderr.strip()}",
-        }
-
-    # Stage 2: Fast-Forward Merge / Reset
-    merge_cmd = ["git", "reset", "--hard", f"origin/{branch_target}"] if force else ["git", "merge", "--ff-only", "FETCH_HEAD"]
-    merge_res = subprocess.run(
-        merge_cmd,
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-        timeout=15,
-    )
-    if merge_res.returncode != 0:
-        # Fallback reset if force
-        if not force:
-            return {
-                "status": "error",
-                "stage": "checkout",
-                "error": f"Merge failed (working tree not fast-forwardable): {merge_res.stderr.strip()}",
-            }
-        reset_res = subprocess.run(
-            ["git", "reset", "--hard", f"origin/{branch_target}"],
+    # Get current commit using fast reader first (safe for emulators)
+    fast_commit, _ = _get_git_info_fast(cwd)
+    if fast_commit != "unknown":
+        old_commit = fast_commit
+    else:
+        res_old = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
             cwd=cwd,
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=5,
         )
-        if reset_res.returncode != 0:
+        old_commit = res_old.stdout.strip() if res_old.returncode == 0 else "initial"
+
+    branch_target = target_ref.split("/")[-1] if "/" in target_ref else target_ref
+    is_ish = is_ish_platform()
+    use_tarball = is_ish
+
+    if not is_ish:
+        # Stage 1: Fetch via git
+        fetch_res = subprocess.run(
+            ["git", "fetch", "origin", branch_target],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if fetch_res.returncode == 0:
+            merge_cmd = ["git", "reset", "--hard", f"origin/{branch_target}"] if force else ["git", "merge", "--ff-only", "FETCH_HEAD"]
+            merge_res = subprocess.run(
+                merge_cmd,
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            if merge_res.returncode != 0 and force:
+                subprocess.run(
+                    ["git", "reset", "--hard", f"origin/{branch_target}"],
+                    cwd=cwd,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+        else:
+            use_tarball = True
+
+    if use_tarball:
+        # Stage 1 & 2 via Pure-Python tarball stream (immune to emulator git crashes)
+        try:
+            import urllib.request
+            import tarfile
+            import io
+            url = f"https://github.com/dieablo101/gemini-integrated/archive/refs/heads/{branch_target}.tar.gz"
+            req = urllib.request.Request(url, headers={"User-Agent": "Gemini-Satellite-Updater/1.0"})
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                tar_bytes = resp.read()
+            with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r:gz") as tar:
+                for member in tar.getmembers():
+                    parts = Path(member.name).parts
+                    if len(parts) > 1:
+                        rel_path = Path(*parts[1:])
+                        dest_path = cwd / rel_path
+                        if member.isdir():
+                            dest_path.mkdir(parents=True, exist_ok=True)
+                        elif member.isreg():
+                            dest_path.parent.mkdir(parents=True, exist_ok=True)
+                            with tar.extractfile(member) as src, open(dest_path, "wb") as dst:
+                                dst.write(src.read())
+        except Exception as exc:
             return {
                 "status": "error",
-                "stage": "checkout",
-                "error": f"Reset failed: {reset_res.stderr.strip()}",
+                "stage": "fetch",
+                "error": f"Tarball update failed: {exc}",
             }
 
     # Stage 3: Pre-Flight Syntax & Import Validation Gate
@@ -304,14 +336,19 @@ def execute_fleet_upgrade(
         }
 
     # Successful upgrade
-    res_new = subprocess.run(
-        ["git", "rev-parse", "--short", "HEAD"],
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-        timeout=5,
-    )
-    new_commit = res_new.stdout.strip() if res_new.returncode == 0 else "updated"
+    new_commit, _ = _get_git_info_fast(cwd)
+    if new_commit == "unknown" or new_commit == old_commit:
+        res_new = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if res_new.returncode == 0 and res_new.stdout.strip():
+            new_commit = res_new.stdout.strip()
+        else:
+            new_commit = "updated"
 
     return {
         "status": "ok",

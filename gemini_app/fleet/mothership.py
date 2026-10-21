@@ -89,6 +89,7 @@ class MothershipServer:
         self._telemetry_thread: Optional[threading.Thread] = None
         self._cognitive_override: Dict[str, Any] = {}
         self._upgrade_cooldowns: Dict[str, float] = {}
+        self._node_upgrade_attempts: Dict[str, tuple[str, int]] = {}
 
     def start(self) -> bool:
         """Binds and starts accepting incoming satellite node connections."""
@@ -145,12 +146,23 @@ class MothershipServer:
         with self.lock:
             for nid, sat in self.nodes.items():
                 node_commit = sat.telemetry.get("git_commit", "unknown")
-                if (
-                    node_commit != ms_commit
-                    and (now - self._upgrade_cooldowns.get(nid, 0.0) > 45.0)
-                ):
-                    self._upgrade_cooldowns[nid] = now
-                    candidates.append((nid, node_commit))
+                if node_commit == ms_commit:
+                    self._node_upgrade_attempts.pop(nid, None)
+                    continue
+
+                if node_commit != ms_commit:
+                    prev_c, attempts = self._node_upgrade_attempts.get(nid, ("", 0))
+                    if prev_c != ms_commit:
+                        attempts = 0
+                    if attempts >= 2:
+                        cooldown = 120.0
+                    else:
+                        cooldown = 45.0
+
+                    if now - self._upgrade_cooldowns.get(nid, 0.0) > cooldown:
+                        self._upgrade_cooldowns[nid] = now
+                        self._node_upgrade_attempts[nid] = (ms_commit, attempts + 1)
+                        candidates.append((nid, node_commit))
 
         for nid, n_commit in candidates:
             def _dispatch(target_nid=nid, old_c=n_commit):

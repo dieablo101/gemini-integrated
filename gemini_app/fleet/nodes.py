@@ -260,9 +260,11 @@ def execute_ssh_rescue(
     if action == "restart":
         remote_cmd = (
             "systemctl restart gemini-satellite 2>/dev/null || "
+            "(rc-service gemini-satellite restart 2>/dev/null || "
             "(/etc/local.d/gemini-satellite.start 2>/dev/null || "
-            "(pkill -f 'gemini-integrated.*hud' 2>/dev/null; "
-            "nohup python3 gemini-integrated.py hud >/dev/null 2>&1 &)) ; "
+            "(pkill -f 'gemini-integrated.*node' 2>/dev/null ; sleep 0.5 ; "
+            "cd /root/gemini-integrated 2>/dev/null || cd ~/gemini-integrated 2>/dev/null || cd /opt/gemini 2>/dev/null ; "
+            "nohup python3 gemini-integrated.py node >/dev/null 2>&1 &))) ; "
             "echo 'RESTART_DISPATCHED'"
         )
     elif action == "reboot":

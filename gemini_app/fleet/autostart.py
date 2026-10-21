@@ -150,11 +150,12 @@ def update_autostart_mothership(new_mothership: str, port: Optional[int] = None)
 
     updated_any = False
 
-    # 1. Systemd services (system and user)
-    systemd_paths = [
-        Path("/etc/systemd/system/gemini-satellite.service"),
-        Path.home() / ".config" / "systemd" / "user" / "gemini-satellite.service",
-    ]
+    # 1. Systemd services (system if root, user otherwise)
+    is_root = os.geteuid() == 0 if hasattr(os, "geteuid") else False
+    systemd_paths = []
+    if is_root:
+        systemd_paths.append(Path("/etc/systemd/system/gemini-satellite.service"))
+    systemd_paths.append(Path.home() / ".config" / "systemd" / "user" / "gemini-satellite.service")
     for p in systemd_paths:
         if p.exists():
             try:

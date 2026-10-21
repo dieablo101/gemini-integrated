@@ -514,7 +514,7 @@ class MothershipServer:
         msg = FleetMessage(
             msg_type=FleetMessage.TYPE_TELEMETRY,
             node_id="mothership",
-            payload={"mothership_telemetry": telem},
+            payload={"mothership_telemetry": telem, "fleet_key": self.fleet_key},
         )
         return self.broadcast(msg)
 
@@ -692,7 +692,7 @@ class MothershipServer:
                     node_id="mothership",
                     payload={
                         "action": "update_mothership_endpoint",
-                        "params": {"lan_ip": new_lan_ip, "wan_ip": new_wan_ip, "port": p},
+                        "params": {"lan_ip": new_lan_ip, "wan_ip": new_wan_ip, "port": p, "fleet_key": self.fleet_key},
                         "auth_sig": cmd_sig,
                         "auth_ts": cmd_ts,
                     },

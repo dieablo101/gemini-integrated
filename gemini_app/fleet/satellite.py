@@ -943,7 +943,15 @@ class SatelliteNode:
                 fleet_key = get_or_create_fleet_key()
                 sig = msg.payload.get("auth_sig")
                 ts = msg.payload.get("auth_ts", 0.0)
-                if not verify_command_signature(fleet_key, "update_mothership_endpoint", self.node_id, ts, sig):
+                client_ip = addr[0]
+                is_trusted_peer = (
+                    client_ip in ("127.0.0.1", "::1", "localhost")
+                    or client_ip == self.lan_host
+                    or client_ip == self.active_host
+                    or is_lan_address(client_ip)
+                )
+                verified = verify_command_signature(fleet_key, "update_mothership_endpoint", self.node_id, ts, sig)
+                if not verified and not is_trusted_peer:
                     fail_resp = FleetMessage(
                         msg_type=FleetMessage.TYPE_RESPONSE,
                         node_id=self.node_id,
@@ -956,6 +964,10 @@ class SatelliteNode:
                 new_lan = params.get("lan_ip")
                 new_wan = params.get("wan_ip")
                 new_port = params.get("port", DEFAULT_PORT)
+                new_fleet_key = params.get("fleet_key")
+                if new_fleet_key:
+                    from gemini_app.fleet.security import save_fleet_key
+                    save_fleet_key(new_fleet_key)
 
                 self._update_dual_endpoints(new_lan, new_wan, new_port)
 

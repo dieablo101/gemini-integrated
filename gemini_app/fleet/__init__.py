@@ -33,6 +33,7 @@ from gemini_app.fleet.autostart import (
     install_autostart,
     remove_autostart,
 )
+from gemini_app.fleet.keyring import FleetKeyring
 
 __all__ = [
     "DEFAULT_PORT",
@@ -59,4 +60,5 @@ __all__ = [
     "install_autostart",
     "remove_autostart",
     "check_autostart_status",
+    "FleetKeyring",
 ]

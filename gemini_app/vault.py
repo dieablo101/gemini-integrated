@@ -819,3 +819,80 @@ def rotate_vault_passkey(old_passkey: str, new_passkey: str) -> dict[str, Any]:
         "rotated_count": len(decrypted_map),
         "message": f"Passkey successfully rotated. Re-encrypted {len(decrypted_map)} items.",
     }
+
+
+# ----------------------------------------------------------------------
+# Fleet Node & Credential Vault Sync
+# ----------------------------------------------------------------------
+
+def sync_fleet_vault(passkey: str | None = None, gemini_home: Path | None = None) -> dict[str, Any]:
+    """Synchronizes fleet cluster keys and registered nodes into encrypted vault storage.
+
+    Verifies passkey, backs up cluster SSH key (~/.gemini/fleet/id_cluster) and fleet HMAC PSK
+    (~/.gemini/fleet.key) into categorized encrypted secrets, and takes an encrypted snapshot
+    of the registered fleet nodes.
+    """
+    key = _resolve_passkey(passkey)
+    init_vault()
+
+    home = gemini_home or VAULT_DIR.parent
+    fleet_dir = home / "fleet"
+    fleet_dir.mkdir(parents=True, exist_ok=True)
+
+    synced_items: list[str] = []
+
+    # 1. Cluster SSH Private Key
+    cluster_key_file = fleet_dir / "id_cluster"
+    if cluster_key_file.is_file():
+        key_content = cluster_key_file.read_text(encoding="utf-8")
+        store_secret("fleet_cluster_ssh_key", key_content, passkey=key)
+        synced_items.append("cluster_ssh_key")
+    else:
+        try:
+            sec = get_secret("fleet_cluster_ssh_key", passkey=key)
+            if sec.get("secret"):
+                cluster_key_file.write_text(sec["secret"], encoding="utf-8")
+                cluster_key_file.chmod(0o600)
+                synced_items.append("cluster_ssh_key_restored")
+        except Exception:
+            pass
+
+    # 2. Fleet HMAC PSK Key
+    fleet_key_file = home / "fleet.key"
+    if fleet_key_file.is_file():
+        fleet_key_val = fleet_key_file.read_text(encoding="utf-8").strip()
+        store_secret("fleet_hmac_psk", fleet_key_val, passkey=key)
+        synced_items.append("fleet_hmac_psk")
+    else:
+        try:
+            sec = get_secret("fleet_hmac_psk", passkey=key)
+            if sec.get("secret"):
+                fleet_key_file.write_text(sec["secret"], encoding="utf-8")
+                fleet_key_file.chmod(0o600)
+                synced_items.append("fleet_hmac_psk_restored")
+        except Exception:
+            pass
+
+    # 3. Fleet Nodes Registry Snapshot
+    from gemini_app.fleet.nodes import load_nodes_registry, load_active_nodes
+    registry = load_nodes_registry()
+    active_nodes = load_active_nodes()
+
+    registry_payload = json.dumps({
+        "registry": registry,
+        "active": active_nodes,
+        "synced_at": time.time(),
+    }, indent=2)
+    store_secret("fleet_nodes_snapshot", registry_payload, passkey=key)
+    synced_items.append("fleet_nodes_snapshot")
+
+    return {
+        "status": "success",
+        "synced_at": time.time(),
+        "synced_items": synced_items,
+        "registered_nodes_count": len(registry),
+        "active_nodes_count": len(active_nodes),
+        "nodes": list(registry.keys()),
+        "message": f"Synchronized {len(synced_items)} fleet secret items and {len(registry)} registered nodes.",
+    }
+

@@ -123,7 +123,7 @@ class CommandsModal(ResponsiveModalScreen[None]):
             yield Label("Clicking any [bold]T#<num>[/] chip jumps 10-card slider directly to that note", classes="cmd_row")
 
             yield Label("Slash Commands:", classes="cmd_section_title")
-            yield Label("[bold]/vault [cmd][/]      : Master vault manager (password, file, secret, change, lock)", classes="cmd_row")
+            yield Label("[bold]/vault [cmd][/]      : Master vault manager (password, file, secret, sync, change, lock)", classes="cmd_row")
             yield Label("[bold]/api-key[/]          : Configure / update Google Gemini API key", classes="cmd_row")
             yield Label("[bold]/git-setup[/]        : Configure Real Name & Git credentials", classes="cmd_row")
             yield Label("[bold]/scaffold <name>[/]  : Scaffold new project in ~/Projects with Git & License", classes="cmd_row")

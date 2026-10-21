@@ -471,6 +471,34 @@ class TestFleetNodesAndAutostart(unittest.TestCase):
         self.assertIsInstance(ip, str)
         self.assertGreater(len(ip), 0)
 
+    def test_ish_safe_hud_render(self) -> None:
+        from gemini_app.fleet.hud import SatelliteHUD
+        hud = SatelliteHUD("test-node", "127.0.0.1:7331", local_commit="ed0af37")
+        hud.is_ish = True
+        hud.update_telemetry({
+            "host": "mothership",
+            "platform": "Linux",
+            "vitals": {"cpu_pct": 25.0, "mem_used_mb": 1024, "mem_total_mb": 4096},
+            "git": {"commit": "da74e10", "branch": "main", "is_clean": True},
+            "cognitive": {"state_desc": "Standing By", "task": "Idle", "tool": "none"},
+        })
+        frame = hud.render()
+        self.assertIn("[GEMINI HUD]", frame)
+        self.assertIn("[AI COGNITIVE STREAM]", frame)
+        self.assertIn("ms:da74e10", frame)
+        self.assertIn("node:ed0af37", frame)
+
+    def test_check_ipad_mount_caching(self) -> None:
+        from gemini_app.fleet.satellite import check_ipad_mount
+        has_mount, count = check_ipad_mount()
+        self.assertIsInstance(has_mount, bool)
+        self.assertIsInstance(count, int)
+
+    def test_satellite_auto_upgrade_flag(self) -> None:
+        node = SatelliteNode("127.0.0.1", 7331, auto_upgrade=True)
+        self.assertTrue(node.auto_upgrade)
+        self.assertFalse(node._is_upgrading)
+
 
 if __name__ == "__main__":
     unittest.main()

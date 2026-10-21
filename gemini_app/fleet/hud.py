@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import platform
 import re
 import select
 import shutil
@@ -17,6 +18,21 @@ import termios
 import time
 import tty
 from typing import Any, Callable, Dict, List, Optional
+
+
+def is_ish_platform() -> bool:
+    """Detects iOS iSH Alpine emulation environment to apply crash-prevention safeguards."""
+    if os.path.exists("/proc/ish"):
+        return True
+    try:
+        u = platform.uname()
+        if "ish" in u.release.lower() or "ish" in u.version.lower():
+            return True
+    except Exception:
+        pass
+    if Path("/mnt/ipad").exists():
+        return True
+    return False
 
 
 # ANSI Color and Formatting Codes
@@ -88,13 +104,21 @@ def clip_ansi(text: str, max_visible_len: int) -> str:
     return "".join(out)
 
 
-def render_meter_bar(pct: float, width: int = 10) -> str:
-    """Renders a compact ANSI percentage bar."""
+def render_meter_bar(pct: float, width: int = 10, safe_mode: bool = False) -> str:
+    """Renders a compact ANSI percentage bar.
+    
+    In safe_mode (e.g. iPad iSH), uses single-cell ASCII characters to prevent
+    iOS UIKit NSTextStorage crash in attributesAtIndex:effectiveRange:.
+    """
     pct = max(0.0, min(100.0, pct))
     filled = int(round((pct / 100.0) * width))
     empty = width - filled
-    bar_filled = "█" * filled
-    bar_empty = "░" * empty
+    if safe_mode:
+        bar_filled = "=" * filled
+        bar_empty = " " * empty
+    else:
+        bar_filled = "█" * filled
+        bar_empty = "░" * empty
     color = GREEN if pct < 70 else (YELLOW if pct < 90 else RED)
     return f"{color}[{bar_filled}{DARK_GRAY}{bar_empty}{color}]{RESET} {pct:.0f}%"
 
@@ -107,10 +131,13 @@ class SatelliteHUD:
         node_id: str,
         mothership_addr: str,
         on_upgrade_request: Optional[Callable[[], Any]] = None,
+        local_commit: Optional[str] = None,
     ) -> None:
         self.node_id = node_id
         self.mothership_addr = mothership_addr
         self.on_upgrade_request = on_upgrade_request
+        self.local_commit = local_commit
+        self.is_ish = is_ish_platform()
 
         self.is_connected = False
         self.last_ping_ms: Optional[float] = None
@@ -169,9 +196,10 @@ class SatelliteHUD:
             status_pill = f"{RED}{BOLD}[● OFFLINE]{RESET}"
             raw_pill_len = len("[● OFFLINE]")
 
-        title = f"{CYAN}{BOLD}🛰️ GEMINI HUD{RESET}"
+        title_text = "[GEMINI HUD]" if self.is_ish else "🛰️ GEMINI HUD"
+        title = f"{CYAN}{BOLD}{title_text}{RESET}"
         header_inner = f"─ {title} ─ {status_pill} "
-        raw_header_len = len("─ 🛰️ GEMINI HUD ─ ") + raw_pill_len + 1
+        raw_header_len = len(f"─ {title_text} ─ ") + raw_pill_len + 1
 
         rem_addr_w = max(0, w - raw_header_len - 6)
         addr_disp = clip_str(self.mothership_addr, rem_addr_w) if rem_addr_w >= 7 else ""
@@ -203,19 +231,38 @@ class SatelliteHUD:
         )
         lines.append(self._format_box_line("│", line1, w))
 
-        meter = render_meter_bar(cpu_pct, width=6 if w < 65 else 8)
+        meter = render_meter_bar(cpu_pct, width=6 if w < 65 else 8, safe_mode=self.is_ish)
         mem_str = f"{mem_used / 1024:.1f}G/{mem_tot / 1024:.1f}G" if mem_tot > 0 else "N/A"
         load_avg = vitals.get("load_avg", [0.0, 0.0, 0.0])
         ld_str = f"{load_avg[0]:.2f}" if load_avg else "?"
+
+        # Explicitly display both mothership git commit and node local commit
+        local_c = self.local_commit
+        if not local_c or local_c == "unknown":
+            try:
+                from gemini_app.fleet.satellite import _get_git_info_fast
+                local_c, _ = _get_git_info_fast()
+            except Exception:
+                local_c = "unknown"
+
+        if local_c and local_c != "unknown" and git_sha != "unknown":
+            if local_c == git_sha:
+                git_disp = f"{git_sha[:7]} [{clean_tag}]"
+            else:
+                git_disp = f"ms:{git_sha[:7]} node:{local_c[:7]}"
+        else:
+            git_disp = f"{git_branch}@{git_sha[:7]} [{clean_tag}]"
+
         line2 = (
             f"{BOLD}CPU:{RESET} {meter} ({DARK_GRAY}ld:{ld_str}{RESET})  "
             f"{BOLD}RAM:{RESET} {WHITE}{mem_str}{RESET}  "
-            f"{BOLD}Git:{RESET} {BLUE}{git_branch}@{git_sha}{RESET} [{clean_tag}]"
+            f"{BOLD}Git:{RESET} {BLUE}{git_disp}{RESET}"
         )
         lines.append(self._format_box_line("│", line2, w))
 
         # Divider
-        div_mind = f"{BLUE}├─ {PURPLE}{BOLD}🧠 AI COGNITIVE STREAM{RESET} {BLUE}{'─' * max(0, w - 26)}┤{RESET}\n"
+        mind_tag = "[AI COGNITIVE STREAM]" if self.is_ish else "🧠 AI COGNITIVE STREAM"
+        div_mind = f"{BLUE}├─ {PURPLE}{BOLD}{mind_tag}{RESET} {BLUE}{'─' * max(0, w - len(mind_tag) - 6)}┤{RESET}\n"
         lines.append(div_mind)
 
         # 2. Cognitive State (Cleaning duplicated prefixes and state duplication)
@@ -256,7 +303,8 @@ class SatelliteHUD:
         elif "[done]" in tool:
             tool_pill = f"{BLUE}[{tool}]{RESET}"
         else:
-            tool_pill = f"{GREEN}{BOLD}[⚡ {tool}]{RESET}"
+            icon = "*" if self.is_ish else "⚡"
+            tool_pill = f"{GREEN}{BOLD}[{icon} {tool}]{RESET}"
         c_line4 = f"{BOLD}Tool:{RESET}  {tool_pill}  {turn_badge}"
 
         lines.append(self._format_box_line("│", c_line1, w))
@@ -265,7 +313,8 @@ class SatelliteHUD:
         lines.append(self._format_box_line("│", c_line4, w))
 
         # Divider
-        div_act = f"{BLUE}├─ {YELLOW}{BOLD}📋 ACTIVITY & RECENT COMMITS{RESET} {BLUE}{'─' * max(0, w - 32)}┤{RESET}\n"
+        act_tag = "[ACTIVITY & COMMITS]" if self.is_ish else "📋 ACTIVITY & RECENT COMMITS"
+        div_act = f"{BLUE}├─ {YELLOW}{BOLD}{act_tag}{RESET} {BLUE}{'─' * max(0, w - len(act_tag) - 6)}┤{RESET}\n"
         lines.append(div_act)
 
         # 3. Recent Commits / Activity
@@ -304,10 +353,6 @@ class SatelliteHUD:
             if sys.stdin.isatty():
                 self._orig_termios = termios.tcgetattr(sys.stdin)
                 tty.setcbreak(sys.stdin.fileno())
-                try:
-                    os.set_blocking(sys.stdin.fileno(), False)
-                except Exception:
-                    pass
             # Alt buffer, clear screen, home cursor, hide cursor
             sys.stdout.write("\033[?1049h\033[2J\033[H\033[?25l")
             sys.stdout.flush()
@@ -319,24 +364,21 @@ class SatelliteHUD:
         try:
             sys.stdout.write("\033[?25h\033[?1049l")  # Show cursor + exit alt buffer
             sys.stdout.flush()
-            if sys.stdin.isatty():
-                try:
-                    os.set_blocking(sys.stdin.fileno(), True)
-                except Exception:
-                    pass
-                if self._orig_termios:
-                    termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self._orig_termios)
+            if sys.stdin.isatty() and self._orig_termios:
+                termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self._orig_termios)
         except Exception:
             pass
 
     def check_keyboard_input(self) -> Optional[str]:
-        """Polls for single keypress non-blockingly without ever hanging the event loop."""
+        """Polls for single keypress non-blockingly using select without altering fd flags."""
         if not sys.stdin.isatty():
             return None
         try:
-            data = os.read(sys.stdin.fileno(), 32)
-            if data:
-                return data.decode("utf-8", errors="ignore")[:1]
+            rlist, _, _ = select.select([sys.stdin], [], [], 0)
+            if rlist:
+                data = os.read(sys.stdin.fileno(), 32)
+                if data:
+                    return data.decode("utf-8", errors="ignore")[:1]
         except (BlockingIOError, InterruptedError, OSError):
             return None
         except Exception:

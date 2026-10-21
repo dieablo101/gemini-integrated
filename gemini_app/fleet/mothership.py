@@ -22,6 +22,7 @@ from gemini_app.fleet.security import (
     get_or_create_fleet_key,
     verify_auth_signature,
 )
+from gemini_app.fleet.satellite import _get_git_info_fast
 from gemini_app.fleet.nodes import (
     execute_ssh_rescue,
     register_or_update_node,
@@ -69,12 +70,14 @@ class MothershipServer:
         auto_broadcast_telemetry: bool = True,
         broadcast_interval: float = 1.5,
         require_auth: bool = False,
+        auto_upgrade_nodes: bool = True,
     ) -> None:
         self.host = host
         self.port = port
         self.auto_broadcast_telemetry = auto_broadcast_telemetry
         self.broadcast_interval = broadcast_interval
         self.require_auth = require_auth
+        self.auto_upgrade_nodes = auto_upgrade_nodes
         self.fleet_key = get_or_create_fleet_key()
         self.fleet_guard = FleetGuard(max_failures=5, ban_duration=600.0)
 
@@ -85,6 +88,7 @@ class MothershipServer:
         self._accept_thread: Optional[threading.Thread] = None
         self._telemetry_thread: Optional[threading.Thread] = None
         self._cognitive_override: Dict[str, Any] = {}
+        self._upgrade_cooldowns: Dict[str, float] = {}
 
     def start(self) -> bool:
         """Binds and starts accepting incoming satellite node connections."""
@@ -129,8 +133,39 @@ class MothershipServer:
                 if not self._running:
                     break
 
+    def _check_node_auto_upgrades(self) -> None:
+        """Autonomously dispatches fleet_upgrade to satellites running behind the Mothership commit."""
+        if not self.auto_upgrade_nodes:
+            return
+        ms_commit, _ = _get_git_info_fast()
+        if not ms_commit or ms_commit == "unknown":
+            return
+        now = time.time()
+        candidates: List[tuple[str, str]] = []
+        with self.lock:
+            for nid, sat in self.nodes.items():
+                node_commit = sat.telemetry.get("git_commit")
+                if (
+                    node_commit
+                    and node_commit != "unknown"
+                    and node_commit != ms_commit
+                    and (now - self._upgrade_cooldowns.get(nid, 0.0) > 45.0)
+                ):
+                    self._upgrade_cooldowns[nid] = now
+                    candidates.append((nid, node_commit))
+
+        for nid, n_commit in candidates:
+            def _dispatch(target_nid=nid, old_c=n_commit):
+                sys.stdout.write(
+                    f"[mothership] Node '{target_nid}' is on commit {old_c} (mothership is on {ms_commit}). Dispatching upgrade...\n"
+                )
+                self.upgrade_node(target_nid)
+
+            threading.Thread(target=_dispatch, daemon=True, name=f"upgrade-{nid}").start()
+
     def _telemetry_broadcast_loop(self) -> None:
         """Periodically streams host telemetry and cognitive updates to connected satellites."""
+        last_check = 0.0
         while self._running:
             try:
                 time.sleep(self.broadcast_interval)
@@ -138,6 +173,10 @@ class MothershipServer:
                     if not self.nodes:
                         continue
                 self.broadcast_telemetry()
+                now = time.time()
+                if now - last_check > 10.0:
+                    last_check = now
+                    self._check_node_auto_upgrades()
             except Exception:
                 pass
 

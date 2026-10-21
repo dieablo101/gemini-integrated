@@ -746,13 +746,18 @@ class SatelliteNode:
 
     def run_hud(self) -> None:
         """Launches the interactive real-time Telemetry HUD for landscape mobile terminals."""
-        from gemini_app.fleet.hud import SatelliteHUD
+        from gemini_app.fleet.hud import SatelliteHUD, is_ish_platform
+
+        is_ish = is_ish_platform()
+        tick_delay = 1.2 if is_ish else 0.75
+        local_c, _ = _get_git_info_fast()
 
         mothership_str = f"{self.mothership_host}:{self.mothership_port}"
         self.hud = SatelliteHUD(
             node_id=self.node_id,
             mothership_addr=mothership_str,
             on_upgrade_request=lambda: execute_fleet_upgrade(),
+            local_commit=local_c,
         )
 
         # Connect
@@ -805,12 +810,13 @@ class SatelliteNode:
                             self.hud.render_loop_tick(force_redraw=True)
 
                     # Low-power tick sleep (optimized for iOS/mobile battery and memory stability)
-                    time.sleep(0.75)
+                    time.sleep(tick_delay)
 
                     # Reconnect attempt if disconnected
                     if not self._running:
                         self.hud.set_connection_status(False)
-                        time.sleep(1.5)
+                        self.stop()
+                        time.sleep(2.0)
                         self.start()
                 except Exception:
                     time.sleep(0.5)
@@ -833,7 +839,7 @@ class SatelliteNode:
             self.stop()
 
     def stop(self) -> None:
-        """Closes socket and terminates background worker threads."""
+        """Closes socket and terminates background worker threads cleanly."""
         self._running = False
         if self.sock:
             try:
@@ -842,19 +848,31 @@ class SatelliteNode:
             except Exception:
                 pass
             try:
+                self.sock.shutdown(socket.SHUT_RDWR)
+            except Exception:
+                pass
+            try:
                 self.sock.close()
             except Exception:
                 pass
             self.sock = None
+        # Join worker threads with short timeout to prevent thread leakage
+        if self._listener_thread and self._listener_thread.is_alive() and threading.current_thread() != self._listener_thread:
+            self._listener_thread.join(timeout=0.3)
+        if self._heartbeat_thread and self._heartbeat_thread.is_alive() and threading.current_thread() != self._heartbeat_thread:
+            self._heartbeat_thread.join(timeout=0.3)
         if not self.hud:
             sys.stdout.write(f"[satellite] Node '{self.node_id}' stopped.\n")
 
 
 def main() -> int:
+    ensure_ish_background_keepalive()
+
     saved_host = get_saved_mothership()
     saved_port = get_saved_mothership_port()
 
     parser = argparse.ArgumentParser(description="Gemini Distributed Satellite Node Client")
+    parser.add_argument("target_ip", nargs="?", default=None, help="Optional positional Mothership IP")
     parser.add_argument("--mothership", default=None, help=f"Mothership host IP (saved default: {saved_host})")
     parser.add_argument("--port", type=int, default=None, help=f"Mothership TCP port (saved default: {saved_port})")
     parser.add_argument("--node-id", default=None, help="Explicit node identifier")
@@ -862,7 +880,20 @@ def main() -> int:
     parser.add_argument("--once", action="store_true", help="Send single registration/telemetry probe and exit")
     parser.add_argument("--hud", "--monitor", action="store_true", help="Run in interactive Live Telemetry HUD mode")
     parser.add_argument("--upgrade", action="store_true", help="Run atomic 3-stage self-upgrade against origin/main and exit")
+    parser.add_argument("--no-auto-upgrade", action="store_true", help="Disable autonomous upgrade on Mothership commit change")
     args = parser.parse_args()
+
+    # Allow positional IP, e.g. python3 gemini-integrated.py node 192.168.1.91
+    if args.target_ip and not args.mothership:
+        if ":" in args.target_ip:
+            h, p = args.target_ip.split(":", 1)
+            args.mothership = h
+            try:
+                args.port = int(p)
+            except ValueError:
+                pass
+        else:
+            args.mothership = args.target_ip
 
     if args.upgrade:
         print("[satellite] Initiating 3-stage pre-flight upgrade...")
@@ -890,6 +921,7 @@ def main() -> int:
         mothership_port=mothership_port,
         node_id=args.node_id,
         heartbeat_interval=args.interval,
+        auto_upgrade=not args.no_auto_upgrade,
     )
 
     if args.once:

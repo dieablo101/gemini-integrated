@@ -270,6 +270,30 @@ class TestVault(unittest.TestCase):
         recovered_sec = vault.get_secret("API Key", passkey=new_pass)
         self.assertEqual(recovered_sec["secret"], "sk_live_123456789")
 
+    def test_sync_fleet_vault(self):
+        vault.set_vault_passkey("fleet_master_pass")
+
+        # Create dummy fleet cluster key and fleet key in temp_dir
+        fleet_dir = Path(self.temp_dir.name) / "fleet"
+        fleet_dir.mkdir(parents=True, exist_ok=True)
+        id_cluster = fleet_dir / "id_cluster"
+        id_cluster.write_text("DUMMY_SSH_CLUSTER_PRIVATE_KEY", encoding="utf-8")
+        fleet_key = Path(self.temp_dir.name) / "fleet.key"
+        fleet_key.write_text("DUMMY_HMAC_PSK_KEY_123", encoding="utf-8")
+
+        res = vault.sync_fleet_vault("fleet_master_pass")
+        self.assertEqual(res["status"], "success")
+        self.assertIn("cluster_ssh_key", res["synced_items"])
+        self.assertIn("fleet_hmac_psk", res["synced_items"])
+        self.assertIn("fleet_nodes_snapshot", res["synced_items"])
+
+        # Verify secrets are in vault and decryptable
+        sec_ssh = vault.get_secret("fleet_cluster_ssh_key", passkey="fleet_master_pass")
+        self.assertEqual(sec_ssh["secret"], "DUMMY_SSH_CLUSTER_PRIVATE_KEY")
+
+        sec_hmac = vault.get_secret("fleet_hmac_psk", passkey="fleet_master_pass")
+        self.assertEqual(sec_hmac["secret"], "DUMMY_HMAC_PSK_KEY_123")
+
 
 if __name__ == "__main__":
     unittest.main()

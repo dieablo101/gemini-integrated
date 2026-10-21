@@ -409,11 +409,38 @@ class ChatApp(App):
     def action_vault_lock(self) -> None:
         """Clears cached session passkey from RAM."""
         from gemini_app.vault import clear_session_passkey
+        from gemini_app.fleet.keyring import FleetKeyring
         clear_session_passkey()
+        FleetKeyring.lock()
         self.notify("Vault locked. Active session credentials cleared from RAM.", timeout=3.0)
 
+    def action_vault_sync(self) -> None:
+        """Unlocks vault and synchronizes fleet keys & node registry."""
+        def _on_passkey(key: str | None) -> None:
+            if not key:
+                self.notify("Vault sync aborted: no passkey entered.", severity="warning")
+                return
+            try:
+                from gemini_app.vault import set_session_passkey, sync_fleet_vault
+                from gemini_app.fleet.keyring import FleetKeyring
+                set_session_passkey(key)
+                res = sync_fleet_vault(key)
+                FleetKeyring.unlock(key)
+                node_res = FleetKeyring.sync_nodes(key)
+                active_cnt = node_res.get("active_nodes_count", 0)
+                reg_cnt = node_res.get("total_registered", res.get("registered_nodes_count", 0))
+                self.notify(
+                    f"Fleet Keyring Unlocked: {reg_cnt} registered node(s) ({active_cnt} active).",
+                    title="🔐 Vault Fleet Sync",
+                    timeout=5.0,
+                )
+            except Exception as exc:
+                self.notify(f"Vault sync failed: {exc}", severity="error")
+
+        self.request_vault_passkey("Unlock Vault to Synchronize Fleet Cluster Keys & Nodes", _on_passkey)
+
     def _cmd_vault(self, arg: str) -> None:
-        """Routes slash commands for /vault [password|file|secret|change|lock]."""
+        """Routes slash commands for /vault [password|file|secret|sync|change|lock]."""
         sub = arg.strip().lower()
         if not sub:
             self.action_vault_dashboard()
@@ -425,10 +452,12 @@ class ChatApp(App):
             self.action_vault_file()
         elif sub in ("secret", "sec", "key"):
             self.action_vault_secret()
+        elif sub in ("sync", "nodes", "node-sync"):
+            self.action_vault_sync()
         elif sub == "lock":
             self.action_vault_lock()
         else:
-            self.notify(f"Unknown vault subcommand '{arg}'. Available: /vault [password|file|secret|change|lock]", severity="warning")
+            self.notify(f"Unknown vault subcommand '{arg}'. Available: /vault [password|file|secret|sync|change|lock]", severity="warning")
 
     def _cmd_scaffold_project(self, arg: str) -> None:
         """Scaffolds a new project in ~/Projects with Git, README.md, and MIT LICENSE."""
@@ -3017,10 +3046,12 @@ class ChatApp(App):
                 self.action_vault_file()
             elif sub in ("secret", "sec", "key"):
                 self.action_vault_secret()
+            elif sub in ("sync", "nodes", "node-sync"):
+                self.action_vault_sync()
             elif sub == "lock":
                 self.action_vault_lock()
             else:
-                self.notify(f"Unknown vault subcommand '{arg}'. Available: /vault [password|file|secret|change|lock]", severity="warning")
+                self.notify(f"Unknown vault subcommand '{arg}'. Available: /vault [password|file|secret|sync|change|lock]", severity="warning")
             return True
 
         elif verb == "api-key":
@@ -3042,7 +3073,7 @@ class ChatApp(App):
         elif verb == "help":
             help_text = (
                 "### Console Slash Commands\n"
-                "- `/vault [password|file|secret|change|lock]`: Secure offline credentials & vault manager\n"
+                "- `/vault [password|file|secret|sync|change|lock]`: Secure offline credentials & fleet node sync manager\n"
                 "- `/api-key`: Update Google Gemini API key via modal\n"
                 "- `/git-setup`: Configure Real Name & Git credentials\n"
                 "- `/theme <name>`: Switch color theme (e.g. `/theme amber`, `/theme hacker`)\n"
@@ -3418,7 +3449,7 @@ class ChatApp(App):
                     self.push_screen(
                         PasswordModal(
                             title=palette or "🔐 Vault Password Authentication",
-                            message=message or "Enter passkey to access salted vault file:",
+                            reason=message or "Enter passkey to access encrypted vault file:",
                         ),
                         _on_submit,
                     )

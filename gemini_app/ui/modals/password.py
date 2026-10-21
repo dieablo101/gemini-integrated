@@ -21,10 +21,10 @@ class PasswordModal(ResponsiveModalScreen[Optional[str]]):
         background: rgba(0, 0, 0, 0.85);
     }
     #password_dialog {
-        width: 66;
+        width: 68;
         max-width: 95%;
         height: auto;
-        border: thick red;
+        border: thick #3399ff;
         background: #0d0d0d;
         padding: 1 2;
     }
@@ -34,6 +34,19 @@ class PasswordModal(ResponsiveModalScreen[Optional[str]]):
         margin-bottom: 1;
         text-align: center;
     }
+    #password_reason_box {
+        background: #141f2d;
+        border-left: thick #3399ff;
+        padding: 1;
+        margin-bottom: 1;
+    }
+    #password_reason_title {
+        color: #3399ff;
+        text-style: bold;
+    }
+    #password_reason_text {
+        color: #e0e0e0;
+    }
     #password_desc {
         color: #aaaaaa;
         margin-bottom: 1;
@@ -41,7 +54,7 @@ class PasswordModal(ResponsiveModalScreen[Optional[str]]):
     #password_input {
         width: 100%;
         margin-bottom: 1;
-        border: solid red;
+        border: solid #3399ff;
     }
     #password_buttons {
         width: 100%;
@@ -68,15 +81,26 @@ class PasswordModal(ResponsiveModalScreen[Optional[str]]):
 
     def __init__(
         self,
-        title: str = "🔐 Password Required",
+        title: str = "🔐 Passkey Required",
         message: str = "Please enter your password or passkey:",
+        reason: str = "",
         placeholder: str = "••••••••",
         submit_label: str = "Confirm",
         allow_empty: bool = False,
     ) -> None:
         super().__init__()
         self.dialog_title = title
-        self.dialog_message = message
+        # Infer explicit reason if provided or passed in message
+        if reason:
+            self.dialog_reason = reason
+            self.dialog_message = message if message != "Please enter your password or passkey:" else ""
+        elif any(w in message.lower() for w in ("why", "purpose", "reason", "sync", "access", "unlock", "salted", "fleet", "vault", "decrypt")):
+            self.dialog_reason = message
+            self.dialog_message = ""
+        else:
+            self.dialog_reason = ""
+            self.dialog_message = message
+
         self.dialog_placeholder = placeholder
         self.submit_label = submit_label
         self.allow_empty = allow_empty
@@ -84,6 +108,10 @@ class PasswordModal(ResponsiveModalScreen[Optional[str]]):
     def compose(self) -> ComposeResult:
         with Vertical(id="password_dialog"):
             yield Static(self.dialog_title, id="password_title")
+            if self.dialog_reason:
+                with Vertical(id="password_reason_box"):
+                    yield Static("Why this window is open / Purpose:", id="password_reason_title")
+                    yield Static(self.dialog_reason, id="password_reason_text")
             if self.dialog_message:
                 yield Static(self.dialog_message, id="password_desc")
             yield Input(

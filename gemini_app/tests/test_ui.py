@@ -154,6 +154,7 @@ class TestUIApp(unittest.IsolatedAsyncioTestCase):
 
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
+            await pilot.pause()
             # Verify the reboot report was consumed and cleared
             cleared_report = app._read_and_clear_reboot_report()
             self.assertIsNone(cleared_report, "Pending reboot report should be cleared after mount")

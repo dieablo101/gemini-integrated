@@ -263,20 +263,61 @@ class MothershipServer:
                                 )
                                 satellite.send(greet)
                             else:
-                                newly_banned = self.fleet_guard.record_auth_failure(addr[0])
-                                sys.stderr.write(f"[mothership] UNAUTHORIZED node '{node_id}' from {addr}: invalid signature\n")
-                                if newly_banned:
-                                    sys.stderr.write(f"[mothership] IP '{addr[0]}' temporarily banned due to repeated auth failures\n")
-                                fail = FleetMessage(
-                                    msg_type=FleetMessage.TYPE_AUTH_FAIL,
-                                    node_id="mothership",
-                                    payload={"error": "Authentication failed: invalid fleet key signature"},
-                                )
-                                try:
-                                    conn.sendall(fail.serialize())
-                                except Exception:
-                                    pass
-                                return
+                                if self.require_auth:
+                                    newly_banned = self.fleet_guard.record_auth_failure(addr[0])
+                                    sys.stderr.write(f"[mothership] UNAUTHORIZED node '{node_id}' from {addr}: invalid signature\n")
+                                    if newly_banned:
+                                        sys.stderr.write(f"[mothership] IP '{addr[0]}' temporarily banned due to repeated auth failures\n")
+                                    fail = FleetMessage(
+                                        msg_type=FleetMessage.TYPE_AUTH_FAIL,
+                                        node_id="mothership",
+                                        payload={"error": "Authentication failed: invalid fleet key signature"},
+                                    )
+                                    try:
+                                        conn.sendall(fail.serialize())
+                                    except Exception:
+                                        pass
+                                    return
+                                else:
+                                    # Fallback: allow as unauthenticated LAN node when require_auth=False
+                                    is_authenticated = True
+                                    with self.lock:
+                                        satellite = ConnectedSatellite(node_id, conn, addr)
+                                        satellite.telemetry = msg.payload.get("telemetry", {})
+                                        self.nodes[node_id] = satellite
+                                    sys.stdout.write(f"[mothership] Satellite registered (LAN mode): '{node_id}' from {addr}\n")
+
+                                    ack = FleetMessage(
+                                        msg_type=FleetMessage.TYPE_AUTH_OK,
+                                        node_id="mothership",
+                                        payload={"status": "lan_registered", "node_id": node_id},
+                                    )
+                                    try:
+                                        conn.sendall(ack.serialize())
+                                    except (ConnectionResetError, BrokenPipeError, OSError):
+                                        return
+
+                                    try:
+                                        host_ip = addr[0]
+                                        register_or_update_node(
+                                            node_id=node_id,
+                                            host=host_ip,
+                                            telemetry=satellite.telemetry,
+                                        )
+                                        save_active_nodes(self.list_nodes())
+                                    except Exception:
+                                        pass
+
+                                    init_telem = collect_mothership_telemetry(
+                                        cognitive_override=self._cognitive_override,
+                                        satellites_info=self.list_nodes(),
+                                    )
+                                    greet = FleetMessage(
+                                        msg_type=FleetMessage.TYPE_TELEMETRY,
+                                        node_id="mothership",
+                                        payload={"mothership_telemetry": init_telem},
+                                    )
+                                    satellite.send(greet)
 
                         elif msg.type == FleetMessage.TYPE_REGISTER:
                             # Allow if loopback or auth not enforced

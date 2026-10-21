@@ -27,9 +27,24 @@ from gemini_app.fleet.security import (
 )
 
 
+def find_repo_root(start: Optional[Path] = None) -> Path:
+    """Finds the root repository directory containing .git, traversing upwards if needed."""
+    curr = (start or Path.cwd()).resolve()
+    for p in [curr] + list(curr.parents):
+        if (p / ".git").is_dir():
+            return p
+    try:
+        mod_root = Path(__file__).resolve().parents[2]
+        if (mod_root / ".git").is_dir():
+            return mod_root
+    except Exception:
+        pass
+    return curr
+
+
 def _get_git_info_fast(repo_dir: Optional[Path] = None) -> tuple[str, str]:
     """Reads git branch and commit in pure Python without spawning subprocesses (safe for emulators)."""
-    base = repo_dir or Path.cwd()
+    base = find_repo_root(repo_dir)
     git_dir = base / ".git"
     if not git_dir.is_dir():
         return "unknown", "unknown"
@@ -183,7 +198,7 @@ def execute_fleet_upgrade(
     Stage 3: Pre-flight syntax (py_compile) and import verification.
              Rolls back atomically via git reset if pre-flight fails!
     """
-    cwd = repo_dir or Path.cwd()
+    cwd = find_repo_root(repo_dir)
 
     # Get current commit
     res_old = subprocess.run(

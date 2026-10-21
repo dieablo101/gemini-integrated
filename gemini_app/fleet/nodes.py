@@ -282,12 +282,14 @@ def execute_ssh_rescue(
         fleet_key = get_or_create_fleet_key()
         remote_cmd = f"mkdir -p ~/.gemini && echo '{fleet_key}' > ~/.gemini/fleet.key && chmod 600 ~/.gemini/fleet.key && echo PROVISIONED"
     elif action in ("autostart", "install_autostart"):
+        from gemini_app.fleet.protocol import get_local_lan_ip
+        local_ip = get_local_lan_ip()
         remote_cmd = (
-            "python3 -c '"
-            "from gemini_app.fleet.autostart import install_autostart; "
-            "print(install_autostart(mothership=\"192.168.1.90\"))' 2>/dev/null || "
-            "python3 gemini-integrated.py autostart --install --mothership 192.168.1.90 2>/dev/null || "
-            "python3 /root/gemini-integrated/gemini-integrated.py autostart --install --mothership 192.168.1.90"
+            f"python3 -c '"
+            f"from gemini_app.fleet.autostart import install_autostart; "
+            f"print(install_autostart(mothership=\"{local_ip}\"))' 2>/dev/null || "
+            f"python3 gemini-integrated.py autostart --install --mothership {local_ip} 2>/dev/null || "
+            f"python3 /root/gemini-integrated/gemini-integrated.py autostart --install --mothership {local_ip}"
         )
     else:
         return {"status": "error", "error": f"Unknown rescue action '{action}'. Options: restart, reboot, check, exec, provision, autostart"}

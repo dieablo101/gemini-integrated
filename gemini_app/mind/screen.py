@@ -24,20 +24,22 @@ def format_fleet_nodes_markdown() -> str:
     """Formats live connected nodes and registered fleet nodes into rich Markdown."""
     try:
         from gemini_app.fleet.nodes import get_fleet_snapshot
+        from gemini_app.fleet.protocol import get_local_lan_ip
         snapshot = get_fleet_snapshot()
         active_cnt = snapshot.get("active_count", 0)
         total_cnt = snapshot.get("total_registered", 0)
         nodes = snapshot.get("nodes", [])
 
+        local_ip = get_local_lan_ip()
         daemon_status = "Active Daemon" if active_cnt > 0 else "Listening"
         lines = [
-            f"**Mothership Fleet:** `192.168.1.90:7331` ({daemon_status})\n"
+            f"**Mothership Fleet:** `{local_ip}:7331` ({daemon_status})\n"
             f"**Satellites:** `{active_cnt}` active / `{total_cnt}` registered\n"
         ]
 
         if not nodes:
             lines.append("*No satellite nodes registered or connected yet.*")
-            lines.append("Run on node: `python3 gemini-integrated.py node --mothership 192.168.1.90`")
+            lines.append(f"Run on node: `python3 gemini-integrated.py node --mothership {local_ip}`")
             return "\n".join(lines)
 
         for n in nodes:

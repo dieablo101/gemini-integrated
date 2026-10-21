@@ -68,7 +68,7 @@ class MothershipServer:
         port: int = DEFAULT_PORT,
         auto_broadcast_telemetry: bool = True,
         broadcast_interval: float = 1.5,
-        require_auth: bool = True,
+        require_auth: bool = False,
     ) -> None:
         self.host = host
         self.port = port
@@ -151,16 +151,15 @@ class MothershipServer:
         is_loopback = (addr[0] in ("127.0.0.1", "::1", "localhost"))
 
         # Issue immediate authentication challenge
-        if self.require_auth:
-            try:
-                chal = FleetMessage(
-                    msg_type=FleetMessage.TYPE_CHALLENGE,
-                    node_id="mothership",
-                    payload={"nonce": auth_nonce, "timestamp": auth_ts},
-                )
-                conn.sendall(chal.serialize())
-            except Exception:
-                return
+        try:
+            chal = FleetMessage(
+                msg_type=FleetMessage.TYPE_CHALLENGE,
+                node_id="mothership",
+                payload={"nonce": auth_nonce, "timestamp": auth_ts},
+            )
+            conn.sendall(chal.serialize())
+        except Exception:
+            return
 
         try:
             while self._running:
@@ -557,11 +556,13 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Gemini Mothership Fleet Server")
     parser.add_argument("--host", default="0.0.0.0", help="Binding host address")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="Binding TCP port")
+    parser.add_argument("--require-auth", action="store_true", default=False, help="Strictly enforce HMAC challenge auth for all connections")
+    parser.add_argument("--no-auth", dest="require_auth", action="store_false", help="Allow unauthenticated LAN node registration (default)")
     parser.add_argument("--upgrade", metavar="NODE_ID", help="Dispatch atomic upgrade to specific satellite node")
     parser.add_argument("--upgrade-all", action="store_true", help="Dispatch atomic upgrade to all active satellite nodes")
     args = parser.parse_args()
 
-    server = MothershipServer(host=args.host, port=args.port)
+    server = MothershipServer(host=args.host, port=args.port, require_auth=args.require_auth)
     if not server.start():
         return 1
 

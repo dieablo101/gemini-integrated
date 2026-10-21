@@ -6,8 +6,15 @@ import time
 import unittest
 from unittest.mock import MagicMock, patch
 
-from gemini_app.fleet.protocol import FleetMessage
-from gemini_app.fleet.satellite import SatelliteNode, collect_telemetry, execute_fleet_upgrade
+from gemini_app.fleet.protocol import FleetMessage, get_local_lan_ip
+from gemini_app.fleet.satellite import (
+    SatelliteNode,
+    collect_telemetry,
+    execute_fleet_upgrade,
+    get_saved_mothership,
+    get_saved_mothership_port,
+    save_mothership,
+)
 from gemini_app.fleet.mothership import MothershipServer
 from gemini_app.fleet.hud import SatelliteHUD, clip_ansi, clip_str, render_meter_bar, strip_ansi
 import gemini_app.fleet.security as fleet_sec
@@ -32,6 +39,7 @@ from gemini_app.fleet.autostart import (
     detect_init_system,
     install_autostart,
     remove_autostart,
+    update_autostart_mothership,
 )
 from gemini_app.mind.screen import MindMapScreen, format_fleet_nodes_markdown
 
@@ -418,6 +426,50 @@ class TestFleetNodesAndAutostart(unittest.TestCase):
         md = format_fleet_nodes_markdown()
         self.assertIn("Mothership Fleet", md)
         self.assertIn("Satellites", md)
+
+    def test_save_and_get_mothership_config(self) -> None:
+        import gemini_app.fleet.satellite as sat_mod
+        fake_cfg = Path(self._temp_dir.name) / "config.json"
+        orig_cfg = sat_mod.CONFIG_FILE
+        try:
+            sat_mod.CONFIG_FILE = fake_cfg
+            # Default before save
+            self.assertEqual(get_saved_mothership("fallback.ip"), "fallback.ip")
+
+            # Save IP and port
+            self.assertTrue(save_mothership("192.168.1.199", port=8000))
+            self.assertEqual(get_saved_mothership(), "192.168.1.199")
+            self.assertEqual(get_saved_mothership_port(), 8000)
+
+            # Node initialization defaults to saved config
+            node = SatelliteNode()
+            self.assertEqual(node.mothership_host, "192.168.1.199")
+            self.assertEqual(node.mothership_port, 8000)
+        finally:
+            sat_mod.CONFIG_FILE = orig_cfg
+
+    def test_update_autostart_mothership_content(self) -> None:
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            fake_service = Path(td) / "gemini-satellite.service"
+            fake_service.write_text("ExecStart=/usr/bin/python3 run.py node --mothership 192.168.1.50 --interval 10\n", encoding="utf-8")
+
+            with patch("gemini_app.fleet.autostart.Path.home", return_value=Path(td)):
+                # Patch systemd_paths inside update_autostart_mothership
+                with patch("pathlib.Path.exists", return_value=True):
+                    with patch("pathlib.Path.read_text", return_value=fake_service.read_text()):
+                        with patch("pathlib.Path.write_text") as mock_write:
+                            res = update_autostart_mothership("192.168.1.91")
+                            self.assertTrue(res)
+                            mock_write.assert_called()
+                            written_text = mock_write.call_args[0][0]
+                            self.assertIn("--mothership 192.168.1.91", written_text)
+                            self.assertNotIn("--mothership 192.168.1.50", written_text)
+
+    def test_get_local_lan_ip(self) -> None:
+        ip = get_local_lan_ip()
+        self.assertIsInstance(ip, str)
+        self.assertGreater(len(ip), 0)
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -146,12 +147,98 @@ def get_gemini_runner_path() -> Path:
     return Path(sys.argv[0]).resolve()
 
 
+def update_autostart_mothership(new_mothership: str, port: Optional[int] = None) -> bool:
+    """Updates the target mothership host across all known autostart configurations on this machine."""
+    new_mothership = new_mothership.strip()
+    if not new_mothership:
+        return False
+
+    updated_any = False
+
+    # 1. Systemd services (system and user)
+    systemd_paths = [
+        Path("/etc/systemd/system/gemini-satellite.service"),
+        Path.home() / ".config" / "systemd" / "user" / "gemini-satellite.service",
+    ]
+    for p in systemd_paths:
+        if p.exists():
+            try:
+                content = p.read_text(encoding="utf-8")
+                new_content = re.sub(r"(--mothership\s+)\S+", rf"\g<1>{new_mothership}", content)
+                if new_content != content:
+                    p.write_text(new_content, encoding="utf-8")
+                    updated_any = True
+                    cmd_prefix = ["systemctl"] if "/etc/systemd/system" in str(p) else ["systemctl", "--user"]
+                    try:
+                        subprocess.run(cmd_prefix + ["daemon-reload"], capture_output=True, timeout=3)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+    # 2. iSH profile.d and shell profile files
+    profile_candidates = [
+        Path("/etc/profile.d/gemini-satellite.sh"),
+        Path("/etc/local.d/gemini-satellite.start"),
+        Path("/root/.profile"),
+        Path("/root/.ashrc"),
+        Path.home() / ".profile",
+        Path.home() / ".ashrc",
+        Path.home() / ".bashrc",
+    ]
+    for p in profile_candidates:
+        if p.exists():
+            try:
+                content = p.read_text(encoding="utf-8")
+                if "--mothership" in content:
+                    new_content = re.sub(r"(--mothership\s+)\S+", rf"\g<1>{new_mothership}", content)
+                    if new_content != content:
+                        p.write_text(new_content, encoding="utf-8")
+                        updated_any = True
+            except Exception:
+                pass
+
+    # 3. macOS LaunchAgent plist
+    plist = Path.home() / "Library" / "LaunchAgents" / "com.gemini.satellite.plist"
+    if plist.exists():
+        try:
+            content = plist.read_text(encoding="utf-8")
+            pattern = r"(<string>--mothership</string>\s*<string>)[^<]+(</string>)"
+            new_content = re.sub(pattern, rf"\g<1>{new_mothership}\g<2>", content)
+            if new_content != content:
+                plist.write_text(new_content, encoding="utf-8")
+                updated_any = True
+        except Exception:
+            pass
+
+    # 4. Crontab
+    if shutil.which("crontab"):
+        try:
+            proc = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
+            if proc.returncode == 0 and "gemini-integrated" in proc.stdout and "--mothership" in proc.stdout:
+                new_cron = re.sub(r"(--mothership\s+)\S+", rf"\g<1>{new_mothership}", proc.stdout)
+                if new_cron != proc.stdout:
+                    subprocess.run(["crontab", "-"], input=new_cron, text=True, capture_output=True)
+                    updated_any = True
+        except Exception:
+            pass
+
+    return updated_any
+
+
 def install_autostart(
-    mothership: str = "192.168.1.90",
+    mothership: Optional[str] = None,
     interval: float = 10.0,
     force_init: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Installs boot-persistent satellite daemon on the current machine."""
+    from gemini_app.fleet.satellite import get_saved_mothership, save_mothership
+    if mothership:
+        mothership = mothership.strip()
+        save_mothership(mothership)
+    else:
+        mothership = get_saved_mothership()
+
     init_type = force_init or detect_init_system()
     python_bin = sys.executable
     script_path = str(get_gemini_runner_path())

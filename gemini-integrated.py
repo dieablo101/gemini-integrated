@@ -132,7 +132,7 @@ Autostart Options:
   --install               Install boot persistence service (systemd, openrc, launchd, or cron)
   --status                Inspect autostart daemon installation status
   --remove, --uninstall   Disable and remove boot persistence service
-  --mothership HOST       Mothership IP/host (default: 192.168.1.90)
+  --mothership HOST       Mothership IP/host (persisted automatically to ~/.gemini/config.json)
 
 Fleet / Nodes Options:
   --list                  List active and registered nodes with SSH details
@@ -141,7 +141,7 @@ Fleet / Nodes Options:
   --check NODE_ID         Check remote process vitals and iPad mount status
 
 Node / HUD Options:
-  --mothership HOST       Mothership IP/host (default: 192.168.1.90)
+  --mothership HOST       Mothership IP/host (persisted automatically to ~/.gemini/config.json)
   --port PORT             Mothership TCP port (default: 7331)
   --interval SECONDS      Heartbeat telemetry interval in seconds (default: 15.0)
   --hud, --monitor        Enable interactive landscape-friendly HUD dashboard
@@ -176,14 +176,20 @@ if __name__ == "__main__":
             if tok in sys.argv:
                 sys.argv.remove(tok)
         from gemini_app.fleet.autostart import check_autostart_status, install_autostart, remove_autostart
+        from gemini_app.fleet.satellite import get_saved_mothership, save_mothership
         import argparse
+        saved_host = get_saved_mothership()
         as_parser = argparse.ArgumentParser(description="Gemini Satellite Boot Autostart Provisioner")
         as_parser.add_argument("--install", action="store_true", help="Install boot autostart service")
         as_parser.add_argument("--remove", "--uninstall", action="store_true", help="Remove boot autostart")
         as_parser.add_argument("--status", action="store_true", help="Check autostart installation status")
-        as_parser.add_argument("--mothership", default="192.168.1.90", help="Mothership host IP")
+        as_parser.add_argument("--mothership", default=None, help=f"Mothership host IP (saved default: {saved_host})")
         as_parser.add_argument("--interval", type=float, default=10.0, help="Heartbeat interval")
         as_args = as_parser.parse_args(sys.argv[1:])
+
+        target_host = as_args.mothership.strip() if as_args.mothership else saved_host
+        if as_args.mothership:
+            save_mothership(target_host)
 
         if as_args.remove:
             res = remove_autostart()
@@ -192,7 +198,7 @@ if __name__ == "__main__":
             res = check_autostart_status()
             print(f"[autostart] Status: {res}")
         else:
-            res = install_autostart(mothership=as_args.mothership, interval=as_args.interval)
+            res = install_autostart(mothership=target_host, interval=as_args.interval)
             print(f"[autostart] Result: {res.get('status')} - {res.get('message', res.get('error'))}")
         sys.exit(0)
 

@@ -3,11 +3,26 @@
 from __future__ import annotations
 
 import json
+import socket
 import time
 from typing import Any, Dict, Optional
 
 DEFAULT_PORT = 7331
 PROTOCOL_VERSION = "1.0.0"
+
+
+def get_local_lan_ip() -> str:
+    """Detects the primary outbound local LAN IPv4 address without sending external packets."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(0.5)
+        # 8.8.8.8:80 triggers routing table lookup for outgoing LAN interface
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
 
 
 class FleetMessage:

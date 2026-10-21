@@ -261,18 +261,112 @@ def execute_fleet_upgrade(
     }
 
 
+CONFIG_FILE: Path = Path.home() / ".gemini" / "config.json"
+
+
+def get_config_path() -> Path:
+    """Returns path to ~/.gemini/config.json."""
+    return CONFIG_FILE
+
+
+def get_saved_mothership(default: Optional[str] = None) -> str:
+    """Retrieves the default mothership IP/host.
+
+    Resolution order:
+    1. GEMINI_MOTHERSHIP environment variable
+    2. ~/.gemini/config.json ("mothership_host" or "mothership")
+    3. Provided default or fallback to "192.168.1.90"
+    """
+    env_host = os.getenv("GEMINI_MOTHERSHIP")
+    if env_host and env_host.strip():
+        return env_host.strip()
+
+    cfg_file = get_config_path()
+    if cfg_file.exists():
+        try:
+            cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
+            saved = cfg.get("mothership_host") or cfg.get("mothership")
+            if saved and isinstance(saved, str) and saved.strip():
+                return saved.strip()
+        except Exception:
+            pass
+
+    return default or "192.168.1.90"
+
+
+def get_saved_mothership_port(default: int = DEFAULT_PORT) -> int:
+    """Retrieves the default mothership TCP port."""
+    env_port = os.getenv("GEMINI_PORT")
+    if env_port:
+        try:
+            return int(env_port.strip())
+        except ValueError:
+            pass
+
+    cfg_file = get_config_path()
+    if cfg_file.exists():
+        try:
+            cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
+            val = cfg.get("mothership_port")
+            if val is not None:
+                return int(val)
+        except Exception:
+            pass
+
+    return default
+
+
+def save_mothership(host: str, port: Optional[int] = None) -> bool:
+    """Persists mothership host and optional port to ~/.gemini/config.json,
+
+    and updates any installed satellite autostart service/profile hooks.
+    """
+    host = host.strip()
+    if not host:
+        return False
+
+    cfg_file = get_config_path()
+    cfg_file.parent.mkdir(parents=True, exist_ok=True)
+    cfg: Dict[str, Any] = {}
+    if cfg_file.exists():
+        try:
+            cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
+        except Exception:
+            cfg = {}
+
+    cfg["mothership_host"] = host
+    if port is not None:
+        cfg["mothership_port"] = int(port)
+
+    try:
+        cfg_file.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+        cfg_file.chmod(0o600)
+    except Exception as exc:
+        sys.stderr.write(f"[satellite] Warning: could not write config file {cfg_file}: {exc}\n")
+        return False
+
+    # Also update any installed autostart configuration so subsequent reboots target the new IP
+    try:
+        from gemini_app.fleet.autostart import update_autostart_mothership
+        update_autostart_mothership(host, port=port)
+    except Exception:
+        pass
+
+    return True
+
+
 class SatelliteNode:
     """Satellite client connecting to the Mothership."""
 
     def __init__(
         self,
-        mothership_host: str = "192.168.1.90",
-        mothership_port: int = DEFAULT_PORT,
+        mothership_host: Optional[str] = None,
+        mothership_port: Optional[int] = None,
         node_id: Optional[str] = None,
         heartbeat_interval: float = 15.0,
     ) -> None:
-        self.mothership_host = mothership_host
-        self.mothership_port = mothership_port
+        self.mothership_host = (mothership_host or get_saved_mothership()).strip()
+        self.mothership_port = mothership_port if mothership_port is not None else get_saved_mothership_port()
         self.heartbeat_interval = heartbeat_interval
 
         # Derive an intuitive default node id
@@ -624,9 +718,12 @@ class SatelliteNode:
 
 
 def main() -> int:
+    saved_host = get_saved_mothership()
+    saved_port = get_saved_mothership_port()
+
     parser = argparse.ArgumentParser(description="Gemini Distributed Satellite Node Client")
-    parser.add_argument("--mothership", default=os.getenv("GEMINI_MOTHERSHIP", "192.168.1.90"), help="Mothership host IP")
-    parser.add_argument("--port", type=int, default=int(os.getenv("GEMINI_PORT", str(DEFAULT_PORT))), help="Mothership TCP port")
+    parser.add_argument("--mothership", default=None, help=f"Mothership host IP (saved default: {saved_host})")
+    parser.add_argument("--port", type=int, default=None, help=f"Mothership TCP port (saved default: {saved_port})")
     parser.add_argument("--node-id", default=None, help="Explicit node identifier")
     parser.add_argument("--interval", type=float, default=15.0, help="Heartbeat interval in seconds")
     parser.add_argument("--once", action="store_true", help="Send single registration/telemetry probe and exit")
@@ -641,9 +738,23 @@ def main() -> int:
         print(f"Message: {res.get('message', res.get('error'))}")
         return 0 if res.get("status") == "ok" else 1
 
+    # When user provides --mothership, automatically persist it as the new default IP
+    if args.mothership is not None:
+        mothership_host = args.mothership.strip()
+        save_mothership(mothership_host, port=args.port)
+        print(f"[satellite] Saved '{mothership_host}' as the new default Mothership IP.")
+    else:
+        mothership_host = saved_host
+
+    if args.port is not None:
+        mothership_port = args.port
+        save_mothership(mothership_host, port=mothership_port)
+    else:
+        mothership_port = saved_port
+
     node = SatelliteNode(
-        mothership_host=args.mothership,
-        mothership_port=args.port,
+        mothership_host=mothership_host,
+        mothership_port=mothership_port,
         node_id=args.node_id,
         heartbeat_interval=args.interval,
     )

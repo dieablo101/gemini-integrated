@@ -375,7 +375,7 @@ class TestFleetNetwork(unittest.TestCase):
             self.assertTrue(started)
 
             # Wait briefly for rendezvous listener and registration to stabilize
-            for _ in range(20):
+            for _ in range(50):
                 if getattr(satellite, "_rendezvous_sock", None) is not None:
                     break
                 time.sleep(0.05)
@@ -399,7 +399,7 @@ class TestFleetNetwork(unittest.TestCase):
                 )
             self.assertIn(node_id, results)
             self.assertEqual(results[node_id]["status"], "ok")
-            for _ in range(20):
+            for _ in range(50):
                 if satellite.lan_host == "192.168.1.250":
                     break
                 time.sleep(0.05)

@@ -90,8 +90,12 @@ def get_cpu_and_mem_vitals() -> Dict[str, Any]:
         cpu_count = os.cpu_count() or 1
         cpu_pct = min(100.0, round((load_avg[0] / cpu_count) * 100.0, 1))
 
-    # 4. Disk usage
-    total_b, used_b, free_b = shutil.disk_usage("/")
+    # 4. Disk usage (prefer user home directory to reflect writable storage on Android/Termux & containers)
+    try:
+        disk_path = str(Path.home()) if Path.home().exists() else "/"
+        total_b, used_b, free_b = shutil.disk_usage(disk_path)
+    except Exception:
+        total_b, used_b, free_b = shutil.disk_usage("/")
     disk_total_gb = round(total_b / (1024 ** 3), 1)
     disk_free_gb = round(free_b / (1024 ** 3), 1)
     disk_pct = round(((total_b - free_b) / total_b) * 100.0, 1) if total_b > 0 else 0.0

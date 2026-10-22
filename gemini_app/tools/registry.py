@@ -267,10 +267,30 @@ class ToolRegistry:
                 execute_ssh_rescue,
                 get_fleet_snapshot,
                 register_or_update_node,
+                send_mothership_command,
             )
             act = (action or "list").lower().strip()
             if act in ("list", "snapshot", "status"):
                 return get_fleet_snapshot()
+            elif act in ("push_card", "card", "wingman_card", "webapplet_push"):
+                target = node_id or "ipad-ish-localhost"
+                return send_mothership_command("webapplet_push", {
+                    "node_id": target,
+                    "title": "Bilateral Wingman",
+                    "content": command or "Bilateral Wingman connection online and verified.",
+                    "actions": [
+                        {"label": "Acknowledge", "action": "ack", "style": "primary"},
+                        {"label": "Dismiss", "action": "dismiss", "style": "secondary"},
+                    ],
+                    "accent": True,
+                })
+            elif act in ("biometric", "biometric_auth", "webauthn"):
+                target = node_id or "ipad-ish-localhost"
+                return send_mothership_command("biometric_auth", {
+                    "node_id": target,
+                    "reason": command or "Authorize Bilateral Action",
+                    "timeout": 30.0,
+                })
             elif act in ("rescue", "restart", "reboot", "check", "exec", "provision", "autostart", "install_autostart"):
                 target = node_id or "satellite-ipad"
                 res_act = "restart" if act == "rescue" else act

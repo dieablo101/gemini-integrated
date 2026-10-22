@@ -349,3 +349,71 @@ def execute_ssh_rescue(
             "action": action,
             "error": str(exc),
         }
+
+
+def send_mothership_command(
+    action: str,
+    params: Optional[Dict[str, Any]] = None,
+    timeout: float = 8.0,
+) -> Dict[str, Any]:
+    """Sends an authenticated command to the local or remote Mothership daemon."""
+    import socket
+    from gemini_app.fleet.protocol import DEFAULT_PORT, FleetMessage
+    from gemini_app.fleet.security import compute_auth_signature, compute_command_signature, get_or_create_fleet_key
+
+    fleet_key = get_or_create_fleet_key()
+    node_id = "console-client"
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        s.connect(("127.0.0.1", DEFAULT_PORT))
+
+        # 1. Receive challenge
+        line = s.recv(2048).decode("utf-8")
+        if not line:
+            s.close()
+            return {"status": "error", "error": "No challenge from Mothership"}
+        c_msg = FleetMessage.deserialize(line)
+        nonce = c_msg.payload.get("nonce", "")
+        ts = c_msg.payload.get("timestamp", time.time())
+
+        # 2. Authenticate
+        sig = compute_auth_signature(fleet_key, node_id, nonce, ts)
+        auth_msg = FleetMessage(
+            msg_type=FleetMessage.TYPE_AUTH,
+            node_id=node_id,
+            payload={"signature": sig, "timestamp": ts, "telemetry": {}},
+        )
+        s.sendall(auth_msg.serialize())
+
+        # 3. Receive AUTH_OK
+        auth_ok_line = s.recv(2048).decode("utf-8")
+        a_msg = FleetMessage.deserialize(auth_ok_line)
+        if a_msg.type != FleetMessage.TYPE_AUTH_OK:
+            s.close()
+            return {"status": "error", "error": f"Auth rejected: {a_msg.payload}"}
+
+        # 4. Send Command
+        cmd_ts = time.time()
+        cmd_sig = compute_command_signature(fleet_key, action, "mothership", cmd_ts)
+        cmd_msg = FleetMessage(
+            msg_type=FleetMessage.TYPE_COMMAND,
+            node_id=node_id,
+            payload={
+                "action": action,
+                "params": params or {},
+                "auth_sig": cmd_sig,
+                "auth_ts": cmd_ts,
+            },
+        )
+        s.sendall(cmd_msg.serialize())
+
+        # 5. Receive Response
+        resp_line = s.recv(16384).decode("utf-8")
+        s.close()
+        if not resp_line:
+            return {"status": "error", "error": "Empty response from Mothership"}
+        r_msg = FleetMessage.deserialize(resp_line)
+        return r_msg.payload
+    except Exception as exc:
+        return {"status": "error", "error": str(exc)}

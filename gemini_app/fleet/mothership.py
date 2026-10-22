@@ -500,6 +500,28 @@ class MothershipServer:
                                     cognitive_override=self._cognitive_override,
                                     satellites_info=self.list_nodes(),
                                 )
+                            elif action == "webapplet_push":
+                                target_nid = msg.payload.get("params", {}).get("node_id", "")
+                                p_title = msg.payload.get("params", {}).get("title", "Gemini")
+                                p_content = msg.payload.get("params", {}).get("content", "")
+                                p_actions = msg.payload.get("params", {}).get("actions", [])
+                                p_accent = msg.payload.get("params", {}).get("accent", True)
+                                resp_payload["push_result"] = self.push_wingman_card(
+                                    node_id=target_nid,
+                                    title=p_title,
+                                    content=p_content,
+                                    actions=p_actions,
+                                    accent=p_accent,
+                                )
+                            elif action == "biometric_auth":
+                                target_nid = msg.payload.get("params", {}).get("node_id", "")
+                                b_reason = msg.payload.get("params", {}).get("reason", "Authorize Action")
+                                b_timeout = float(msg.payload.get("params", {}).get("timeout", 30.0))
+                                resp_payload["biometric_result"] = self.request_node_biometric(
+                                    node_id=target_nid,
+                                    reason=b_reason,
+                                    timeout=b_timeout,
+                                )
                             reply = FleetMessage(
                                 msg_type=FleetMessage.TYPE_RESPONSE,
                                 node_id="mothership",

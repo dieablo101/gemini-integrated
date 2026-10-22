@@ -771,24 +771,8 @@ def get_wingman_html(
 
         <div class="pending-radar">
           <div class="radar-pulse"></div>
-          <span id="gateStatusText">Awaiting Mothership Console Authorization...</span>
+          <span id="gateStatusText">Awaiting mothership console authorization...</span>
         </div>
-
-        <div class="gate-divider">
-          <span>OR UNLOCK WITH PASSKEY</span>
-        </div>
-
-        <div class="gate-error" id="gateError">Invalid passkey. Please try again.</div>
-
-        <form class="gate-form" onsubmit="handlePasskeySubmit(event)">
-          <label class="gate-label">Mothership Vault Passkey</label>
-          <input type="password" id="passkeyInput" class="gate-input" placeholder="Enter passkey to authenticate directly..." autocomplete="current-password" required>
-          <label class="gate-checkbox-row">
-            <input type="checkbox" id="trustDeviceCheck" checked>
-            <span>Trust & pair this device (remembers pairing)</span>
-          </label>
-          <button type="submit" class="btn btn-primary btn-block">Authenticate Session ↵</button>
-        </form>
       </div>
     </div>
 
@@ -855,9 +839,6 @@ def get_wingman_html(
   <script>
     const securityGate = document.getElementById('securityGate');
     const gateStatusText = document.getElementById('gateStatusText');
-    const gateError = document.getElementById('gateError');
-    const passkeyInput = document.getElementById('passkeyInput');
-    const trustDeviceCheck = document.getElementById('trustDeviceCheck');
 
     const workView = document.getElementById('workView');
     const chatView = document.getElementById('chatView');
@@ -883,8 +864,8 @@ def get_wingman_html(
     let deviceId = localStorage.getItem('wingman_device_id') || ('dev-' + Math.random().toString(36).substring(2, 10));
     localStorage.setItem('wingman_device_id', deviceId);
 
-    /* First-action session passkey state */
-    let isSessionUnlocked = sessionStorage.getItem('wingman_session_unlocked') === 'true';
+    /* First-action session passkey state (resets every session/refresh) */
+    let isSessionUnlocked = false;
     let pendingActionCallback = null;
 
     function requireSessionUnlock(reason, onUnlocked) {{
@@ -944,7 +925,6 @@ def get_wingman_html(
         const data = await res.json();
         if (data.valid || data.status === 'ok') {{
           isSessionUnlocked = true;
-          sessionStorage.setItem('wingman_session_unlocked', 'true');
           closePasskeyModal();
           playTone(880, 'sine', 0.1);
           if (pendingActionCallback) {{
@@ -1043,6 +1023,8 @@ def get_wingman_html(
         if (data.authenticated) {{
           unlockUI(data.token);
         }} else {{
+          sessionToken = '';
+          localStorage.removeItem('wingman_token');
           lockUI();
           startAuthPolling();
         }}
@@ -1080,43 +1062,11 @@ def get_wingman_html(
       playTone(587.33, 'triangle', 0.1);
     }}
 
-    function lockUI(reason = "Awaiting Mothership Console Authorization...") {{
+    function lockUI(reason = "Awaiting mothership console authorization...") {{
       securityGate.style.display = 'flex';
       gateStatusText.textContent = reason;
       statusText.textContent = "PENDING AUTH";
       statusDot.className = "status-dot pending";
-    }}
-
-    async function handlePasskeySubmit(e) {{
-      e.preventDefault();
-      gateError.style.display = 'none';
-      const pass = passkeyInput.value;
-      if (!pass) return;
-
-      try {{
-        const res = await fetch('/applet/wingman/auth', {{
-          method: 'POST',
-          headers: {{ 'Content-Type': 'application/json' }},
-          body: JSON.stringify({{
-            session_id: sessionId,
-            passkey: pass,
-            device_id: deviceId,
-            trust_device: trustDeviceCheck.checked
-          }})
-        }});
-        const data = await res.json();
-        if (data.status === 'ok') {{
-          passkeyInput.value = '';
-          unlockUI(data.token);
-        }} else {{
-          gateError.textContent = data.message || "Invalid passkey. Access denied.";
-          gateError.style.display = 'block';
-          playTone(220, 'sawtooth', 0.15);
-        }}
-      }} catch (err) {{
-        gateError.textContent = "Auth connection error: " + err.message;
-        gateError.style.display = 'block';
-      }}
     }}
 
     /* SSE Stream Connection */
@@ -1217,7 +1167,13 @@ def get_wingman_html(
       workView.scrollTop = workView.scrollHeight;
     }}
 
-    async function handleCardAction(cardId, action) {{
+    function handleCardAction(cardId, action) {{
+      requireSessionUnlock('Homebase passkey required to execute: ' + action, () => {{
+        executeCardAction(cardId, action);
+      }});
+    }}
+
+    async function executeCardAction(cardId, action) {{
       try {{
         await fetch('/applet/wingman/action', {{
           method: 'POST',
@@ -1244,9 +1200,16 @@ def get_wingman_html(
       }}
     }}
 
-    async function submitChatMessage() {{
+    function submitChatMessage() {{
       const text = chatInput.value.trim();
       if (!text) return;
+
+      requireSessionUnlock('Homebase passkey required to send chat message to Gemini', () => {{
+        executeSubmitChatMessage(text);
+      }});
+    }}
+
+    async function executeSubmitChatMessage(text) {{
       chatInput.value = '';
 
       renderChatMessage('Operator', text, true);

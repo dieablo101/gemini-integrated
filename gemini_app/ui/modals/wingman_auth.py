@@ -81,7 +81,7 @@ class WingmanAuthModal(ResponsiveModalScreen[str]):
         Binding("escape", "deny", "Deny"),
         Binding("ctrl+g", "deny", "Deny"),
         Binding("a", "accept", "Accept"),
-        Binding("t", "trust", "Trust & Pair"),
+        Binding("p", "pair", "Pair"),
         Binding("d", "deny", "Deny"),
     ]
 
@@ -117,14 +117,14 @@ class WingmanAuthModal(ResponsiveModalScreen[str]):
             yield Static(meta_text, id="wingman_meta")
 
             prompt = (
-                f"Wingman portal opened on node '{self.node_id}'.\n"
-                "Authorize bilateral interactive connection for this session?"
+                f"Wingman portal access requested on node '{self.node_id}'.\n"
+                "Select Accept for one-time session access, Pair to remember device, or Deny."
             )
             yield Label(prompt, id="wingman_prompt")
 
             with Horizontal(id="wingman_buttons"):
                 yield Button("Accept [A]", id="accept_btn", variant="primary")
-                yield Button("Trust & Pair [T]", id="trust_btn", variant="warning")
+                yield Button("Pair [P]", id="pair_btn", variant="warning")
                 yield Button("Deny [D]", id="deny_btn", variant="error")
 
     def on_mount(self) -> None:
@@ -138,9 +138,13 @@ class WingmanAuthModal(ResponsiveModalScreen[str]):
     def action_accept(self) -> None:
         self.dismiss("accept")
 
-    @on(Button.Pressed, "#trust_btn")
+    @on(Button.Pressed, "#pair_btn")
+    def action_pair(self) -> None:
+        self.dismiss("pair")
+
     def action_trust(self) -> None:
-        self.dismiss("trust")
+        """Alias for pairing."""
+        self.dismiss("pair")
 
     @on(Button.Pressed, "#deny_btn")
     def action_deny(self) -> None:

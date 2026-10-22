@@ -1264,13 +1264,14 @@ class SatelliteNode:
 
         elif action in ("wingman_auth_decision", "authorize_wingman"):
             sess_id = params.get("session_id") or params.get("auth_req_id", "")
-            accepted = params.get("accepted", True) if "accepted" in params else (params.get("decision", "accept") == "accept")
-            trust_device = params.get("trust_device", False) or params.get("trust", False)
+            decision = params.get("decision", "accept")
+            accepted = params.get("accepted", True) if "accepted" in params else (decision in ("accept", "pair", "trust"))
+            trust_device = params.get("trust_device", False) or params.get("trust", False) or (decision in ("pair", "trust"))
             if self.wingman_applet:
                 res = self.wingman_applet.authorize_session(sess_id, accepted=accepted, trust_device=trust_device)
                 result_payload.update(res)
                 if self.hud:
-                    self.hud.show_toast(f"Wingman auth {'accepted' if accepted else 'denied'}", duration=4.0)
+                    self.hud.show_toast(f"Wingman auth {decision.upper()}", duration=4.0)
             else:
                 result_payload["status"] = "error"
                 result_payload["error"] = "Wingman applet not active on node"
@@ -1716,12 +1717,17 @@ class SatelliteNode:
         local_c, _ = _get_git_info_fast()
 
         mothership_str = f"{self.mothership_host}:{self.mothership_port}"
+        def _on_upgrade_hud():
+            b_b64, ms_c = self.request_mothership_bundle(timeout=8.0)
+            return execute_fleet_upgrade(
+                target_commit=ms_c or getattr(self, "_latest_ms_commit", None),
+                bundle_b64=b_b64,
+            )
+
         self.hud = SatelliteHUD(
             node_id=self.node_id,
             mothership_addr=mothership_str,
-            on_upgrade_request=lambda: execute_fleet_upgrade(
-                target_commit=getattr(self, "_latest_ms_commit", None)
-            ),
+            on_upgrade_request=_on_upgrade_hud,
             local_commit=local_c,
         )
         self.hud.local_vitals = collect_telemetry()
@@ -1756,9 +1762,15 @@ class SatelliteNode:
                         if key.lower() == "q":
                             break
                         elif key.lower() == "u":
-                            self.hud.show_toast("Checking & upgrading node...", duration=4.0)
+                            self.hud.show_toast("Checking & upgrading node from Mothership...", duration=4.0)
                             self.hud.render_loop_tick(force_redraw=True)
-                            res = execute_fleet_upgrade(target_commit=getattr(self, "_latest_ms_commit", None))
+                            bundle_b64, ms_c = self.request_mothership_bundle(timeout=8.0)
+                            target_c = ms_c or getattr(self, "_latest_ms_commit", None)
+                            res = execute_fleet_upgrade(
+                                target_ref="origin/main",
+                                target_commit=target_c,
+                                bundle_b64=bundle_b64,
+                            )
                             if res.get("status") == "ok":
                                 if res.get("upgraded"):
                                     self.hud.show_toast(f"Upgraded to {res['new_commit']}! Rebooting...", duration=3.0)

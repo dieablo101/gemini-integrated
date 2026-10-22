@@ -14,13 +14,13 @@ def get_wingman_html(
     title: str = "Wingman // Gemini Bilateral Portal",
     port: int = 8888,
     node_id: str = "local",
-    auth_state: str = "approved",
+    auth_state: str = "pending",
     auth_req_id: str = "",
     client_ip: str = "127.0.0.1",
     session_token: str = "",
 ) -> str:
     """Returns responsive, dark-mode single-page portal HTML."""
-    gate_display = "flex" if auth_state == "pending" else "none"
+    gate_display = "none" if auth_state == "approved" else "flex"
 
     return f"""<!DOCTYPE html>
 <html lang="en">

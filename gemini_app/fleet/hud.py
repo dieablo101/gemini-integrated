@@ -17,6 +17,7 @@ import sys
 import termios
 import time
 import tty
+import unicodedata
 from typing import Any, Callable, Dict, List, Optional
 
 
@@ -59,21 +60,55 @@ def strip_ansi(text: str) -> str:
     return re.sub(r"\033\[[0-9;]*[a-zA-Z]", "", text)
 
 
+def str_display_width(text: str) -> int:
+    """Computes visible terminal column width taking ANSI escapes and wide Unicode characters into account."""
+    clean = strip_ansi(text)
+    w = 0
+    for ch in clean:
+        cat = unicodedata.east_asian_width(ch)
+        if cat in ("F", "W"):
+            w += 2
+        elif unicodedata.combining(ch):
+            pass
+        else:
+            w += 1
+    return w
+
+
 def clip_str(text: str, max_len: int) -> str:
-    """Clips text to max_len, appending '...' if truncated."""
-    if len(text) <= max_len:
+    """Clips text to max_len display columns, appending '...' if truncated."""
+    if str_display_width(text) <= max_len:
         return text
     if max_len <= 3:
-        return text[:max_len]
-    return text[: max_len - 3] + "..."
+        out = []
+        cur = 0
+        for ch in text:
+            cw = 2 if unicodedata.east_asian_width(ch) in ("F", "W") else (0 if unicodedata.combining(ch) else 1)
+            if cur + cw <= max_len:
+                out.append(ch)
+                cur += cw
+            else:
+                break
+        return "".join(out)
+
+    target = max(1, max_len - 3)
+    out = []
+    cur = 0
+    for ch in text:
+        cw = 2 if unicodedata.east_asian_width(ch) in ("F", "W") else (0 if unicodedata.combining(ch) else 1)
+        if cur + cw <= target:
+            out.append(ch)
+            cur += cw
+        else:
+            break
+    return "".join(out) + "..."
 
 
 def clip_ansi(text: str, max_visible_len: int) -> str:
-    """Clips text to max_visible_len while preserving ANSI formatting and closing with RESET."""
+    """Clips text to max_visible_len terminal display columns while preserving ANSI formatting and closing with RESET."""
     if max_visible_len <= 0:
         return ""
-    raw = strip_ansi(text)
-    if len(raw) <= max_visible_len:
+    if str_display_width(text) <= max_visible_len:
         return text
 
     target = max(1, max_visible_len - 3)
@@ -93,9 +128,11 @@ def clip_ansi(text: str, max_visible_len: int) -> str:
                 out.append("".join(esc_buf))
                 esc_buf = []
         else:
-            if vis < target:
+            cat = unicodedata.east_asian_width(ch)
+            ch_w = 2 if cat in ("F", "W") else (0 if unicodedata.combining(ch) else 1)
+            if vis + ch_w <= target:
                 out.append(ch)
-                vis += 1
+                vis += ch_w
             else:
                 break
 
@@ -196,14 +233,15 @@ class SatelliteHUD:
         b_v = "|" if self.is_ish else "│"
         inner_w = max(10, width - 4)  # 2 for '│ ', 2 for ' │'
         clipped = clip_ansi(content, inner_w)
-        raw_len = len(strip_ansi(clipped))
-        padding = max(0, inner_w - raw_len)
-        return f"{BLUE}{b_v}{RESET} {clipped}{' ' * padding} {BLUE}{b_v}{RESET}\n"
+        raw_w = str_display_width(clipped)
+        padding = max(0, inner_w - raw_w)
+        return f"{BLUE}{b_v}{RESET} {clipped}{' ' * padding} {BLUE}{b_v}{RESET}\033[K\n"
 
     def render(self) -> str:
         """Constructs full dashboard frame fitted to current terminal size."""
         term_cols, term_lines = shutil.get_terminal_size((80, 24))
-        w = min(120, max(38, term_cols))
+        # Ensure HUD width never reaches term_cols to prevent terminal autowrap margin triggers
+        w = min(110, max(36, term_cols - 1))
 
         # Safe border glyphs (pure ASCII on iSH to prevent Cocoa NSTextStorage layout crashes)
         b_h = "-" if self.is_ish else "─"
@@ -217,6 +255,11 @@ class SatelliteHUD:
         dot = "*" if self.is_ish else "●"
         bullet = "-" if self.is_ish else "•"
 
+        def format_divider(tag: str, color_code: str) -> str:
+            tag_w = str_display_width(tag)
+            dash_count = max(0, w - tag_w - 6)
+            return f"{BLUE}{b_ml}{b_h} {color_code}{BOLD}{tag}{RESET} {BLUE}{b_h * dash_count}{b_mr}{RESET}\033[K\n"
+
         # Top border with title & connection pill
         if self.is_connected:
             ping_str = f" {self.last_ping_ms:.0f}ms" if self.last_ping_ms else ""
@@ -227,17 +270,17 @@ class SatelliteHUD:
             status_pill = f"{RED}{BOLD}[{dot} OFFLINE]{RESET}"
             raw_pill_len = len(f"[{dot} OFFLINE]")
 
-        title_text = "[GEMINI HUD]" if self.is_ish else "🛰️ GEMINI HUD"
+        title_text = "[GEMINI HUD]" if self.is_ish or w < 48 else "🛰️ GEMINI HUD"
         title = f"{CYAN}{BOLD}{title_text}{RESET}"
         header_inner = f"{b_h} {title} {b_h} {status_pill} "
-        raw_header_len = len(f"{b_h} {title_text} {b_h} ") + raw_pill_len + 1
+        raw_header_len = 1 + 1 + str_display_width(title_text) + 1 + 1 + 1 + raw_pill_len + 1
 
         rem_addr_w = max(0, w - raw_header_len - 6)
         addr_disp = clip_str(self.mothership_addr, rem_addr_w) if rem_addr_w >= 7 else ""
         addr_part = f" {DARK_GRAY}{addr_disp}{BLUE}" if addr_disp else ""
-        used_len = raw_header_len + (len(addr_disp) + 1 if addr_disp else 0) + 4
+        used_len = raw_header_len + (str_display_width(addr_disp) + 1 if addr_disp else 0) + 4
         dash_fill = max(0, w - used_len)
-        top_bar = f"{BLUE}{b_tl}{header_inner}{b_h * dash_fill}{addr_part} {b_h}{b_tr}{RESET}\n"
+        top_bar = f"{BLUE}{b_tl}{header_inner}{b_h * dash_fill}{addr_part} {b_h}{b_tr}{RESET}\033[K\n"
 
         lines = [top_bar]
 
@@ -256,18 +299,11 @@ class SatelliteHUD:
         git_sha = git_info.get("commit", "unknown")
         clean_tag = f"{GREEN}clean{RESET}" if git_info.get("is_clean", True) else f"{YELLOW}dirty{RESET}"
 
-        line1 = (
-            f"{BOLD}Host:{RESET} {WHITE}{host_name}{RESET} ({GRAY}{platform_info}{RESET})  "
-            f"{BOLD}Node:{RESET} {CYAN}{self.node_id}{RESET}"
-        )
-        lines.append(self._format_box_line(b_v, line1, w))
-
         meter = render_meter_bar(cpu_pct, width=6 if w < 65 else 8, safe_mode=self.is_ish)
         mem_str = f"{mem_used / 1024:.1f}G/{mem_tot / 1024:.1f}G" if mem_tot > 0 else "N/A"
         load_avg = vitals.get("load_avg", [0.0, 0.0, 0.0])
         ld_str = f"{load_avg[0]:.2f}" if load_avg else "?"
 
-        # Explicitly display both mothership git commit and node local commit
         local_c = self.local_commit
         if not local_c or local_c == "unknown":
             try:
@@ -288,30 +324,41 @@ class SatelliteHUD:
         bat_pct = bat_info.get("percentage")
         bat_str = ""
         if bat_pct is not None:
-            chg_icon = "⚡" if bat_info.get("charging") else "%"
+            chg_icon = "%" if self.is_ish else ("⚡" if bat_info.get("charging") else "%")
             bat_color = GREEN if bat_pct > 30 else (YELLOW if bat_pct > 15 else RED)
             bat_str = f"  {BOLD}Bat:{RESET} {bat_color}{bat_pct}{chg_icon}{RESET}"
 
-        line2 = (
-            f"{BOLD}CPU:{RESET} {meter} ({DARK_GRAY}ld:{ld_str}{RESET})  "
-            f"{BOLD}RAM:{RESET} {WHITE}{mem_str}{RESET}  "
-            f"{BOLD}Git:{RESET} {BLUE}{git_disp}{RESET}{bat_str}"
-        )
-        lines.append(self._format_box_line(b_v, line2, w))
+        if term_lines <= 11:
+            compact_line = (
+                f"{BOLD}Host:{RESET} {WHITE}{clip_str(host_name, 12)}{RESET}  "
+                f"{BOLD}Node:{RESET} {CYAN}{clip_str(self.node_id, 10)}{RESET}  "
+                f"{BOLD}CPU:{RESET} {meter}  {BOLD}RAM:{RESET} {WHITE}{mem_str}{RESET}"
+            )
+            lines.append(self._format_box_line(b_v, compact_line, w))
+        else:
+            line1 = (
+                f"{BOLD}Host:{RESET} {WHITE}{host_name}{RESET} ({GRAY}{platform_info}{RESET})  "
+                f"{BOLD}Node:{RESET} {CYAN}{self.node_id}{RESET}"
+            )
+            lines.append(self._format_box_line(b_v, line1, w))
+            line2 = (
+                f"{BOLD}CPU:{RESET} {meter} ({DARK_GRAY}ld:{ld_str}{RESET})  "
+                f"{BOLD}RAM:{RESET} {WHITE}{mem_str}{RESET}  "
+                f"{BOLD}Git:{RESET} {BLUE}{git_disp}{RESET}{bat_str}"
+            )
+            lines.append(self._format_box_line(b_v, line2, w))
 
         # Divider
         mind_tag = "[AI COGNITIVE STREAM]" if self.is_ish else "🧠 AI COGNITIVE STREAM"
-        div_mind = f"{BLUE}{b_ml}{b_h} {PURPLE}{BOLD}{mind_tag}{RESET} {BLUE}{b_h * max(0, w - len(mind_tag) - 6)}{b_mr}{RESET}\n"
-        lines.append(div_mind)
+        lines.append(format_divider(mind_tag, PURPLE))
 
-        # 2. Cognitive State (Cleaning duplicated prefixes and state duplication)
+        # 2. Cognitive State
         raw_state = str(cognitive.get("state_desc") or "Standing By").strip()
         raw_task = str(cognitive.get("task") or "Awaiting active task").strip()
         thought = str(cognitive.get("thought") or "Connected and monitoring bilateral stream.").strip()
         tool = str(cognitive.get("tool") or "none").strip()
         topic_str = str(cognitive.get("topic") or "fleet & satellite nodes").strip()
 
-        # Strip redundant "Task: " / "State: " prefixes
         clean_task = raw_task
         while clean_task.lower().startswith("task:"):
             clean_task = clean_task[5:].strip()
@@ -324,17 +371,15 @@ class SatelliteHUD:
         while clean_state.startswith("•"):
             clean_state = clean_state[1:].strip()
 
-        # If clean_state is identical to clean_task, show a distinct informative state
         if clean_state.lower() == clean_task.lower():
             clean_state = "Active Processing" if tool not in ("none", "idle", "") else "Standing By"
 
         topic_clipped = clip_str(topic_str, 20 if w < 70 else 26)
-        rem_state_w = max(10, w - len(topic_clipped) - 18)
+        rem_state_w = max(10, w - str_display_width(topic_clipped) - 18)
         c_line1 = f"{BOLD}Topic:{RESET} {PURPLE}{topic_clipped}{RESET}  {BOLD}State:{RESET} {WHITE}{clip_str(clean_state, rem_state_w)}{RESET}"
         c_line2 = f"{BOLD}Task:{RESET}  {YELLOW}{clean_task}{RESET}"
         c_line3 = f"{BOLD}Think:{RESET} {GRAY}\"{thought}\"{RESET}"
 
-        # Dynamic tool execution badge & turn counter
         turn_num = cognitive.get("turn_number", 1)
         turn_badge = f"{DARK_GRAY}(Turn #{turn_num}){RESET}"
         if tool in ("none", "idle", ""):
@@ -348,43 +393,77 @@ class SatelliteHUD:
 
         lines.append(self._format_box_line(b_v, c_line1, w))
         lines.append(self._format_box_line(b_v, c_line2, w))
-        lines.append(self._format_box_line(b_v, c_line3, w))
+        if term_lines > 13:
+            lines.append(self._format_box_line(b_v, c_line3, w))
         lines.append(self._format_box_line(b_v, c_line4, w))
 
-        # Divider
-        act_tag = "[ACTIVITY & COMMITS]" if self.is_ish else "📋 ACTIVITY & RECENT COMMITS"
-        div_act = f"{BLUE}{b_ml}{b_h} {YELLOW}{BOLD}{act_tag}{RESET} {BLUE}{b_h * max(0, w - len(act_tag) - 6)}{b_mr}{RESET}\n"
-        lines.append(div_act)
+        # 3. Recent Commits / Activity (Shown only if vertical height is ample)
+        if term_lines >= 17:
+            act_tag = "[ACTIVITY & COMMITS]" if self.is_ish else "📋 ACTIVITY & RECENT COMMITS"
+            lines.append(format_divider(act_tag, YELLOW))
+            recent_commits = git_info.get("recent_commits", [])
+            if recent_commits:
+                for c in recent_commits[:2]:
+                    sha = c.get("sha", "")
+                    msg = c.get("message", "")
+                    lines.append(self._format_box_line(b_v, f"{BLUE}{bullet} {sha}{RESET} {GRAY}{msg}{RESET}", w))
+            elif self.recent_events:
+                for ev in self.recent_events[-2:]:
+                    lines.append(self._format_box_line(b_v, f"{GRAY}{ev}{RESET}", w))
+            else:
+                lines.append(self._format_box_line(b_v, f"{DARK_GRAY}No recent activity recorded.{RESET}", w))
 
-        # 3. Recent Commits / Activity
-        recent_commits = git_info.get("recent_commits", [])
-        if recent_commits:
-            for c in recent_commits[:2]:
-                sha = c.get("sha", "")
-                msg = c.get("message", "")
-                lines.append(self._format_box_line(b_v, f"{BLUE}{bullet} {sha}{RESET} {GRAY}{msg}{RESET}", w))
-        elif self.recent_events:
-            for ev in self.recent_events[-2:]:
-                lines.append(self._format_box_line(b_v, f"{GRAY}{ev}{RESET}", w))
+        # 4. Connected Fleet Nodes (Placed at the bottom, just above footer)
+        nodes_tag = "[FLEET NODES]" if self.is_ish else "🌐 FLEET NODES"
+        lines.append(format_divider(nodes_tag, CYAN))
+
+        satellites = self.mothership_data.get("satellites", [])
+        # Sort by most recent activity (lowest last_active_seconds_ago or last_seen_seconds_ago first)
+        sorted_sats = sorted(
+            satellites,
+            key=lambda s: s.get("last_active_seconds_ago", s.get("last_seen_seconds_ago", 999999.0))
+        )
+
+        max_nodes_to_show = 1 if term_lines <= 13 else 2
+        if sorted_sats:
+            for s in sorted_sats[:max_nodes_to_show]:
+                nid = s.get("node_id", "node")
+                addr = s.get("address", "").split(":")[0]
+                last_act = s.get("last_active_seconds_ago", s.get("last_seen_seconds_ago"))
+                if last_act is not None and last_act < 5:
+                    act_tag = f"{GREEN}live{RESET}"
+                elif last_act is not None:
+                    act_tag = f"{DARK_GRAY}{int(last_act)}s ago{RESET}"
+                else:
+                    act_tag = f"{GREEN}live{RESET}"
+
+                is_me = (nid == self.node_id)
+                me_badge = f" {GREEN}(this node){RESET}" if is_me else ""
+                node_str = f"{CYAN}{bullet} {BOLD}{nid}{RESET} ({GRAY}{addr}{RESET}) [{act_tag}]{me_badge}"
+                lines.append(self._format_box_line(b_v, node_str, w))
         else:
-            lines.append(self._format_box_line(b_v, f"{DARK_GRAY}No recent activity recorded.{RESET}", w))
+            if self.is_connected:
+                lines.append(self._format_box_line(b_v, f"{DARK_GRAY}{bullet} 1 active node ({self.node_id}){RESET}", w))
+            else:
+                lines.append(self._format_box_line(b_v, f"{DARK_GRAY}{bullet} No connected fleet nodes{RESET}", w))
 
         # Bottom Bar & Footer
         now_str = time.strftime("%H:%M:%S")
         if self.active_status_toast and time.time() < self.toast_expires:
-            toast_text = f"{BG_BLUE}{WHITE}{BOLD} {self.active_status_toast} {RESET}"
+            max_toast_len = max(10, w - len(now_str) - 10)
+            disp_toast = clip_str(self.active_status_toast, max_toast_len)
+            toast_text = f"{BG_BLUE}{WHITE}{BOLD} {disp_toast} {RESET}"
             bot_inner = f"{b_h} {toast_text} "
-            raw_bot_len = len(f"{b_h}  {self.active_status_toast}  ")
+            raw_bot_len = 1 + 1 + str_display_width(disp_toast) + 2
         else:
-            bot_hint = "[q:quit u:upg]" if w < 55 else "[q:quit u:upgrade r:redraw]"
+            # Always keep 'r:redr' or 'r:redraw' present even on narrow mobile terminals
+            bot_hint = "[q:quit u:upg r:redr]" if w < 55 else "[q:quit u:upgrade r:redraw]"
             bot_inner = f"{b_h} {DARK_GRAY}{bot_hint}{RESET} "
-            raw_bot_len = len(f"{b_h} {bot_hint} ")
+            raw_bot_len = 1 + 1 + len(bot_hint) + 1
 
         bot_dash = max(0, w - 2 - raw_bot_len - len(now_str) - 3)
-        bottom_bar = f"{BLUE}{b_bl}{bot_inner}{b_h * bot_dash} {DARK_GRAY}{now_str}{BLUE} {b_h}{b_br}{RESET}\n"
+        bottom_bar = f"{BLUE}{b_bl}{bot_inner}{b_h * bot_dash} {DARK_GRAY}{now_str}{BLUE} {b_h}{b_br}{RESET}\033[K\n"
         lines.append(bottom_bar)
-
-        return "".join(lines)
 
         return "".join(lines)
 
@@ -429,13 +508,16 @@ class SatelliteHUD:
     def render_loop_tick(self, force_redraw: bool = False) -> Optional[str]:
         """Renders one frame and checks for keypress.
         
-        Overwrites screen in place using cursor home (\033[H) without \033[J (erase)
-        to prevent Cocoa text storage layout crashes in iOS iSH.
+        Overwrites screen in place using cursor home (\033[H) and clears to end
+        of screen (\033[J) to erase any trailing lines without full-screen flicker.
         """
         frame = self.render()
         if force_redraw or frame != self._last_rendered_frame:
-            # Home cursor and overwrite lines cleanly without screen-clearing churn
-            sys.stdout.write(f"\033[H{frame}")
+            if force_redraw:
+                # On explicit redraw, clear screen entirely to wipe any corrupted screen state
+                sys.stdout.write("\033[2J\033[H")
+            # Home cursor, write frame, erase any leftover lines below
+            sys.stdout.write(f"\033[H{frame}\033[J")
             sys.stdout.flush()
             self._last_rendered_frame = frame
         return self.check_keyboard_input()

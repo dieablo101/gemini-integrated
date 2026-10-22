@@ -44,6 +44,8 @@ class ConnectedSatellite:
         self.addr = addr
         self.connected_at = time.time()
         self.last_heartbeat = time.time()
+        self.last_active = time.time()
+        self.last_error: Dict[str, Any] = {}
         self.telemetry: Dict[str, Any] = {}
         self.pending_responses: Dict[str, Any] = {}
         self.response_events: Dict[str, threading.Event] = {}
@@ -428,6 +430,7 @@ class MothershipServer:
                                 if node_id in self.nodes:
                                     sat = self.nodes[node_id]
                                     sat.last_heartbeat = time.time()
+                                    sat.last_active = time.time()
                                     if "telemetry" in msg.payload:
                                         sat.telemetry = msg.payload["telemetry"]
                             try:
@@ -435,10 +438,21 @@ class MothershipServer:
                             except Exception:
                                 pass
 
+                        elif msg.type == FleetMessage.TYPE_ERROR:
+                            err_info = msg.payload.get("error", {})
+                            with self.lock:
+                                if node_id in self.nodes:
+                                    sat = self.nodes[node_id]
+                                    sat.last_error = err_info
+                                    sat.last_active = time.time()
+                            err_short = err_info.get("short_str", str(err_info))
+                            sys.stderr.write(f"[mothership] Satellite '{node_id}' reported error: {err_short}\n")
+
                         elif msg.type == FleetMessage.TYPE_RESPONSE:
                             with self.lock:
                                 if node_id in self.nodes:
                                     sat = self.nodes[node_id]
+                                    sat.last_active = time.time()
                                     req_id = msg.msg_id
                                     # Strip 'resp-' prefix if present to match request msg_id
                                     if req_id.startswith("resp-"):
@@ -715,7 +729,7 @@ class MothershipServer:
         self.broadcast_telemetry()
 
     def list_nodes(self) -> List[Dict[str, Any]]:
-        """Returns snapshot list of currently connected satellite nodes."""
+        """Returns snapshot list of currently connected satellite nodes, most recently used on top."""
         with self.lock:
             result = []
             now = time.time()
@@ -725,8 +739,12 @@ class MothershipServer:
                     "address": f"{sat.addr[0]}:{sat.addr[1]}",
                     "uptime_seconds": round(now - sat.connected_at, 1),
                     "last_seen_seconds_ago": round(now - sat.last_heartbeat, 1),
+                    "last_active_seconds_ago": round(now - getattr(sat, "last_active", sat.last_heartbeat), 1),
+                    "last_error": getattr(sat, "last_error", {}),
                     "telemetry": dict(sat.telemetry),
                 })
+            # Most recent on top (lowest last_active_seconds_ago first)
+            result.sort(key=lambda x: x.get("last_active_seconds_ago", 999999.0))
             return result
 
     def send_command(
@@ -741,6 +759,7 @@ class MothershipServer:
             satellite = self.nodes.get(node_id)
             if not satellite:
                 return {"status": "error", "error": f"Node '{node_id}' not connected"}
+            satellite.last_active = time.time()
 
         req_id = f"cmd-{int(time.time() * 1000)}-{node_id}"
         event = threading.Event()

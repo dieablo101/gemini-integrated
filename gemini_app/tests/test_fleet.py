@@ -753,6 +753,124 @@ class TestFleetNodesAndAutostart(unittest.TestCase):
                 self.assertEqual(params.get("target_commit"), "commit123")
                 self.assertEqual(params.get("bundle_b64"), "dummy_b64_content")
 
+    def test_hud_renders_connected_nodes_with_recent_on_top(self) -> None:
+        """Verifies connected nodes section is rendered at the bottom with most recent on top."""
+        hud = SatelliteHUD(node_id="ipad-user", mothership_addr="192.168.1.90:7331")
+        hud.update_telemetry({
+            "host": "mothership",
+            "platform": "Linux",
+            "vitals": {"cpu_pct": 20.0, "mem_used_mb": 1000, "mem_total_mb": 4000},
+            "git": {"branch": "main", "commit": "abc1234"},
+            "cognitive": {"state_desc": "Coding", "task": "Fleet HUD", "thought": "Testing nodes"},
+            "satellites": [
+                {
+                    "node_id": "older-satellite",
+                    "address": "192.168.1.55:40000",
+                    "last_active_seconds_ago": 45.0,
+                    "last_seen_seconds_ago": 45.0,
+                },
+                {
+                    "node_id": "recent-satellite",
+                    "address": "192.168.1.44:50000",
+                    "last_active_seconds_ago": 2.0,
+                    "last_seen_seconds_ago": 2.0,
+                },
+                {
+                    "node_id": "ipad-user",
+                    "address": "192.168.1.88:60000",
+                    "last_active_seconds_ago": 1.0,
+                    "last_seen_seconds_ago": 1.0,
+                },
+            ],
+        })
+        rendered = hud.render()
+        self.assertIn("FLEET NODES", rendered)
+        self.assertIn("ipad-user", rendered)
+        self.assertIn("(this node)", rendered)
+        self.assertIn("recent-satellite", rendered)
+        # Verify ipad-user (1s) appears before older-satellite (45s)
+        idx_ipad = rendered.index("ipad-user")
+        idx_recent = rendered.index("recent-satellite")
+        idx_older = rendered.index("older-satellite") if "older-satellite" in rendered else 999999
+        self.assertLess(idx_ipad, idx_older)
+        self.assertLess(idx_recent, idx_older)
+
+    def test_hud_redraw_hint_present_on_narrow_screens(self) -> None:
+        """Verifies 'r' (redraw) hint is always present even when terminal width < 55."""
+        hud = SatelliteHUD(node_id="termux-phone", mothership_addr="10.0.0.5:7331")
+        hud.update_telemetry({
+            "host": "mothership",
+            "platform": "Linux",
+            "vitals": {"cpu_pct": 10.0, "mem_used_mb": 500, "mem_total_mb": 2000},
+            "git": {"branch": "main", "commit": "1234567"},
+            "cognitive": {"state_desc": "Idle", "task": "Standby"},
+        })
+        with patch("shutil.get_terminal_size", return_value=(45, 24)):
+            rendered = hud.render()
+            self.assertIn("r:redr", rendered)
+            self.assertIn("q:quit", rendered)
+
+    def test_hud_display_width_and_emoji_clipping(self) -> None:
+        """Verifies str_display_width accurately calculates emoji widths and format_box_line doesn't overflow."""
+        from gemini_app.fleet.hud import str_display_width, clip_ansi
+        self.assertEqual(str_display_width("🧠"), 2)
+        self.assertEqual(str_display_width("⚡"), 2)
+        self.assertEqual(str_display_width("•"), 1)
+        self.assertEqual(str_display_width("plain text"), 10)
+
+        s = "\033[32m🧠 AI STREAM\033[0m"
+        clipped = clip_ansi(s, 10)
+        self.assertLessEqual(str_display_width(clipped), 10)
+
+        hud = SatelliteHUD(node_id="test", mothership_addr="1.2.3.4:7331")
+        line = hud._format_box_line("|", "🧠 Brain Emoji Text", 40)
+        from gemini_app.fleet.hud import strip_ansi
+        # Visible length minus trailing escape codes and newline
+        clean_line = strip_ansi(line).rstrip("\n")
+        self.assertEqual(str_display_width(clean_line), 40)
+
+    def test_node_error_formatting_and_relationals(self) -> None:
+        """Verifies format_node_error formats compact codes and relationals for user reporting."""
+        from gemini_app.fleet.satellite import format_node_error
+        e104 = ConnectionResetError(104, "Connection reset by peer")
+        f104 = format_node_error(e104, context="lan/recv")
+        self.assertEqual(f104["code"], "ERR#104")
+        self.assertIn("ConnReset", f104["relationals"])
+        self.assertIn("ERR#104 (ConnReset:lan/recv)", f104["short_str"])
+
+        e111 = ConnectionRefusedError(111, "Connection refused")
+        f111 = format_node_error(e111, context="wan/conn")
+        self.assertEqual(f111["code"], "ERR#111")
+        self.assertIn("Refused:wan/conn", f111["relationals"])
+
+        e_auth = PermissionError("Invalid signature from node")
+        f_auth = format_node_error(e_auth, context="auth")
+        self.assertEqual(f_auth["code"], "ERR#AUTH")
+
+    def test_satellite_error_reporting_to_mothership(self) -> None:
+        """Verifies satellite reports errors back to Mothership and records in last_error."""
+        server = MothershipServer(host="127.0.0.1", port=0, auto_broadcast_telemetry=False)
+        self.assertTrue(server.start())
+        port = server.port
+
+        sat = SatelliteNode("127.0.0.1", port, node_id="test-err-reporter")
+        try:
+            self.assertTrue(sat.start())
+            time.sleep(0.3)
+            # Report an error
+            err_dict = sat.report_error(ConnectionResetError(104, "Socket dropped"), context="recv")
+            self.assertIn("ERR#104", err_dict["short_str"])
+
+            time.sleep(0.4)
+            nodes = server.list_nodes()
+            sat_node = next((n for n in nodes if n["node_id"] == "test-err-reporter"), None)
+            self.assertIsNotNone(sat_node)
+            self.assertEqual(sat_node["last_error"].get("code"), "ERR#104")
+            self.assertIn("ConnReset:recv", sat_node["last_error"].get("relationals", ""))
+        finally:
+            sat.stop()
+            server.stop()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -34,6 +34,14 @@ from gemini_app.fleet.autostart import (
     remove_autostart,
 )
 from gemini_app.fleet.keyring import FleetKeyring
+from gemini_app.fleet.wingman_auth import (
+    generate_session_token,
+    is_device_trusted,
+    list_trusted_devices,
+    revoke_trusted_device,
+    trust_device,
+    verify_homebase_passkey,
+)
 
 __all__ = [
     "DEFAULT_PORT",
@@ -61,4 +69,10 @@ __all__ = [
     "remove_autostart",
     "check_autostart_status",
     "FleetKeyring",
+    "generate_session_token",
+    "is_device_trusted",
+    "list_trusted_devices",
+    "revoke_trusted_device",
+    "trust_device",
+    "verify_homebase_passkey",
 ]

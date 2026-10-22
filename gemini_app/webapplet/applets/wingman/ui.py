@@ -1,15 +1,27 @@
 """Self-contained interactive HTML/CSS/JS client for the Wingman portal.
 
 Designed for dual-screen monitors on Mothership and 1/3 iPad Pro split view.
-Provides live SSE card streaming, bilateral button interactions,
-and Apple Face ID / WebAuthn biometric authentication.
+Provides:
+  - Zero-Trust Security Gate (Awaiting Mothership Console Authorization OR direct PBKDF2 passkey unlock)
+  - Work vs Chat dropdown switcher (Interactive Cards vs Bilateral Remote Chat Stream)
+  - Live SSE card streaming & Apple Face ID / WebAuthn biometric authentication
 """
 
 from __future__ import annotations
 
 
-def get_wingman_html(title: str = "Wingman // Gemini Bilateral Portal", port: int = 8888) -> str:
+def get_wingman_html(
+    title: str = "Wingman // Gemini Bilateral Portal",
+    port: int = 8888,
+    node_id: str = "local",
+    auth_state: str = "approved",
+    auth_req_id: str = "",
+    client_ip: str = "127.0.0.1",
+    session_token: str = "",
+) -> str:
     """Returns responsive, dark-mode single-page portal HTML."""
+    gate_display = "flex" if auth_state == "pending" else "none"
+
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -20,7 +32,9 @@ def get_wingman_html(title: str = "Wingman // Gemini Bilateral Portal", port: in
     :root {{
       --bg: #0b0f19;
       --card-bg: #111827;
+      --card-hover: #1f2937;
       --border: #1f293d;
+      --border-focus: #3b82f6;
       --accent: #3399ff;
       --accent-glow: rgba(51, 153, 255, 0.25);
       --success: #10b981;
@@ -29,6 +43,8 @@ def get_wingman_html(title: str = "Wingman // Gemini Bilateral Portal", port: in
       --text: #f3f4f6;
       --text-muted: #9ca3af;
       --code-bg: #030712;
+      --bubble-user: #1e3a8a;
+      --bubble-bot: #111827;
       --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
       --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     }}
@@ -64,23 +80,24 @@ def get_wingman_html(title: str = "Wingman // Gemini Bilateral Portal", port: in
       background: rgba(17, 24, 39, 0.95);
       backdrop-filter: blur(10px);
       border-bottom: 1px solid var(--border);
-      padding: 12px 16px;
+      padding: 10px 16px;
       display: flex;
       align-items: center;
       justify-content: space-between;
       flex-shrink: 0;
-      z-index: 10;
+      z-index: 50;
+      gap: 12px;
     }}
 
     .brand {{
       display: flex;
       align-items: center;
-      gap: 10px;
+      gap: 8px;
     }}
 
     .brand-icon {{
-      width: 14px;
-      height: 14px;
+      width: 12px;
+      height: 12px;
       border-radius: 50%;
       background: var(--accent);
       box-shadow: 0 0 10px var(--accent);
@@ -110,6 +127,86 @@ def get_wingman_html(title: str = "Wingman // Gemini Bilateral Portal", port: in
       font-family: var(--font-mono);
     }}
 
+    /* Mode Dropdown Selector */
+    .mode-dropdown-wrapper {{
+      position: relative;
+      display: inline-block;
+    }}
+
+    .mode-btn {{
+      background: rgba(31, 41, 55, 0.8);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 6px 12px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.15s ease;
+      font-family: var(--font-sans);
+    }}
+
+    .mode-btn:hover {{
+      background: rgba(55, 65, 81, 0.8);
+      border-color: var(--accent);
+    }}
+
+    .mode-dropdown-menu {{
+      display: none;
+      position: absolute;
+      top: calc(100% + 6px);
+      left: 50%;
+      transform: translateX(-50%);
+      background: #111827;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
+      width: 210px;
+      z-index: 100;
+      overflow: hidden;
+      animation: menu-pop 0.15s ease-out;
+    }}
+
+    @keyframes menu-pop {{
+      from {{ opacity: 0; transform: translate(-50%, -6px); }}
+      to {{ opacity: 1; transform: translate(-50%, 0); }}
+    }}
+
+    .mode-dropdown-menu.show {{
+      display: block;
+    }}
+
+    .dropdown-item {{
+      padding: 10px 14px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--text-muted);
+      transition: all 0.12s ease;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    }}
+
+    .dropdown-item:last-child {{
+      border-bottom: none;
+    }}
+
+    .dropdown-item:hover {{
+      background: rgba(51, 153, 255, 0.12);
+      color: #fff;
+    }}
+
+    .dropdown-item.active {{
+      background: rgba(51, 153, 255, 0.18);
+      color: var(--accent);
+      font-weight: 600;
+    }}
+
     .status-badge {{
       display: flex;
       align-items: center;
@@ -132,8 +229,180 @@ def get_wingman_html(title: str = "Wingman // Gemini Bilateral Portal", port: in
       box-shadow: 0 0 6px var(--danger);
     }}
 
-    /* Stream Feed */
-    main {{
+    .status-dot.pending {{
+      background: var(--warning);
+      box-shadow: 0 0 6px var(--warning);
+      animation: pulse-glow 1.2s infinite;
+    }}
+
+    /* Main Container */
+    #viewsContainer {{
+      flex: 1 1 0%;
+      min-height: 0;
+      position: relative;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }}
+
+    /* Security Gate Modal Screen */
+    #securityGate {{
+      position: absolute;
+      inset: 0;
+      background: rgba(11, 15, 25, 0.96);
+      backdrop-filter: blur(14px);
+      z-index: 40;
+      display: {gate_display};
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+    }}
+
+    .gate-card {{
+      background: #111827;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 24px;
+      width: 100%;
+      max-width: 440px;
+      box-shadow: 0 16px 36px rgba(0, 0, 0, 0.6);
+      text-align: center;
+      animation: slide-up 0.25s ease-out;
+    }}
+
+    .gate-icon {{
+      width: 48px;
+      height: 48px;
+      border-radius: 50%;
+      background: rgba(51, 153, 255, 0.12);
+      border: 1px solid var(--accent);
+      margin: 0 auto 14px auto;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 22px;
+      box-shadow: 0 0 18px var(--accent-glow);
+    }}
+
+    .gate-title {{
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      margin-bottom: 6px;
+      color: #fff;
+    }}
+
+    .gate-desc {{
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-bottom: 18px;
+      line-height: 1.4;
+    }}
+
+    .pending-radar {{
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 14px;
+      border-radius: 20px;
+      background: rgba(245, 158, 11, 0.12);
+      border: 1px solid rgba(245, 158, 11, 0.3);
+      color: #fbbf24;
+      font-size: 12px;
+      font-family: var(--font-mono);
+      margin-bottom: 20px;
+    }}
+
+    .radar-pulse {{
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #f59e0b;
+      box-shadow: 0 0 8px #f59e0b;
+      animation: pulse-glow 1s infinite;
+    }}
+
+    .gate-divider {{
+      display: flex;
+      align-items: center;
+      text-align: center;
+      margin: 18px 0;
+      color: #4b5563;
+      font-size: 11px;
+      font-family: var(--font-mono);
+    }}
+
+    .gate-divider::before, .gate-divider::after {{
+      content: '';
+      flex: 1;
+      border-bottom: 1px solid var(--border);
+    }}
+
+    .gate-divider span {{
+      padding: 0 10px;
+    }}
+
+    .gate-form {{
+      text-align: left;
+    }}
+
+    .gate-label {{
+      display: block;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-muted);
+      margin-bottom: 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }}
+
+    .gate-input {{
+      width: 100%;
+      padding: 10px 12px;
+      border-radius: 6px;
+      background: #030712;
+      border: 1px solid var(--border);
+      color: #fff;
+      font-size: 13px;
+      font-family: var(--font-mono);
+      margin-bottom: 12px;
+      outline: none;
+      transition: border-color 0.15s ease;
+    }}
+
+    .gate-input:focus {{
+      border-color: var(--accent);
+      box-shadow: 0 0 10px var(--accent-glow);
+    }}
+
+    .gate-checkbox-row {{
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-bottom: 16px;
+      cursor: pointer;
+    }}
+
+    .gate-checkbox-row input {{
+      cursor: pointer;
+    }}
+
+    .gate-error {{
+      font-size: 12px;
+      color: var(--danger);
+      background: rgba(239, 68, 68, 0.12);
+      border: 1px solid rgba(239, 68, 68, 0.3);
+      padding: 8px;
+      border-radius: 6px;
+      margin-bottom: 12px;
+      display: none;
+      text-align: center;
+    }}
+
+    /* WORK VIEW: Interactive Cards Feed */
+    #workView {{
       flex: 1 1 0%;
       min-height: 0;
       overflow-y: auto;
@@ -141,13 +410,12 @@ def get_wingman_html(title: str = "Wingman // Gemini Bilateral Portal", port: in
       touch-action: pan-y;
       overscroll-behavior-y: contain;
       padding: 16px;
-      padding-bottom: 40px;
+      padding-bottom: 24px;
       display: flex;
       flex-direction: column;
       gap: 14px;
     }}
 
-    /* Cards */
     .card {{
       background: var(--card-bg);
       border: 1px solid var(--border);
@@ -207,25 +475,13 @@ def get_wingman_html(title: str = "Wingman // Gemini Bilateral Portal", port: in
       word-break: break-word;
     }}
 
-    .code-block {{
-      background: var(--code-bg);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 8px 10px;
-      font-family: var(--font-mono);
-      font-size: 12px;
-      color: #93c5fd;
-      overflow-x: auto;
-      margin: 8px 0;
-    }}
-
-    /* Card Actions */
     .card-actions {{
       display: flex;
       gap: 8px;
       margin-top: 8px;
     }}
 
+    /* Buttons */
     .btn {{
       padding: 8px 14px;
       font-size: 12px;
@@ -275,33 +531,99 @@ def get_wingman_html(title: str = "Wingman // Gemini Bilateral Portal", port: in
       color: var(--text);
     }}
 
-    /* Biometric scanner animation */
-    .faceid-scanner {{
-      text-align: center;
-      padding: 16px 0;
+    .btn-block {{
+      width: 100%;
     }}
 
-    .faceid-ring {{
-      width: 64px;
-      height: 64px;
-      margin: 0 auto 12px auto;
-      border: 2px dashed #8b5cf6;
-      border-radius: 50%;
+    /* CHAT VIEW: Bilateral Remote Chat Stream */
+    #chatView {{
+      display: none;
+      flex: 1 1 0%;
+      min-height: 0;
+      flex-direction: column;
+      background: var(--bg);
+    }}
+
+    #chatFeed {{
+      flex: 1 1 0%;
+      min-height: 0;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+      touch-action: pan-y;
+      overscroll-behavior-y: contain;
+      padding: 16px;
       display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }}
+
+    .chat-bubble {{
+      max-width: 85%;
+      padding: 10px 14px;
+      border-radius: 8px;
+      font-size: 13px;
+      line-height: 1.5;
+      word-break: break-word;
+      animation: slide-up 0.2s ease-out;
+    }}
+
+    .chat-bubble.bot {{
+      align-self: flex-start;
+      background: var(--bubble-bot);
+      border: 1px solid var(--border);
+      color: #e5e7eb;
+    }}
+
+    .chat-bubble.user {{
+      align-self: flex-end;
+      background: var(--bubble-user);
+      border: 1px solid rgba(59, 130, 246, 0.4);
+      color: #ffffff;
+    }}
+
+    .chat-meta {{
+      font-size: 10px;
+      color: var(--text-muted);
+      margin-bottom: 4px;
+      font-family: var(--font-mono);
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+    }}
+
+    .chat-input-container {{
+      background: #0d121f;
+      border-top: 1px solid var(--border);
+      padding: 10px 14px;
+      display: flex;
+      gap: 10px;
       align-items: center;
-      justify-content: center;
-      animation: spin 8s linear infinite;
+      flex-shrink: 0;
     }}
 
-    @keyframes spin {{
-      100% {{ transform: rotate(360deg); }}
+    .chat-input {{
+      flex: 1;
+      padding: 10px 12px;
+      background: #030712;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: #fff;
+      font-size: 13px;
+      outline: none;
+      font-family: var(--font-sans);
+      resize: none;
+      height: 38px;
     }}
 
-    /* Live Telemetry Footer */
+    .chat-input:focus {{
+      border-color: var(--accent);
+    }}
+
+    /* Footer */
     footer {{
       background: #080c14;
       border-top: 1px solid var(--border);
-      padding: 8px 16px;
+      padding: 6px 16px;
       font-family: var(--font-mono);
       font-size: 11px;
       color: var(--text-muted);
@@ -310,46 +632,351 @@ def get_wingman_html(title: str = "Wingman // Gemini Bilateral Portal", port: in
       align-items: center;
       flex-shrink: 0;
     }}
+
+    /* First-Action Session Passkey Modal */
+    .modal-backdrop {{
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.78);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      z-index: 1000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      animation: fade-in 0.15s ease-out;
+    }}
+    @keyframes fade-in {{
+      from {{ opacity: 0; }}
+      to {{ opacity: 1; }}
+    }}
+    .modal-card {{
+      background: #111827;
+      border: 1px solid var(--accent);
+      box-shadow: 0 0 24px var(--accent-glow), 0 20px 40px rgba(0, 0, 0, 0.8);
+      border-radius: 12px;
+      padding: 24px;
+      width: 100%;
+      max-width: 440px;
+      animation: slide-up 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+    }}
+    .modal-header {{
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 16px;
+    }}
+    .modal-icon {{
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      background: rgba(51, 153, 255, 0.15);
+      border: 1px solid var(--accent);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 20px;
+      flex-shrink: 0;
+    }}
+    .modal-title {{
+      font-size: 15px;
+      font-weight: 700;
+      color: #fff;
+    }}
+    .modal-subtitle {{
+      font-size: 11px;
+      color: var(--text-muted);
+    }}
+    .input-wrapper {{
+      position: relative;
+      display: flex;
+      align-items: center;
+      margin-bottom: 16px;
+    }}
+    .input-wrapper .gate-input {{
+      width: 100%;
+      padding-right: 40px;
+    }}
+    .btn-toggle-eye {{
+      position: absolute;
+      right: 8px;
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      padding: 4px;
+      font-size: 14px;
+    }}
+    .btn-toggle-eye:hover {{
+      color: #fff;
+    }}
+    .modal-actions {{
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+    }}
   </style>
 </head>
 <body>
 
+  <!-- Top Navigation Header -->
   <header>
     <div class="brand">
       <div class="brand-icon"></div>
       <span class="brand-text">Wingman</span>
       <span class="brand-tag">PORT {port}</span>
     </div>
+
+    <!-- Mode Switcher Dropdown (Chat / Work) -->
+    <div class="mode-dropdown-wrapper" id="modeDropdownWrapper">
+      <button class="mode-btn" id="modeBtn" onclick="toggleModeDropdown()">
+        <span id="modeIcon">⚡</span>
+        <span id="modeLabel">Work</span>
+        <span style="font-size: 9px; opacity: 0.7;">▼</span>
+      </button>
+      <div class="mode-dropdown-menu" id="modeMenu">
+        <div class="dropdown-item active" id="itemWork" onclick="selectMode('work')">
+          <span>⚡</span>
+          <div>
+            <div>Work</div>
+            <div style="font-size: 10px; opacity: 0.6;">Workflow, Actions & HUD</div>
+          </div>
+        </div>
+        <div class="dropdown-item" id="itemChat" onclick="selectMode('chat')">
+          <span>💬</span>
+          <div>
+            <div>Chat</div>
+            <div style="font-size: 10px; opacity: 0.6;">Remote Gemini Stream</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div class="status-badge">
-      <div id="statusDot" class="status-dot"></div>
-      <span id="statusText">CONNECTING</span>
+      <div id="statusDot" class="status-dot {'pending' if auth_state == 'pending' else ''}"></div>
+      <span id="statusText">{'PENDING AUTH' if auth_state == 'pending' else 'ONLINE'}</span>
     </div>
   </header>
 
-  <main id="feed">
-    <!-- Initial welcome card -->
-    <div class="card accent" id="welcomeCard">
-      <div class="card-header">
-        <span class="card-title">⚡ Bilateral Portal Online</span>
-        <span class="card-time">LIVE</span>
-      </div>
-      <div class="card-content">Wingman runtime connected. Gemini interactive cards, dual-screen telemetry, and Apple Secure Enclave Face ID are ready.</div>
-    </div>
-  </main>
+  <!-- Views Container -->
+  <div id="viewsContainer">
 
+    <!-- Zero-Trust Security Gate (Awaiting Mothership Console Authorization) -->
+    <div id="securityGate" style="display: {gate_display};">
+      <div class="gate-card">
+        <div class="gate-icon">🔒</div>
+        <div class="gate-title">Wingman Security Gate</div>
+        <div class="gate-desc">A bilateral interactive session was initiated on node <strong style="color: #fff;">{node_id}</strong> ({client_ip}).</div>
+
+        <div class="pending-radar">
+          <div class="radar-pulse"></div>
+          <span id="gateStatusText">Awaiting Mothership Console Authorization...</span>
+        </div>
+
+        <div class="gate-divider">
+          <span>OR UNLOCK WITH PASSKEY</span>
+        </div>
+
+        <div class="gate-error" id="gateError">Invalid passkey. Please try again.</div>
+
+        <form class="gate-form" onsubmit="handlePasskeySubmit(event)">
+          <label class="gate-label">Mothership Vault Passkey</label>
+          <input type="password" id="passkeyInput" class="gate-input" placeholder="Enter passkey to authenticate directly..." autocomplete="current-password" required>
+          <label class="gate-checkbox-row">
+            <input type="checkbox" id="trustDeviceCheck" checked>
+            <span>Trust & pair this device (remembers pairing)</span>
+          </label>
+          <button type="submit" class="btn btn-primary btn-block">Authenticate Session ↵</button>
+        </form>
+      </div>
+    </div>
+
+    <!-- VIEW 1: WORK VIEW (Cards, Buttons, Face ID) -->
+    <main id="workView">
+      <div class="card accent" id="welcomeCard">
+        <div class="card-header">
+          <span class="card-title">⚡ Bilateral Portal Online</span>
+          <span class="card-time">LIVE</span>
+        </div>
+        <div class="card-content">Wingman runtime connected. Gemini interactive cards, dual-screen telemetry, and Apple Secure Enclave Face ID are ready.</div>
+      </div>
+    </main>
+
+    <!-- VIEW 2: CHAT VIEW (Remote Chat Stream) -->
+    <div id="chatView">
+      <div id="chatFeed">
+        <div class="chat-bubble bot">
+          <div class="chat-meta">
+            <span>GEMINI CORE</span>
+            <span>READY</span>
+          </div>
+          <div>Bilateral chat stream connected. Messages sent here are validated through the node security gate and received directly by the Mothership.</div>
+        </div>
+      </div>
+      <div class="chat-input-container">
+        <input type="text" id="chatInput" class="chat-input" placeholder="Message Gemini on Mothership..." onkeydown="handleChatKeyDown(event)">
+        <button class="btn btn-primary" onclick="submitChatMessage()">Send ↵</button>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- First-Action Session Passkey Modal -->
+  <div id="passkeyModal" class="modal-backdrop" style="display: none;">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div class="modal-icon">🔐</div>
+        <div>
+          <div class="modal-title">Homebase Passkey Required</div>
+          <div class="modal-subtitle" id="passkeyPromptSubtitle">Authorize interactive bilateral operations for this session.</div>
+        </div>
+      </div>
+      <div class="gate-error" id="modalPasskeyError" style="display: none; margin-bottom: 12px;">Invalid Homebase passkey. Verification denied.</div>
+      <form id="passkeyModalForm" onsubmit="handleSessionPasskeySubmit(event)">
+        <div class="input-wrapper">
+          <input type="password" id="modalPasskeyInput" class="gate-input" placeholder="Enter Homebase vault passkey..." autocomplete="current-password" required>
+          <button type="button" class="btn-toggle-eye" onclick="togglePasskeyVisibility()" title="Show/Hide passkey">👁</button>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-secondary" onclick="closePasskeyModal()">Cancel</button>
+          <button type="submit" class="btn btn-primary" id="modalUnlockBtn">Unlock Session ↵</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Live Footer Telemetry -->
   <footer>
-    <span id="footerHost">localhost:{port}</span>
+    <span id="footerHost">node:{node_id}:{port}</span>
     <span id="footerPing">PING: --ms</span>
   </footer>
 
   <script>
-    const feed = document.getElementById('feed');
+    const securityGate = document.getElementById('securityGate');
+    const gateStatusText = document.getElementById('gateStatusText');
+    const gateError = document.getElementById('gateError');
+    const passkeyInput = document.getElementById('passkeyInput');
+    const trustDeviceCheck = document.getElementById('trustDeviceCheck');
+
+    const workView = document.getElementById('workView');
+    const chatView = document.getElementById('chatView');
+    const chatFeed = document.getElementById('chatFeed');
+    const chatInput = document.getElementById('chatInput');
+
     const statusDot = document.getElementById('statusDot');
     const statusText = document.getElementById('statusText');
     const footerPing = document.getElementById('footerPing');
+    const modeBtn = document.getElementById('modeBtn');
+    const modeMenu = document.getElementById('modeMenu');
+    const modeIcon = document.getElementById('modeIcon');
+    const modeLabel = document.getElementById('modeLabel');
+    const itemWork = document.getElementById('itemWork');
+    const itemChat = document.getElementById('itemChat');
 
+    let currentMode = 'work';
     let sseSource = null;
     let pingInterval = null;
+    let authPollingInterval = null;
+    let sessionId = localStorage.getItem('wingman_session_id') || '{auth_req_id}';
+    let sessionToken = localStorage.getItem('wingman_token') || '{session_token}';
+    let deviceId = localStorage.getItem('wingman_device_id') || ('dev-' + Math.random().toString(36).substring(2, 10));
+    localStorage.setItem('wingman_device_id', deviceId);
+
+    /* First-action session passkey state */
+    let isSessionUnlocked = sessionStorage.getItem('wingman_session_unlocked') === 'true';
+    let pendingActionCallback = null;
+
+    function requireSessionUnlock(reason, onUnlocked) {{
+      if (isSessionUnlocked) {{
+        onUnlocked();
+        return;
+      }}
+      pendingActionCallback = onUnlocked;
+      if (reason) {{
+        const sub = document.getElementById('passkeyPromptSubtitle');
+        if (sub) sub.textContent = reason;
+      }}
+      const errEl = document.getElementById('modalPasskeyError');
+      if (errEl) errEl.style.display = 'none';
+      const modal = document.getElementById('passkeyModal');
+      if (modal) modal.style.display = 'flex';
+      const input = document.getElementById('modalPasskeyInput');
+      if (input) {{
+        input.value = '';
+        input.focus();
+      }}
+    }}
+
+    function closePasskeyModal() {{
+      const modal = document.getElementById('passkeyModal');
+      if (modal) modal.style.display = 'none';
+      pendingActionCallback = null;
+    }}
+
+    function togglePasskeyVisibility() {{
+      const input = document.getElementById('modalPasskeyInput');
+      if (input) {{
+        input.type = input.type === 'password' ? 'text' : 'password';
+      }}
+    }}
+
+    async function handleSessionPasskeySubmit(e) {{
+      e.preventDefault();
+      const input = document.getElementById('modalPasskeyInput');
+      const errEl = document.getElementById('modalPasskeyError');
+      const pass = input ? input.value.trim() : '';
+      if (!pass) return;
+
+      try {{
+        const res = await fetch('/applet/wingman/verify_passkey', {{
+          method: 'POST',
+          headers: {{
+            'Content-Type': 'application/json',
+            'X-Wingman-Token': sessionToken
+          }},
+          body: JSON.stringify({{
+            passkey: pass,
+            session_id: sessionId,
+            session_token: sessionToken
+          }})
+        }});
+        const data = await res.json();
+        if (data.valid || data.status === 'ok') {{
+          isSessionUnlocked = true;
+          sessionStorage.setItem('wingman_session_unlocked', 'true');
+          closePasskeyModal();
+          playTone(880, 'sine', 0.1);
+          if (pendingActionCallback) {{
+            const cb = pendingActionCallback;
+            pendingActionCallback = null;
+            cb();
+          }}
+        }} else {{
+          if (errEl) {{
+            errEl.textContent = data.error || data.message || "Invalid passkey. Homebase denied authentication.";
+            errEl.style.display = 'block';
+          }}
+          if (input) {{
+            input.classList.add('error');
+            setTimeout(() => input.classList.remove('error'), 600);
+          }}
+          playTone(220, 'sawtooth', 0.15);
+        }}
+      }} catch (err) {{
+        if (errEl) {{
+          errEl.textContent = "Passkey check failed: " + err.message;
+          errEl.style.display = 'block';
+        }}
+      }}
+    }}
+
+    if (sessionToken) {{
+      localStorage.setItem('wingman_token', sessionToken);
+    }}
+    if (sessionId) {{
+      localStorage.setItem('wingman_session_id', sessionId);
+    }}
 
     function playTone(freq = 440, type = 'sine', duration = 0.08) {{
       try {{
@@ -367,20 +994,164 @@ def get_wingman_html(title: str = "Wingman // Gemini Bilateral Portal", port: in
       }} catch (e) {{}}
     }}
 
-    function connectSSE() {{
-      if (sseSource) {{
-        sseSource.close();
+    /* Mode Dropdown */
+    function toggleModeDropdown() {{
+      modeMenu.classList.toggle('show');
+    }}
+
+    document.addEventListener('click', (e) => {{
+      if (!e.target.closest('#modeDropdownWrapper')) {{
+        modeMenu.classList.remove('show');
       }}
+    }});
 
-      statusText.textContent = "CONNECTING...";
+    function selectMode(mode) {{
+      currentMode = mode;
+      modeMenu.classList.remove('show');
+      if (mode === 'work') {{
+        modeIcon.textContent = '⚡';
+        modeLabel.textContent = 'Work';
+        itemWork.classList.add('active');
+        itemChat.classList.remove('active');
+        workView.style.display = 'flex';
+        chatView.style.display = 'none';
+      }} else {{
+        modeIcon.textContent = '💬';
+        modeLabel.textContent = 'Chat';
+        itemChat.classList.add('active');
+        itemWork.classList.remove('active');
+        workView.style.display = 'none';
+        chatView.style.display = 'flex';
+        chatInput.focus();
+      }}
+    }}
+
+    /* Session & Auth Handlers */
+    async function checkSession() {{
+      try {{
+        const res = await fetch('/applet/wingman/session', {{
+          headers: {{
+            'X-Wingman-Token': sessionToken,
+            'X-Wingman-Device': deviceId
+          }}
+        }});
+        const data = await res.json();
+        if (data.session_id) {{
+          sessionId = data.session_id;
+          localStorage.setItem('wingman_session_id', sessionId);
+        }}
+        if (data.authenticated) {{
+          unlockUI(data.token);
+        }} else {{
+          lockUI();
+          startAuthPolling();
+        }}
+      }} catch (err) {{
+        console.warn("Session check failed:", err);
+      }}
+    }}
+
+    function startAuthPolling() {{
+      if (authPollingInterval) clearInterval(authPollingInterval);
+      authPollingInterval = setInterval(async () => {{
+        try {{
+          const res = await fetch('/applet/wingman/auth_status?req_id=' + encodeURIComponent(sessionId));
+          const data = await res.json();
+          if (data.status === 'approved' && data.token) {{
+            clearInterval(authPollingInterval);
+            unlockUI(data.token);
+          }} else if (data.status === 'denied') {{
+            clearInterval(authPollingInterval);
+            lockUI("Access Denied by Mothership Operator");
+          }}
+        }} catch (e) {{}}
+      }}, 1500);
+    }}
+
+    function unlockUI(token) {{
+      if (authPollingInterval) clearInterval(authPollingInterval);
+      if (token) {{
+        sessionToken = token;
+        localStorage.setItem('wingman_token', token);
+      }}
+      securityGate.style.display = 'none';
+      statusText.textContent = "ONLINE";
       statusDot.className = "status-dot";
+      playTone(587.33, 'triangle', 0.1);
+    }}
 
-      sseSource = new EventSource("/applet/wingman/events");
+    function lockUI(reason = "Awaiting Mothership Console Authorization...") {{
+      securityGate.style.display = 'flex';
+      gateStatusText.textContent = reason;
+      statusText.textContent = "PENDING AUTH";
+      statusDot.className = "status-dot pending";
+    }}
+
+    async function handlePasskeySubmit(e) {{
+      e.preventDefault();
+      gateError.style.display = 'none';
+      const pass = passkeyInput.value;
+      if (!pass) return;
+
+      try {{
+        const res = await fetch('/applet/wingman/auth', {{
+          method: 'POST',
+          headers: {{ 'Content-Type': 'application/json' }},
+          body: JSON.stringify({{
+            session_id: sessionId,
+            passkey: pass,
+            device_id: deviceId,
+            trust_device: trustDeviceCheck.checked
+          }})
+        }});
+        const data = await res.json();
+        if (data.status === 'ok') {{
+          passkeyInput.value = '';
+          unlockUI(data.token);
+        }} else {{
+          gateError.textContent = data.message || "Invalid passkey. Access denied.";
+          gateError.style.display = 'block';
+          playTone(220, 'sawtooth', 0.15);
+        }}
+      }} catch (err) {{
+        gateError.textContent = "Auth connection error: " + err.message;
+        gateError.style.display = 'block';
+      }}
+    }}
+
+    /* SSE Stream Connection */
+    function connectSSE() {{
+      if (sseSource) sseSource.close();
+
+      const sseUrl = "/applet/wingman/events?token=" + encodeURIComponent(sessionToken) + "&device=" + encodeURIComponent(deviceId);
+      sseSource = new EventSource(sseUrl);
 
       sseSource.addEventListener("connected", (e) => {{
-        statusText.textContent = "ONLINE";
-        statusDot.className = "status-dot";
-        playTone(587.33, 'triangle', 0.1);
+        checkSession();
+      }});
+
+      sseSource.addEventListener("session_authorized", (e) => {{
+        try {{
+          const payload = JSON.parse(e.data);
+          unlockUI(payload.token);
+        }} catch (err) {{}}
+      }});
+
+      sseSource.addEventListener("auth_approved", (e) => {{
+        try {{
+          const payload = JSON.parse(e.data);
+          unlockUI(payload.token);
+        }} catch (err) {{}}
+      }});
+
+      sseSource.addEventListener("session_denied", (e) => {{
+        lockUI("Session Denied by Mothership Operator");
+        playTone(180, 'sawtooth', 0.2);
+      }});
+
+      sseSource.addEventListener("auth_denied", (e) => {{
+        lockUI("Session Denied by Mothership Operator");
+        playTone(180, 'sawtooth', 0.2);
       }});
 
       sseSource.addEventListener("card", (e) => {{
@@ -388,9 +1159,15 @@ def get_wingman_html(title: str = "Wingman // Gemini Bilateral Portal", port: in
           const card = JSON.parse(e.data);
           renderCard(card);
           playTone(880, 'sine', 0.06);
-        }} catch (err) {{
-          console.error("Card error:", err);
-        }}
+        }} catch (err) {{}}
+      }});
+
+      sseSource.addEventListener("chat_message", (e) => {{
+        try {{
+          const msg = JSON.parse(e.data);
+          renderChatMessage(msg.sender || 'Gemini', msg.text, msg.is_user);
+          playTone(660, 'sine', 0.08);
+        }} catch (err) {{}}
       }});
 
       sseSource.addEventListener("biometric_challenge", (e) => {{
@@ -398,17 +1175,16 @@ def get_wingman_html(title: str = "Wingman // Gemini Bilateral Portal", port: in
           const chal = JSON.parse(e.data);
           renderBiometricPrompt(chal);
           playTone(659.25, 'sawtooth', 0.15);
-        }} catch (err) {{
-          console.error("Biometric error:", err);
-        }}
+        }} catch (err) {{}}
       }});
 
       sseSource.onerror = () => {{
-        statusText.textContent = "OFFLINE";
+        statusText.textContent = "DISCONNECTED";
         statusDot.className = "status-dot offline";
       }};
     }}
 
+    /* Work Mode: Render Cards */
     function renderCard(card) {{
       const cardEl = document.createElement('div');
       cardEl.className = 'card ' + (card.accent ? 'accent' : '');
@@ -437,15 +1213,18 @@ def get_wingman_html(title: str = "Wingman // Gemini Bilateral Portal", port: in
         ${{actionsHtml}}
       `;
 
-      feed.appendChild(cardEl);
-      feed.scrollTop = feed.scrollHeight;
+      workView.appendChild(cardEl);
+      workView.scrollTop = workView.scrollHeight;
     }}
 
     async function handleCardAction(cardId, action) {{
       try {{
         await fetch('/applet/wingman/action', {{
           method: 'POST',
-          headers: {{ 'Content-Type': 'application/json' }},
+          headers: {{
+            'Content-Type': 'application/json',
+            'X-Wingman-Token': sessionToken
+          }},
           body: JSON.stringify({{ card_id: cardId, action: action, timestamp: Date.now() }})
         }});
         const cardEl = document.getElementById('card-' + cardId);
@@ -454,11 +1233,64 @@ def get_wingman_html(title: str = "Wingman // Gemini Bilateral Portal", port: in
           const actDiv = cardEl.querySelector('.card-actions');
           if (actDiv) actDiv.innerHTML = `<span style="font-size: 11px; color: var(--success);">✓ Responded: ${{action}}</span>`;
         }}
-      }} catch (err) {{
-        console.error("Action submit failed:", err);
+      }} catch (err) {{}}
+    }}
+
+    /* Chat Mode: Send & Receive Messages */
+    function handleChatKeyDown(e) {{
+      if (e.key === 'Enter' && !e.shiftKey) {{
+        e.preventDefault();
+        submitChatMessage();
       }}
     }}
 
+    async function submitChatMessage() {{
+      const text = chatInput.value.trim();
+      if (!text) return;
+      chatInput.value = '';
+
+      renderChatMessage('Operator', text, true);
+
+      try {{
+        const res = await fetch('/applet/wingman/chat', {{
+          method: 'POST',
+          headers: {{
+            'Content-Type': 'application/json',
+            'X-Wingman-Token': sessionToken
+          }},
+          body: JSON.stringify({{
+            text: text,
+            sender: 'operator',
+            timestamp: Date.now()
+          }})
+        }});
+        const reply = await res.json();
+        if (reply.reply) {{
+          renderChatMessage('Gemini Core', reply.reply, false);
+        }}
+      }} catch (err) {{
+        console.error("Chat send failed:", err);
+      }}
+    }}
+
+    function renderChatMessage(sender, text, isUser = false) {{
+      const bubble = document.createElement('div');
+      bubble.className = 'chat-bubble ' + (isUser ? 'user' : 'bot');
+      const timeStr = new Date().toLocaleTimeString();
+
+      bubble.innerHTML = `
+        <div class="chat-meta">
+          <span>${{escapeHtml(sender.toUpperCase())}}</span>
+          <span>${{timeStr}}</span>
+        </div>
+        <div style="white-space: pre-wrap;">${{escapeHtml(text)}}</div>
+      `;
+
+      chatFeed.appendChild(bubble);
+      chatFeed.scrollTop = chatFeed.scrollHeight;
+    }}
+
+    /* Biometric WebAuthn */
     async function renderBiometricPrompt(chal) {{
       const cardEl = document.createElement('div');
       cardEl.className = 'card biometric';
@@ -470,18 +1302,15 @@ def get_wingman_html(title: str = "Wingman // Gemini Bilateral Portal", port: in
           <span class="card-time">SECURE</span>
         </div>
         <div class="card-content">${{escapeHtml(chal.reason || 'Authentication required to authorize operation.')}}</div>
-        <div class="faceid-scanner">
-          <div class="faceid-ring">👤</div>
+        <div style="text-align: center; padding: 12px 0;">
           <button class="btn btn-biometric" onclick="triggerWebAuthn('${{chal.challenge_id}}', '${{chal.nonce}}')">
             Scan Face ID / Touch ID
           </button>
         </div>
       `;
 
-      feed.appendChild(cardEl);
-      feed.scrollTop = feed.scrollHeight;
-
-      // Automatically pop WebAuthn if browser allows user gesture
+      workView.appendChild(cardEl);
+      workView.scrollTop = workView.scrollHeight;
       triggerWebAuthn(chal.challenge_id, chal.nonce);
     }}
 
@@ -489,7 +1318,6 @@ def get_wingman_html(title: str = "Wingman // Gemini Bilateral Portal", port: in
       const cardEl = document.getElementById('bio-' + challengeId);
       try {{
         let assertionResult = {{}};
-        // Check for WebAuthn capability
         if (window.PublicKeyCredential && window.isSecureContext) {{
           const challengeBytes = new TextEncoder().encode(nonce);
           const userIdBytes = new TextEncoder().encode("gemini-operator");
@@ -498,19 +1326,9 @@ def get_wingman_html(title: str = "Wingman // Gemini Bilateral Portal", port: in
             publicKey: {{
               challenge: challengeBytes,
               rp: {{ name: "Gemini Wingman Secure Enclave", id: window.location.hostname }},
-              user: {{
-                id: userIdBytes,
-                name: "dieablo101",
-                displayName: "Operator"
-              }},
-              pubKeyCredParams: [
-                {{ type: "public-key", alg: -7 }},  // ES256
-                {{ type: "public-key", alg: -257 }} // RS256
-              ],
-              authenticatorSelection: {{
-                authenticatorAttachment: "platform",
-                userVerification: "required"
-              }},
+              user: {{ id: userIdBytes, name: "dieablo101", displayName: "Operator" }},
+              pubKeyCredParams: [{{ type: "public-key", alg: -7 }}, {{ type: "public-key", alg: -257 }}],
+              authenticatorSelection: {{ authenticatorAttachment: "platform", userVerification: "required" }},
               timeout: 60000
             }}
           }});
@@ -523,18 +1341,12 @@ def get_wingman_html(title: str = "Wingman // Gemini Bilateral Portal", port: in
             method: "apple_secure_enclave"
           }};
         }} else {{
-          // Fallback simulation assertion if hardware key not enrolled
-          assertionResult = {{
-            status: "authenticated",
-            method: "software_touch_fallback",
-            token: "touch-verified-" + Date.now()
-          }};
+          assertionResult = {{ status: "authenticated", method: "software_touch_fallback", token: "touch-verified-" + Date.now() }};
         }}
 
-        // Send back to Wingman
         await fetch('/applet/wingman/webauthn_response', {{
           method: 'POST',
-          headers: {{ 'Content-Type': 'application/json' }},
+          headers: {{ 'Content-Type': 'application/json', 'X-Wingman-Token': sessionToken }},
           body: JSON.stringify({{ challenge_id: challengeId, result: assertionResult }})
         }});
 
@@ -546,11 +1358,9 @@ def get_wingman_html(title: str = "Wingman // Gemini Bilateral Portal", port: in
         }}
         playTone(1046.5, 'sine', 0.2);
       }} catch (err) {{
-        console.warn("WebAuthn assertion:", err);
-        // If user cancelled, report back
         fetch('/applet/wingman/webauthn_response', {{
           method: 'POST',
-          headers: {{ 'Content-Type': 'application/json' }},
+          headers: {{ 'Content-Type': 'application/json', 'X-Wingman-Token': sessionToken }},
           body: JSON.stringify({{ challenge_id: challengeId, result: {{ status: "cancelled", error: err.message }} }})
         }});
       }}
@@ -574,7 +1384,8 @@ def get_wingman_html(title: str = "Wingman // Gemini Bilateral Portal", port: in
       return div.innerHTML;
     }}
 
-    // Initial startup
+    /* Startup */
+    checkSession();
     connectSSE();
     pingInterval = setInterval(measurePing, 5000);
     measurePing();

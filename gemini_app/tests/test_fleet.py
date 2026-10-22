@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import socket
+import tempfile
 import time
 import unittest
 from unittest.mock import MagicMock, patch
@@ -226,24 +227,27 @@ class TestFleetTelemetryAndHUD(unittest.TestCase):
         self.assertTrue(acquire_singleton_lock("test-mode"))
 
     def test_update_and_persist_cognitive_state(self) -> None:
-        st = update_cognitive_state(
-            state_desc="Running test_suite",
-            task="Validating HUD telemetry",
-            thought="Testing dynamic cognitive updates",
-            tool="execute_shell",
-            turn_number=42,
-            notify_mothership=False,
-        )
-        self.assertEqual(st.get("tool"), "execute_shell")
-        self.assertEqual(st.get("turn_number"), 42)
-        persisted = get_persisted_cognitive_state()
-        self.assertEqual(persisted.get("tool"), "execute_shell")
-        self.assertEqual(persisted.get("thought"), "Testing dynamic cognitive updates")
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            temp_file = Path(tmp_dir) / "cognitive_state.json"
+            with patch("gemini_app.config.COGNITIVE_STATE_FILE", temp_file):
+                st = update_cognitive_state(
+                    state_desc="Running test_suite",
+                    task="Validating HUD telemetry",
+                    thought="Testing dynamic cognitive updates",
+                    tool="execute_shell",
+                    turn_number=42,
+                    notify_mothership=False,
+                )
+                self.assertEqual(st.get("tool"), "execute_shell")
+                self.assertEqual(st.get("turn_number"), 42)
+                persisted = get_persisted_cognitive_state()
+                self.assertEqual(persisted.get("tool"), "execute_shell")
+                self.assertEqual(persisted.get("thought"), "Testing dynamic cognitive updates")
 
-        telem = collect_mothership_telemetry()
-        self.assertEqual(telem["cognitive"]["tool"], "execute_shell")
-        self.assertEqual(telem["cognitive"]["thought"], "Testing dynamic cognitive updates")
-        self.assertEqual(telem["cognitive"]["turn_number"], 42)
+                telem = collect_mothership_telemetry()
+                self.assertEqual(telem["cognitive"]["tool"], "execute_shell")
+                self.assertEqual(telem["cognitive"]["thought"], "Testing dynamic cognitive updates")
+                self.assertEqual(telem["cognitive"]["turn_number"], 42)
 
 
 class TestFleetNetwork(unittest.TestCase):

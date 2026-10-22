@@ -101,6 +101,8 @@ class MothershipServer:
         self.recent_wingman_actions: List[Dict[str, Any]] = []
         self._action_events: Dict[str, threading.Event] = {}
         self._action_results: Dict[str, Dict[str, Any]] = {}
+        self.pending_wingman_auth_requests: Dict[str, Dict[str, Any]] = {}
+        self._wingman_auth_callbacks: List[Callable[[Dict[str, Any]], None]] = []
 
     def start(self) -> bool:
         """Binds and starts accepting incoming satellite node connections."""
@@ -572,6 +574,45 @@ class MothershipServer:
                                         self._action_results[card_id] = action_entry
                                         self._action_events[card_id].set()
 
+                            elif event_name in ("wingman_auth_request", "wingman_access_request"):
+                                req_id = msg.payload.get("session_id") or msg.payload.get("auth_req_id", "")
+                                auth_entry = {
+                                    "node_id": node_id,
+                                    "session_id": req_id,
+                                    "auth_req_id": req_id,
+                                    "client_ip": msg.payload.get("client_ip", ""),
+                                    "user_agent": msg.payload.get("user_agent", ""),
+                                    "device_id": msg.payload.get("device_id", ""),
+                                    "timestamp": msg.payload.get("timestamp", time.time()),
+                                }
+                                with self.lock:
+                                    self.pending_wingman_auth_requests[req_id] = auth_entry
+                                sys.stdout.write(
+                                    f"[mothership] Wingman access requested on node '{node_id}' ({auth_entry['client_ip']}) - req {req_id}\n"
+                                )
+                                for cb in list(self._wingman_auth_callbacks):
+                                    try:
+                                        cb(dict(auth_entry))
+                                    except Exception:
+                                        pass
+
+                            elif event_name == "wingman_chat_message":
+                                chat_entry = {
+                                    "node_id": node_id,
+                                    "sender": msg.payload.get("sender", "operator"),
+                                    "text": msg.payload.get("text", ""),
+                                    "timestamp": msg.payload.get("timestamp", time.time()),
+                                }
+                                sys.stdout.write(
+                                    f"[mothership] Wingman chat from {node_id} ({chat_entry['sender']}): {chat_entry['text']}\n"
+                                )
+                                if hasattr(self, "_wingman_chat_callbacks"):
+                                    for cb in list(self._wingman_chat_callbacks):
+                                        try:
+                                            cb(dict(chat_entry))
+                                        except Exception:
+                                            pass
+
                         elif msg.type == FleetMessage.TYPE_DISCONNECT:
                             sys.stdout.write(f"[mothership] Satellite requested disconnect: '{node_id}'\n")
                             return
@@ -701,6 +742,65 @@ class MothershipServer:
             params={"reason": reason, "timeout": timeout},
             timeout=timeout + 5.0,
         )
+
+    def on_wingman_auth(self, callback: Callable[[Dict[str, Any]], None]) -> None:
+        """Registers a callback for incoming zero-trust Wingman connection requests."""
+        with self.lock:
+            self._wingman_auth_callbacks.append(callback)
+
+    def authorize_wingman(
+        self,
+        node_id: str,
+        auth_req_id: str,
+        decision: str = "accept",
+        trust: bool = False,
+        timeout: float = 10.0,
+    ) -> Dict[str, Any]:
+        """Sends bilateral authorization decision (accept, trust, or deny) for an auth request."""
+        with self.lock:
+            self.pending_wingman_auth_requests.pop(auth_req_id, None)
+
+        accepted = (decision in ("accept", "accepted", "trust"))
+        trust_device = trust or (decision == "trust")
+
+        if node_id in ("local", "localhost", "mothership"):
+            if self.local_wingman and hasattr(self.local_wingman, "authorize_session"):
+                return self.local_wingman.authorize_session(auth_req_id, accepted=accepted, trust_device=trust_device)
+            elif self.local_wingman and hasattr(self.local_wingman, "resolve_auth_request"):
+                return self.local_wingman.resolve_auth_request(auth_req_id, decision=decision, trust=trust)
+            return {"status": "error", "error": "Local Wingman not running"}
+
+        return self.send_command(
+            node_id=node_id,
+            action="authorize_wingman",
+            params={"session_id": auth_req_id, "accepted": accepted, "trust_device": trust_device},
+            timeout=timeout,
+        )
+
+    def prompt_wingman_passkey(
+        self,
+        node_id: str,
+        reason: str = "Authorize Bilateral Homebase Message",
+        timeout: float = 10.0,
+    ) -> Dict[str, Any]:
+        """Prompts the connected Wingman browser for Homebase passkey verification."""
+        if node_id in ("local", "localhost", "mothership"):
+            if self.local_wingman and hasattr(self.local_wingman, "prompt_passkey"):
+                p_id = self.local_wingman.prompt_passkey(reason=reason)
+                return {"status": "ok", "prompt_id": p_id}
+            return {"status": "error", "error": "Local Wingman not running"}
+
+        return self.send_command(
+            node_id=node_id,
+            action="wingman_prompt_passkey",
+            params={"reason": reason},
+            timeout=timeout,
+        )
+
+    def verify_wingman_passkey(self, passkey: str) -> bool:
+        """Cryptographically verifies a passkey against Homebase's PBKDF2 vault hash."""
+        from gemini_app.fleet.wingman_auth import verify_homebase_passkey
+        return verify_homebase_passkey(passkey)
 
     def set_cognitive_state(
         self,

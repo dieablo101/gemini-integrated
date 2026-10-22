@@ -940,10 +940,56 @@ class SatelliteNode:
         self.wingman_applet = None
         try:
             from gemini_app.webapplet.applets.wingman import WingmanApplet
-            self.wingman_applet = WingmanApplet(port=8888)
+            self.wingman_applet = WingmanApplet(port=8888, node_id=self.node_id)
             set_active_wingman(self.wingman_applet)
             self.wingman_applet.engine.on_client_state_change(self._on_wingman_state_change)
             self.wingman_applet.on_action(self._on_wingman_card_action)
+            self.wingman_applet.on_chat_message(self._on_wingman_chat_message)
+            self.wingman_applet.security.on_pending_session(self._on_wingman_pending_session)
+        except Exception:
+            pass
+
+    def _on_wingman_pending_session(self, session: Any) -> None:
+        """Dispatches an authorization request event to the Mothership."""
+        if not self._running or not self.sock:
+            return
+        if self.hud:
+            self.hud.show_toast(f"Wingman access requested from {session.client_ip}...", duration=5.0)
+        try:
+            ev = FleetMessage(
+                msg_type=FleetMessage.TYPE_EVENT,
+                node_id=self.node_id,
+                payload={
+                    "event": "wingman_access_request",
+                    "session_id": session.session_id,
+                    "node_id": self.node_id,
+                    "client_ip": session.client_ip,
+                    "user_agent": session.user_agent,
+                    "device_id": session.device_id,
+                    "timestamp": time.time(),
+                },
+            )
+            self.send_message(ev)
+        except Exception:
+            pass
+
+    def _on_wingman_chat_message(self, sender: str, text: str, body: Dict[str, Any]) -> None:
+        """Transmits remote chat message from Wingman UI to Mothership."""
+        if not self._running or not self.sock:
+            return
+        try:
+            ev = FleetMessage(
+                msg_type=FleetMessage.TYPE_EVENT,
+                node_id=self.node_id,
+                payload={
+                    "event": "wingman_chat_message",
+                    "node_id": self.node_id,
+                    "sender": sender,
+                    "text": text,
+                    "timestamp": time.time(),
+                },
+            )
+            self.send_message(ev)
         except Exception:
             pass
 
@@ -1215,6 +1261,30 @@ class SatelliteNode:
             else:
                 result_payload["status"] = "error"
                 result_payload["error"] = "No biometric provider active on node"
+
+        elif action in ("wingman_auth_decision", "authorize_wingman"):
+            sess_id = params.get("session_id") or params.get("auth_req_id", "")
+            accepted = params.get("accepted", True) if "accepted" in params else (params.get("decision", "accept") == "accept")
+            trust_device = params.get("trust_device", False) or params.get("trust", False)
+            if self.wingman_applet:
+                res = self.wingman_applet.authorize_session(sess_id, accepted=accepted, trust_device=trust_device)
+                result_payload.update(res)
+                if self.hud:
+                    self.hud.show_toast(f"Wingman auth {'accepted' if accepted else 'denied'}", duration=4.0)
+            else:
+                result_payload["status"] = "error"
+                result_payload["error"] = "Wingman applet not active on node"
+
+        elif action == "wingman_prompt_passkey":
+            reason = params.get("reason", "Authorize Bilateral Homebase Message")
+            prompt_id = params.get("prompt_id")
+            if self.wingman_applet:
+                p_id = self.wingman_applet.prompt_passkey(reason=reason, prompt_id=prompt_id)
+                result_payload["prompt_id"] = p_id
+                result_payload["status"] = "ok"
+            else:
+                result_payload["status"] = "error"
+                result_payload["error"] = "Wingman applet not active on node"
 
         elif action == "fleet_upgrade":
             target_ref = params.get("target_ref", "origin/main")

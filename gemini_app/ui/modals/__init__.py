@@ -26,6 +26,7 @@ from gemini_app.ui.modals.vault import (
     VaultPasswordEntryModal,
     VaultSecretEntryModal,
 )
+from gemini_app.ui.modals.wingman_auth import WingmanAuthModal
 
 __all__ = [
     "ApiKeyModal",
@@ -49,4 +50,5 @@ __all__ = [
     "VaultFileEntryModal",
     "VaultPasswordEntryModal",
     "VaultSecretEntryModal",
+    "WingmanAuthModal",
 ]

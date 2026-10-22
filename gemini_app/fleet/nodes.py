@@ -257,17 +257,24 @@ def execute_ssh_rescue(
     key_path = str(Path(os.path.expanduser(key_path)).resolve())
 
     # Build rescue command according to action
-    if action == "restart":
+    if action in ("restart", "reboot"):
+        # For remote satellite nodes, reboot/restart should safely restart the satellite daemon,
+        # preferring any local virtual environment (.venv / venv) over global system python.
         remote_cmd = (
             "systemctl restart gemini-satellite 2>/dev/null || "
             "(rc-service gemini-satellite restart 2>/dev/null || "
             "(/etc/local.d/gemini-satellite.start 2>/dev/null || "
-            "(pkill -f 'gemini-integrated.*node' 2>/dev/null ; sleep 0.5 ; "
-            "cd /root/gemini-integrated 2>/dev/null || cd ~/gemini-integrated 2>/dev/null || cd /opt/gemini 2>/dev/null ; "
-            "nohup python3 gemini-integrated.py node >/dev/null 2>&1 &))) ; "
+            "(pkill -f 'gemini-integrated.*(node|satellite)' 2>/dev/null ; sleep 0.5 ; "
+            "for d in /root/gemini-integrated ~/gemini-integrated /opt/gemini \"$HOME/gemini-integrated\" /data/data/com.termux/files/home/gemini-integrated; do "
+            "if [ -d \"$d\" ]; then cd \"$d\" && "
+            "if [ -f .venv/bin/python ]; then PY=.venv/bin/python; "
+            "elif [ -f venv/bin/python ]; then PY=venv/bin/python; "
+            "elif [ -f ~/.venv/bin/python ]; then PY=~/.venv/bin/python; "
+            "else PY=python3; fi ; "
+            "nohup $PY gemini-integrated.py node >/dev/null 2>&1 & break ; fi ; done))) ; "
             "echo 'RESTART_DISPATCHED'"
         )
-    elif action == "reboot":
+    elif action in ("os_reboot", "system_reboot"):
         remote_cmd = "reboot"
     elif action == "check":
         remote_cmd = (
@@ -287,14 +294,16 @@ def execute_ssh_rescue(
         from gemini_app.fleet.protocol import get_local_lan_ip
         local_ip = get_local_lan_ip()
         remote_cmd = (
-            f"python3 -c '"
-            f"from gemini_app.fleet.autostart import install_autostart; "
-            f"print(install_autostart(mothership=\"{local_ip}\"))' 2>/dev/null || "
-            f"python3 gemini-integrated.py autostart --install --mothership {local_ip} 2>/dev/null || "
-            f"python3 /root/gemini-integrated/gemini-integrated.py autostart --install --mothership {local_ip}"
+            f"for d in /root/gemini-integrated ~/gemini-integrated /opt/gemini \"$HOME/gemini-integrated\" /data/data/com.termux/files/home/gemini-integrated; do "
+            f"if [ -d \"$d\" ]; then cd \"$d\" && "
+            f"if [ -f .venv/bin/python ]; then PY=.venv/bin/python; "
+            f"elif [ -f venv/bin/python ]; then PY=venv/bin/python; "
+            f"else PY=python3; fi ; "
+            f"$PY -c 'from gemini_app.fleet.autostart import install_autostart; print(install_autostart(mothership=\"{local_ip}\"))' 2>/dev/null || "
+            f"$PY gemini-integrated.py autostart --install --mothership {local_ip} 2>/dev/null ; break ; fi ; done"
         )
     else:
-        return {"status": "error", "error": f"Unknown rescue action '{action}'. Options: restart, reboot, check, exec, provision, autostart"}
+        return {"status": "error", "error": f"Unknown rescue action '{action}'. Options: restart, reboot, os_reboot, check, exec, provision, autostart"}
 
     ssh_args = [
         "ssh",

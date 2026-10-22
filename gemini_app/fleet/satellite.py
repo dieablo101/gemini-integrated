@@ -101,6 +101,35 @@ def find_repo_root(start: Optional[Path] = None) -> Path:
     return curr
 
 
+def get_effective_python(start: Optional[Path] = None) -> str:
+    """Finds the best python binary, preferring local virtualenv if present."""
+    base = find_repo_root(start)
+    for venv_dir in (".venv", "venv"):
+        for py_name in ("python", "python3"):
+            cand = base / venv_dir / "bin" / py_name
+            if cand.is_file() and os.access(cand, os.X_OK):
+                return str(cand)
+    # Also check user home venv
+    for venv_dir in (".venv", "venv"):
+        for py_name in ("python", "python3"):
+            cand = Path.home() / venv_dir / "bin" / py_name
+            if cand.is_file() and os.access(cand, os.X_OK):
+                return str(cand)
+    return sys.executable
+
+
+def _exec_reboot() -> None:
+    """Safely replaces the process image in place using the effective python binary."""
+    py_bin = get_effective_python()
+    root = find_repo_root()
+    runner = root / "gemini-integrated.py"
+    script = str(runner.resolve()) if runner.exists() else sys.argv[0]
+    args = [py_bin, script]
+    if len(sys.argv) > 1:
+        args.extend(sys.argv[1:])
+    os.execv(py_bin, args)
+
+
 def _get_git_info_fast(repo_dir: Optional[Path] = None) -> tuple[str, str]:
     """Reads git branch and commit in pure Python without spawning subprocesses (safe for emulators)."""
     base = find_repo_root(repo_dir)
@@ -491,6 +520,7 @@ def execute_fleet_upgrade(
             }
 
     # Stage 3: Pre-Flight Syntax & Import Validation Gate
+    effective_py = get_effective_python(cwd)
     if not is_ish:
         py_files = [str(p) for p in cwd.glob("gemini_app/**/*.py")]
         for top_py in ("gemini-integrated.py", "__main__.py"):
@@ -499,7 +529,7 @@ def execute_fleet_upgrade(
 
         if py_files:
             compile_res = subprocess.run(
-                [sys.executable, "-m", "py_compile"] + py_files[:50],  # Sample compile
+                [effective_py, "-m", "py_compile"] + py_files[:50],  # Sample compile
                 cwd=cwd,
                 capture_output=True,
                 text=True,
@@ -518,7 +548,7 @@ def execute_fleet_upgrade(
 
     # Test import check
     import_res = subprocess.run(
-        [sys.executable, "-c", "import gemini_app; from gemini_app.fleet.satellite import SatelliteNode; print('VERIFIED')"],
+        [effective_py, "-c", "import gemini_app; from gemini_app.fleet.satellite import SatelliteNode; print('VERIFIED')"],
         cwd=cwd,
         capture_output=True,
         text=True,
@@ -1017,7 +1047,7 @@ class SatelliteNode:
                     if os.environ.get("GEMINI_WATCHDOG") == "1":
                         sys.exit(42)
                     else:
-                        os.execv(sys.executable, [sys.executable] + sys.argv)
+                        _exec_reboot()
 
                 threading.Thread(target=_do_reboot, daemon=True).start()
 
@@ -1084,7 +1114,7 @@ class SatelliteNode:
                     if os.environ.get("GEMINI_WATCHDOG") == "1":
                         sys.exit(42)
                     else:
-                        os.execv(sys.executable, [sys.executable] + sys.argv)
+                        _exec_reboot()
                 elif res.get("status") == "ok":
                     if self.hud:
                         self.hud.show_toast("Code already matches origin/main.", duration=3.0)
@@ -1453,7 +1483,7 @@ class SatelliteNode:
                                     if os.environ.get("GEMINI_WATCHDOG") == "1":
                                         sys.exit(42)
                                     else:
-                                        os.execv(sys.executable, [sys.executable] + sys.argv)
+                                        _exec_reboot()
                                 else:
                                     self.hud.show_toast("Node is already up to date.", duration=3.0)
                             else:

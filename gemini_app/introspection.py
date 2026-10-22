@@ -58,6 +58,7 @@ def compute_user_location(app: Any) -> Dict[str, Any]:
         "ApiKeyModal": "API Key Modal",
         "ConfirmModal": "Confirmation Dialog",
         "TitlePromptModal": "Title Prompt Dialog",
+        "WingmanAuthModal": "Wingman Security Authorization Modal",
     }
 
     if screen_name in modal_labels:

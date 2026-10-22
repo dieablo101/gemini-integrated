@@ -155,6 +155,7 @@ from gemini_app.ui.modals import (
     VaultFileEntryModal,
     VaultPasswordEntryModal,
     VaultSecretEntryModal,
+    WingmanAuthModal,
     WriteSnippetModal,
 )
 from gemini_app.ui.widgets import (
@@ -335,6 +336,20 @@ class ChatApp(App):
             ),
             callback,
         )
+
+    def prompt_wingman_auth(
+        self,
+        auth_data: Dict[str, Any],
+        callback: Optional[Callable[[str], None]] = None,
+    ) -> None:
+        """Presents a zero-trust confirmation modal for an incoming Wingman browser connection request."""
+        def _on_dismiss(decision: str) -> None:
+            if callback:
+                try:
+                    callback(decision)
+                except Exception:
+                    pass
+        self.push_screen(WingmanAuthModal(auth_data=auth_data), _on_dismiss)
 
     def request_vault_passkey(
         self,

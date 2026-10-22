@@ -24,7 +24,7 @@ import threading
 import time
 from typing import Any, Dict, Optional, Tuple
 
-from gemini_app.fleet.protocol import DEFAULT_PORT, FleetMessage
+from gemini_app.fleet.protocol import DEFAULT_PORT, FleetMessage, get_local_lan_ip
 from gemini_app.fleet.security import (
     compute_auth_signature,
     get_or_create_fleet_key,
@@ -759,14 +759,20 @@ def acquire_singleton_lock(mode: str = "node") -> bool:
 
 def get_saved_mothership(default: Optional[str] = None) -> str:
     """Retrieves the default mothership IP/host."""
-    lan_ip, wan_ip, _ = get_saved_mothership_endpoints()
-    return lan_ip or wan_ip or default or get_local_lan_ip()
+    try:
+        lan_ip, wan_ip, _ = get_saved_mothership_endpoints()
+        return lan_ip or wan_ip or default or "192.168.1.91"
+    except Exception:
+        return default or "192.168.1.91"
 
 
 def get_saved_mothership_port(default: int = DEFAULT_PORT) -> int:
     """Retrieves the default mothership TCP port."""
-    _, _, port = get_saved_mothership_endpoints()
-    return port or default
+    try:
+        _, _, port = get_saved_mothership_endpoints()
+        return port or default
+    except Exception:
+        return default
 
 
 def save_mothership(host: str, port: Optional[int] = None) -> bool:

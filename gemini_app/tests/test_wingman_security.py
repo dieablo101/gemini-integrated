@@ -454,6 +454,107 @@ class TestWingmanSecurity(unittest.TestCase):
         self.assertFalse(app._wingman_modal_open)
         self.assertIn("sess-ipad-2", app._handled_wingman_auth_reqs)
 
+    def test_pending_session_deduplication_prevents_multiple_modals(self) -> None:
+        """Verifies that multiple session checks from the same client IP/device do not create multiple modals."""
+        applet = WingmanApplet(port=0, node_id="test-node", require_pairing=True)
+        self.assertTrue(applet.start())
+        try:
+            auth_requests = []
+            applet.on_auth_request(lambda req: auth_requests.append(req))
+
+            mock_handler = MagicMock()
+            mock_handler.client_address = ("192.168.1.88", 55432)
+            mock_handler.headers = {"User-Agent": "Mozilla/5.0 Android"}
+
+            # First session check
+            s1 = applet._handle_session_check(mock_handler, {})
+            self.assertEqual(s1["status"], "pending")
+            self.assertEqual(len(auth_requests), 1)
+
+            # Second and third session checks from same device/IP while pending
+            s2 = applet._handle_session_check(mock_handler, {})
+            s3 = applet._handle_session_check(mock_handler, {})
+
+            # Should return the EXACT same session and NOT trigger more auth requests
+            self.assertEqual(s1["session_id"], s2["session_id"])
+            self.assertEqual(s1["session_id"], s3["session_id"])
+            self.assertEqual(len(auth_requests), 1)
+        finally:
+            applet.stop()
+
+    def test_verify_homebase_passkey_system_password_fallback(self) -> None:
+        """Verifies that verify_homebase_passkey falls back to host Linux system password."""
+        with patch("gemini_app.vault.is_vault_configured", return_value=True), \
+             patch("gemini_app.vault.verify_vault_passkey", return_value=False), \
+             patch("gemini_app.fleet.wingman_auth.verify_system_password", side_effect=lambda p: p == "host-user-password"):
+            self.assertTrue(verify_homebase_passkey("host-user-password"))
+            self.assertFalse(verify_homebase_passkey("wrong-system-password"))
+
+    def test_accept_vs_pair_differentiation(self) -> None:
+        """Verifies that Accept is a one-time session access whereas Pair permanently trusts the device."""
+        applet = WingmanApplet(port=0, node_id="test-node", require_pairing=True)
+        self.assertTrue(applet.start())
+        try:
+            mock_handler = MagicMock()
+            mock_handler.client_address = ("192.168.1.99", 55433)
+            mock_handler.headers = {"User-Agent": "Mozilla/5.0 Android"}
+
+            s1 = applet._handle_session_check(mock_handler, {})
+            sess_id = s1["session_id"]
+
+            # Operator hits 'accept' (not pair)
+            res = applet.authorize_session(sess_id, accepted=True, trust_device=False)
+            self.assertEqual(res["status"], "ok")
+            self.assertFalse(res["is_paired"])
+            self.assertFalse(applet.security.is_device_trusted(s1["device_id"]))
+
+            # Now test 'pair'
+            s2 = applet.security.create_or_resume_session(
+                client_ip="192.168.1.100",
+                device_id="dev-permanently-paired",
+                is_loopback=False,
+            )
+            res2 = applet.authorize_session(s2.session_id, accepted=True, trust_device=True)
+            self.assertEqual(res2["status"], "ok")
+            self.assertTrue(res2["is_paired"])
+            self.assertTrue(applet.security.is_device_trusted("dev-permanently-paired"))
+        finally:
+            applet.stop()
+
+    def test_boot_guard_queues_wingman_modal_until_boot_complete(self) -> None:
+        """Verifies that Wingman pairing modals do not mount over BootScreen and are safely queued."""
+        from gemini_app.ui.app import ChatApp
+
+        app = ChatApp()
+        app._boot_complete = False
+        app._wingman_auth_queue = []
+
+        # Simulate incoming request while booting
+        req = {
+            "session_id": "sess-boot-test-1",
+            "auth_req_id": "sess-boot-test-1",
+            "client_ip": "192.168.1.42",
+            "device_id": "dev-boot-phone",
+        }
+
+        # Calling prompt_wingman_auth should NOT open modal while booting
+        with patch.object(app, "push_screen") as mock_push:
+            app.prompt_wingman_auth(req)
+            mock_push.assert_not_called()
+
+        self.assertFalse(app._wingman_modal_open)
+        self.assertEqual(len(app._wingman_auth_queue), 1)
+        self.assertEqual(app._wingman_auth_queue[0]["auth_req_id"], "sess-boot-test-1")
+
+        # Now simulate boot completing
+        app._boot_complete = True
+        with patch.object(app, "push_screen") as mock_push:
+            app._process_next_wingman_auth()
+            mock_push.assert_called_once()
+            modal_arg = mock_push.call_args[0][0]
+            self.assertEqual(modal_arg.__class__.__name__, "WingmanAuthModal")
+            self.assertTrue(app._wingman_modal_open)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -34,6 +34,7 @@ class WingmanSession:
     device_id: str = ""
     status: str = "pending"  # "pending", "authorized", "denied"
     is_unlocked: bool = False  # Action-gated session passkey status
+    is_paired: bool = False  # Permanent device pairing status
     created_at: float = field(default_factory=time.time)
     last_seen: float = field(default_factory=time.time)
     current_mode: str = "work"  # "work" or "chat"
@@ -47,6 +48,7 @@ class WingmanSession:
             "device_id": self.device_id,
             "status": self.status,
             "is_unlocked": self.is_unlocked,
+            "is_paired": self.is_paired,
             "created_at": self.created_at,
             "last_seen": self.last_seen,
             "current_mode": self.current_mode,
@@ -137,10 +139,13 @@ class WingmanSecurity:
         user_agent: str = "",
         device_id: str = "",
         existing_token: str = "",
+        existing_session_id: str = "",
         is_loopback: bool = False,
     ) -> WingmanSession:
         """Retrieves existing session by token, auto-authorizes trusted devices, or creates pending."""
         now = time.time()
+        effective_device_id = device_id or f"dev-{hashlib.sha256(f'{client_ip}-{user_agent}'.encode('utf-8')).hexdigest()[:12]}"
+
         with self._lock:
             # 1. Check existing token for active authorized session
             if existing_token and existing_token in self.tokens_to_session:
@@ -152,23 +157,44 @@ class WingmanSecurity:
 
             # 2. Check if device is permanently trusted
             device_trusted = (
-                (bool(device_id) and self.is_device_trusted(device_id))
+                (bool(effective_device_id) and self.is_device_trusted(effective_device_id))
                 or (bool(client_ip) and self.is_device_trusted(client_ip))
             )
 
             # If device is already trusted or require_pairing is False
             status = "authorized" if (device_trusted or not self.require_pairing) else "pending"
 
-            sess_id = f"sess-{secrets.token_hex(8)}"
+            # 3. If there is already an existing pending session for this session_id or device/IP, reuse it!
+            if status == "pending":
+                if existing_session_id and existing_session_id in self.sessions:
+                    existing_sess = self.sessions[existing_session_id]
+                    if existing_sess.status == "pending":
+                        existing_sess.last_seen = now
+                        if user_agent:
+                            existing_sess.user_agent = user_agent
+                        return existing_sess
+
+                for existing_sess in self.sessions.values():
+                    if existing_sess.status == "pending":
+                        match_dev = bool(effective_device_id and existing_sess.device_id == effective_device_id)
+                        match_ip = bool(client_ip and existing_sess.client_ip == client_ip)
+                        if match_dev or match_ip:
+                            existing_sess.last_seen = now
+                            if user_agent:
+                                existing_sess.user_agent = user_agent
+                            return existing_sess
+
+            sess_id = existing_session_id or f"sess-{secrets.token_hex(8)}"
             tok = f"wmt-{secrets.token_urlsafe(32)}"
             session = WingmanSession(
                 session_id=sess_id,
                 token=tok,
                 client_ip=client_ip,
                 user_agent=user_agent,
-                device_id=device_id or f"dev-{hashlib.sha256(f'{client_ip}-{user_agent}'.encode('utf-8')).hexdigest()[:12]}",
+                device_id=effective_device_id,
                 status=status,
                 is_unlocked=False,
+                is_paired=device_trusted,
                 created_at=now,
                 last_seen=now,
             )
@@ -214,6 +240,7 @@ class WingmanSecurity:
             if not session:
                 return None
             session.status = "authorized"
+            session.is_paired = trust_device
             session.last_seen = time.time()
             self.tokens_to_session[session.token] = session.session_id
 
@@ -238,9 +265,7 @@ class WingmanSecurity:
         passkey: str,
         trust_device: bool = False,
     ) -> tuple[bool, Optional[str], str]:
-        """Verifies passkey against Mothership/Vault salted PBKDF2 hash and unlocks session."""
-        from gemini_app.vault import is_vault_configured, verify_vault_passkey
-
+        """Verifies passkey against Mothership/Vault salted PBKDF2 hash or host system password."""
         session = self.get_session(session_id)
         if not session:
             return False, None, "Session not found or expired"
@@ -249,14 +274,9 @@ class WingmanSecurity:
         if not clean_passkey:
             return False, None, "Passkey cannot be empty"
 
-        # If vault is configured, verify passkey with constant-time compare
-        if is_vault_configured():
-            if not verify_vault_passkey(clean_passkey):
-                return False, None, "Invalid Mothership passkey"
-        else:
-            # First-run setup: allow passkey to establish vault
-            from gemini_app.vault import set_vault_passkey
-            set_vault_passkey(clean_passkey)
+        from gemini_app.fleet.wingman_auth import verify_homebase_passkey
+        if not verify_homebase_passkey(clean_passkey):
+            return False, None, "Invalid Homebase passkey or system password"
 
         # Authorized!
         self.authorize_session(session_id, trust_device=trust_device)

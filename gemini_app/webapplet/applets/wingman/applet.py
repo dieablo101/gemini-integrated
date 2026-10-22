@@ -38,8 +38,13 @@ class WingmanApplet:
         self._recent_cards: List[Dict[str, Any]] = []
         self._chat_history: List[Dict[str, Any]] = []
         self._lock = threading.Lock()
+        self._passkey_verifier: Optional[Callable[[str], bool]] = None
 
         self._setup_routes()
+
+    def set_passkey_verifier(self, verifier: Callable[[str], bool]) -> None:
+        """Sets external passkey verification function (e.g. delegated Mothership check for satellites)."""
+        self._passkey_verifier = verifier
 
     def _setup_routes(self) -> None:
         # Web UI root and canonical route
@@ -78,13 +83,15 @@ class WingmanApplet:
             "client_count": self.client_count,
         }
 
-    def _extract_token_and_device(self, handler: Any, query: Dict[str, List[str]]) -> tuple[str, str]:
+    def _extract_token_and_device(self, handler: Any, query: Dict[str, List[str]]) -> tuple[str, str, str]:
         token = ""
         device_id = ""
+        session_id = ""
         # Check headers
         if hasattr(handler, "headers"):
             token = handler.headers.get("X-Wingman-Token", "")
             device_id = handler.headers.get("X-Wingman-Device", "")
+            session_id = handler.headers.get("X-Wingman-Session", "")
             if not token:
                 auth_hdr = handler.headers.get("Authorization", "")
                 if auth_hdr.lower().startswith("bearer "):
@@ -94,12 +101,16 @@ class WingmanApplet:
             token = query["token"][0]
         if not device_id and "device" in query:
             device_id = query["device"][0]
-        return token, device_id
+        if not session_id and "session_id" in query:
+            session_id = query["session_id"][0]
+        elif not session_id and "session" in query:
+            session_id = query["session"][0]
+        return token, device_id, session_id
 
     def _handle_session_check(self, handler: Any, query: Dict[str, List[str]]) -> Dict[str, Any]:
         client_ip = handler.client_address[0] if hasattr(handler, "client_address") else "127.0.0.1"
         user_agent = handler.headers.get("User-Agent", "") if hasattr(handler, "headers") else ""
-        token, device_id = self._extract_token_and_device(handler, query)
+        token, device_id, session_id = self._extract_token_and_device(handler, query)
 
         is_loopback = client_ip in ("127.0.0.1", "::1", "localhost")
         session = self.security.create_or_resume_session(
@@ -107,18 +118,22 @@ class WingmanApplet:
             user_agent=user_agent,
             device_id=device_id,
             existing_token=token,
+            existing_session_id=session_id,
             is_loopback=is_loopback,
         )
 
+        is_trusted = self.security.is_device_trusted(session.device_id) or self.security.is_device_trusted(client_ip)
         return {
             "session_id": session.session_id,
             "authenticated": (session.status == "authorized"),
             "status": session.status,
             "is_unlocked": session.is_unlocked,
+            "is_paired": is_trusted,
             "token": session.token if session.status == "authorized" else "",
             "mode": session.current_mode,
             "device_id": session.device_id,
             "node_id": self.node_id,
+            "trusted": is_trusted,
         }
 
     def _handle_passkey_auth(self, handler: Any, query: Dict[str, List[str]], body: Any) -> Dict[str, Any]:
@@ -146,7 +161,7 @@ class WingmanApplet:
         action = body.get("action", "")
         client_ip = handler.client_address[0] if hasattr(handler, "client_address") else "127.0.0.1"
         is_loopback = client_ip in ("127.0.0.1", "::1", "localhost")
-        token, _ = self._extract_token_and_device(handler, query)
+        token, _, _ = self._extract_token_and_device(handler, query)
         sess = self.security.get_session_by_token(token) if token else None
 
         if self.security.require_pairing:
@@ -174,7 +189,7 @@ class WingmanApplet:
 
         client_ip = handler.client_address[0] if hasattr(handler, "client_address") else "127.0.0.1"
         is_loopback = client_ip in ("127.0.0.1", "::1", "localhost")
-        token, _ = self._extract_token_and_device(handler, query)
+        token, _, _ = self._extract_token_and_device(handler, query)
         sess = self.security.get_session_by_token(token) if token else None
 
         if self.security.require_pairing:
@@ -251,11 +266,13 @@ class WingmanApplet:
         req_id = query.get("req_id", [""])[0] or query.get("session_id", [""])[0]
         sess = self.security.get_session(req_id)
         if sess:
+            is_trusted = self.security.is_device_trusted(sess.device_id) or self.security.is_device_trusted(sess.client_ip)
             return {
                 "status": "approved" if sess.status == "authorized" else sess.status,
                 "token": sess.token if sess.status == "authorized" else "",
                 "auth_req_id": sess.session_id,
-                "trusted": self.security.is_device_trusted(sess.device_id),
+                "trusted": is_trusted,
+                "is_paired": is_trusted,
             }
         return {"status": "unknown", "error": f"Request {req_id} not found"}
 
@@ -265,8 +282,16 @@ class WingmanApplet:
         passkey = str(body.get("passkey", "")).strip()
         sess_id = body.get("session_id") or body.get("prompt_id") or ""
         token = body.get("session_token", "")
-        from gemini_app.fleet.wingman_auth import verify_homebase_passkey
-        valid = verify_homebase_passkey(passkey)
+
+        if self._passkey_verifier:
+            try:
+                valid = bool(self._passkey_verifier(passkey))
+            except Exception:
+                valid = False
+        else:
+            from gemini_app.fleet.wingman_auth import verify_homebase_passkey
+            valid = verify_homebase_passkey(passkey)
+
         if valid:
             sess = None
             if sess_id:
@@ -275,7 +300,11 @@ class WingmanApplet:
                 sess = self.security.get_session_by_token(token)
             if sess:
                 sess.is_unlocked = True
-        return {"status": "ok" if valid else "invalid", "valid": valid}
+        return {
+            "status": "ok" if valid else "invalid",
+            "valid": valid,
+            "message": "Authenticated successfully" if valid else "Invalid Homebase passkey or system password.",
+        }
 
     def resolve_auth_request(self, auth_req_id: str, decision: str = "accept", trust: bool = False) -> Dict[str, Any]:
         """Resolves an incoming zero-trust session request from the operator or Mothership."""
@@ -283,16 +312,20 @@ class WingmanApplet:
         trust_device = trust or (decision in ("trust", "pair"))
         sess = self.security.authorize_session(auth_req_id, trust_device=trust_device) if accepted else self.security.deny_session(auth_req_id)
         if sess:
+            is_trusted = self.security.is_device_trusted(sess.device_id) or self.security.is_device_trusted(sess.client_ip) or trust_device
             ev_name = "auth_approved" if accepted else "auth_denied"
             self.engine.broadcast_event(ev_name, {
                 "auth_req_id": auth_req_id,
+                "session_id": auth_req_id,
                 "token": sess.token if accepted else "",
                 "status": "approved" if accepted else "denied",
+                "is_paired": is_trusted if accepted else False,
             })
             return {
                 "status": "approved" if accepted else "denied",
                 "token": sess.token if accepted else "",
                 "auth_req_id": auth_req_id,
+                "is_paired": is_trusted if accepted else False,
             }
         return {"status": "error", "error": f"Session '{auth_req_id}' not found"}
 
@@ -312,18 +345,17 @@ class WingmanApplet:
         if accepted:
             sess = self.security.authorize_session(session_id, trust_device=trust_device)
             if sess:
-                self.engine.broadcast_event("session_authorized", {
+                is_trusted = self.security.is_device_trusted(sess.device_id) or self.security.is_device_trusted(sess.client_ip) or trust_device
+                auth_payload = {
                     "session_id": session_id,
+                    "auth_req_id": session_id,
                     "token": sess.token,
                     "status": "authorized",
-                })
-                self.engine.broadcast_event("auth_approved", {
-                    "auth_req_id": session_id,
-                    "session_id": session_id,
-                    "token": sess.token,
-                    "status": "approved",
-                })
-                return {"status": "ok", "session_id": session_id, "token": sess.token}
+                    "is_paired": is_trusted,
+                }
+                self.engine.broadcast_event("session_authorized", auth_payload)
+                self.engine.broadcast_event("auth_approved", auth_payload)
+                return {"status": "ok", "session_id": session_id, "token": sess.token, "is_paired": is_trusted}
             return {"status": "error", "error": f"Session '{session_id}' not found"}
         else:
             self.security.deny_session(session_id)

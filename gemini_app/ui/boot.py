@@ -259,7 +259,19 @@ class BootScreen(ResponsiveModalScreen[bool]):
             self._dismiss_timer.stop()
             self._dismiss_timer = None
         try:
-            self.dismiss(True)
+            if getattr(self, "app", None) and hasattr(self.app, "screen_stack") and self in self.app.screen_stack:
+                if self.app.screen is self:
+                    self.dismiss(True)
+                else:
+                    try:
+                        self.app.screen_stack.remove(self)
+                        if self._result_callbacks:
+                            cb = self._result_callbacks[-1]
+                            cb(True)
+                    except Exception:
+                        self.dismiss(True)
+            else:
+                self.dismiss(True)
         except Exception:
             pass
 

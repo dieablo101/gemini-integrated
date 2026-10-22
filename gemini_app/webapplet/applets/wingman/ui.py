@@ -813,13 +813,13 @@ def get_wingman_html(
         <div class="modal-icon">🔐</div>
         <div>
           <div class="modal-title">Homebase Passkey Required</div>
-          <div class="modal-subtitle" id="passkeyPromptSubtitle">Authorize interactive bilateral operations for this session.</div>
+          <div class="modal-subtitle" id="passkeyPromptSubtitle">Authorize interactive bilateral operations for this session with your Homebase passkey or system password.</div>
         </div>
       </div>
-      <div class="gate-error" id="modalPasskeyError" style="display: none; margin-bottom: 12px;">Invalid Homebase passkey. Verification denied.</div>
+      <div class="gate-error" id="modalPasskeyError" style="display: none; margin-bottom: 12px;">Invalid passkey or system password. Verification denied.</div>
       <form id="passkeyModalForm" onsubmit="handleSessionPasskeySubmit(event)">
         <div class="input-wrapper">
-          <input type="password" id="modalPasskeyInput" class="gate-input" placeholder="Enter Homebase vault passkey..." autocomplete="current-password" required>
+          <input type="password" id="modalPasskeyInput" class="gate-input" placeholder="Enter Homebase vault passkey or system password..." autocomplete="current-password" required>
           <button type="button" class="btn-toggle-eye" onclick="togglePasskeyVisibility()" title="Show/Hide passkey">👁</button>
         </div>
         <div class="modal-actions">
@@ -859,10 +859,16 @@ def get_wingman_html(
     let sseSource = null;
     let pingInterval = null;
     let authPollingInterval = null;
-    let sessionId = localStorage.getItem('wingman_session_id') || '{auth_req_id}';
-    let sessionToken = localStorage.getItem('wingman_token') || '{session_token}';
+    let isPairedDevice = localStorage.getItem('wingman_paired') === '1';
     let deviceId = localStorage.getItem('wingman_device_id') || ('dev-' + Math.random().toString(36).substring(2, 10));
     localStorage.setItem('wingman_device_id', deviceId);
+
+    // Ephemeral session ID for the active browser tab session
+    let sessionId = sessionStorage.getItem('wingman_session_id') || '{auth_req_id}' || ('sess-' + Math.random().toString(36).substring(2, 10));
+    sessionStorage.setItem('wingman_session_id', sessionId);
+
+    // Only permanently paired devices retain credentials across page reload
+    let sessionToken = isPairedDevice ? (localStorage.getItem('wingman_token') || '') : (sessionStorage.getItem('wingman_token') || '');
 
     /* First-action session passkey state (resets every session/refresh) */
     let isSessionUnlocked = false;
@@ -906,15 +912,24 @@ def get_wingman_html(
       e.preventDefault();
       const input = document.getElementById('modalPasskeyInput');
       const errEl = document.getElementById('modalPasskeyError');
+      const unlockBtn = document.getElementById('modalUnlockBtn');
       const pass = input ? input.value.trim() : '';
       if (!pass) return;
+
+      if (unlockBtn) {{
+        unlockBtn.disabled = true;
+        unlockBtn.textContent = 'Verifying with Homebase...';
+      }}
+      if (errEl) errEl.style.display = 'none';
 
       try {{
         const res = await fetch('/applet/wingman/verify_passkey', {{
           method: 'POST',
           headers: {{
             'Content-Type': 'application/json',
-            'X-Wingman-Token': sessionToken
+            'X-Wingman-Token': sessionToken,
+            'X-Wingman-Session': sessionId,
+            'X-Wingman-Device': deviceId
           }},
           body: JSON.stringify({{
             passkey: pass,
@@ -934,12 +949,14 @@ def get_wingman_html(
           }}
         }} else {{
           if (errEl) {{
-            errEl.textContent = data.error || data.message || "Invalid passkey. Homebase denied authentication.";
+            errEl.textContent = data.error || data.message || "Invalid passkey or system password. Verification denied.";
             errEl.style.display = 'block';
           }}
           if (input) {{
             input.classList.add('error');
             setTimeout(() => input.classList.remove('error'), 600);
+            input.focus();
+            input.select();
           }}
           playTone(220, 'sawtooth', 0.15);
         }}
@@ -948,14 +965,27 @@ def get_wingman_html(
           errEl.textContent = "Passkey check failed: " + err.message;
           errEl.style.display = 'block';
         }}
+      }} finally {{
+        if (unlockBtn) {{
+          unlockBtn.disabled = false;
+          unlockBtn.textContent = 'Unlock Session ↵';
+        }}
       }}
     }}
 
     if (sessionToken) {{
-      localStorage.setItem('wingman_token', sessionToken);
+      if (isPairedDevice) {{
+        localStorage.setItem('wingman_token', sessionToken);
+      }} else {{
+        sessionStorage.setItem('wingman_token', sessionToken);
+      }}
     }}
     if (sessionId) {{
-      localStorage.setItem('wingman_session_id', sessionId);
+      if (isPairedDevice) {{
+        localStorage.setItem('wingman_session_id', sessionId);
+      }} else {{
+        sessionStorage.setItem('wingman_session_id', sessionId);
+      }}
     }}
 
     function playTone(freq = 440, type = 'sine', duration = 0.08) {{
@@ -1009,22 +1039,33 @@ def get_wingman_html(
     /* Session & Auth Handlers */
     async function checkSession() {{
       try {{
-        const res = await fetch('/applet/wingman/session', {{
-          headers: {{
-            'X-Wingman-Token': sessionToken,
-            'X-Wingman-Device': deviceId
-          }}
-        }});
+        const headers = {{
+          'X-Wingman-Device': deviceId,
+          'X-Wingman-Session': sessionId
+        }};
+        if (sessionToken) {{
+          headers['X-Wingman-Token'] = sessionToken;
+        }}
+        const res = await fetch('/applet/wingman/session', {{ headers }});
         const data = await res.json();
         if (data.session_id) {{
           sessionId = data.session_id;
-          localStorage.setItem('wingman_session_id', sessionId);
+          sessionStorage.setItem('wingman_session_id', sessionId);
+          if (isPairedDevice) {{
+            localStorage.setItem('wingman_session_id', sessionId);
+          }}
         }}
         if (data.authenticated) {{
-          unlockUI(data.token);
+          unlockUI(data.token, Boolean(data.is_paired || data.trusted));
         }} else {{
           sessionToken = '';
-          localStorage.removeItem('wingman_token');
+          sessionStorage.removeItem('wingman_token');
+          sessionStorage.removeItem('wingman_session_id');
+          if (!data.trusted && !data.is_paired) {{
+            localStorage.removeItem('wingman_token');
+            localStorage.removeItem('wingman_paired');
+            isPairedDevice = false;
+          }}
           lockUI();
           startAuthPolling();
         }}
@@ -1041,7 +1082,7 @@ def get_wingman_html(
           const data = await res.json();
           if (data.status === 'approved' && data.token) {{
             clearInterval(authPollingInterval);
-            unlockUI(data.token);
+            unlockUI(data.token, Boolean(data.is_paired || data.trusted));
           }} else if (data.status === 'denied') {{
             clearInterval(authPollingInterval);
             lockUI("Access Denied by Mothership Operator");
@@ -1050,14 +1091,22 @@ def get_wingman_html(
       }}, 1500);
     }}
 
-    function unlockUI(token) {{
+    function unlockUI(token, isPaired = false) {{
       if (authPollingInterval) clearInterval(authPollingInterval);
       if (token) {{
         sessionToken = token;
-        localStorage.setItem('wingman_token', token);
+        isPairedDevice = Boolean(isPaired);
+        if (isPairedDevice) {{
+          localStorage.setItem('wingman_token', token);
+          localStorage.setItem('wingman_paired', '1');
+        }} else {{
+          sessionStorage.setItem('wingman_token', token);
+          localStorage.removeItem('wingman_token');
+          localStorage.removeItem('wingman_paired');
+        }}
       }}
       securityGate.style.display = 'none';
-      statusText.textContent = "ONLINE";
+      statusText.textContent = isPaired ? "PAIRED" : "ONLINE (SESSION)";
       statusDot.className = "status-dot";
       playTone(587.33, 'triangle', 0.1);
     }}
@@ -1077,20 +1126,20 @@ def get_wingman_html(
       sseSource = new EventSource(sseUrl);
 
       sseSource.addEventListener("connected", (e) => {{
-        checkSession();
+        // Connected to SSE stream
       }});
 
       sseSource.addEventListener("session_authorized", (e) => {{
         try {{
           const payload = JSON.parse(e.data);
-          unlockUI(payload.token);
+          unlockUI(payload.token, Boolean(payload.is_paired));
         }} catch (err) {{}}
       }});
 
       sseSource.addEventListener("auth_approved", (e) => {{
         try {{
           const payload = JSON.parse(e.data);
-          unlockUI(payload.token);
+          unlockUI(payload.token, Boolean(payload.is_paired));
         }} catch (err) {{}}
       }});
 

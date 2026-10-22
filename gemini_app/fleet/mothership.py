@@ -438,9 +438,21 @@ class MothershipServer:
                                         pending_list = sat.telemetry.get("webapplet", {}).get("pending_auth", [])
                                         for p in pending_list:
                                             rid = p.get("auth_req_id") or p.get("session_id")
-                                            if rid and rid not in self.pending_wingman_auth_requests:
+                                            dev_id = p.get("device_id", "")
+                                            cip = p.get("client_ip", "")
+                                            if cip in ("127.0.0.1", "::1", "localhost", ""):
+                                                cip = addr[0]
+                                            already_queued = any(
+                                                r.get("node_id") == node_id and (
+                                                    (dev_id and r.get("device_id") == dev_id)
+                                                    or (r.get("auth_req_id") or r.get("session_id")) == rid
+                                                )
+                                                for r in self.pending_wingman_auth_requests.values()
+                                            )
+                                            if rid and not already_queued:
                                                 entry = dict(p)
                                                 entry["node_id"] = node_id
+                                                entry["client_ip"] = cip
                                                 self.pending_wingman_auth_requests[rid] = entry
                                                 self._notify_wingman_auth(entry)
                             try:
@@ -572,6 +584,10 @@ class MothershipServer:
                                 if not nid and req_id in self.pending_wingman_auth_requests:
                                     nid = self.pending_wingman_auth_requests[req_id].get("node_id", "local")
                                 resp_payload["result"] = self.authorize_wingman(node_id=nid or "local", auth_req_id=req_id, decision=dec, trust=trust_dev)
+                            elif action == "verify_wingman_passkey":
+                                cand_pass = msg.payload.get("params", {}).get("passkey", "")
+                                resp_payload["valid"] = self.verify_wingman_passkey(cand_pass)
+                                resp_payload["status"] = "ok"
                             reply = FleetMessage(
                                 msg_type=FleetMessage.TYPE_RESPONSE,
                                 node_id="mothership",
@@ -604,18 +620,30 @@ class MothershipServer:
 
                             elif event_name in ("wingman_auth_request", "wingman_access_request"):
                                 req_id = msg.payload.get("session_id") or msg.payload.get("auth_req_id", "")
+                                dev_id = msg.payload.get("device_id", "")
+                                cip = msg.payload.get("client_ip", "")
+                                if cip in ("127.0.0.1", "::1", "localhost", ""):
+                                    cip = addr[0]
                                 auth_entry = {
                                     "node_id": node_id,
                                     "session_id": req_id,
                                     "auth_req_id": req_id,
-                                    "client_ip": msg.payload.get("client_ip", ""),
+                                    "client_ip": cip,
                                     "user_agent": msg.payload.get("user_agent", ""),
-                                    "device_id": msg.payload.get("device_id", ""),
+                                    "device_id": dev_id,
                                     "timestamp": msg.payload.get("timestamp", time.time()),
                                 }
                                 with self.lock:
-                                    self.pending_wingman_auth_requests[req_id] = auth_entry
-                                self._notify_wingman_auth(auth_entry)
+                                    already_queued = any(
+                                        r.get("node_id") == node_id and (
+                                            (dev_id and r.get("device_id") == dev_id)
+                                            or (r.get("auth_req_id") or r.get("session_id")) == req_id
+                                        )
+                                        for r in self.pending_wingman_auth_requests.values()
+                                    )
+                                    if not already_queued:
+                                        self.pending_wingman_auth_requests[req_id] = auth_entry
+                                        self._notify_wingman_auth(auth_entry)
 
                             elif event_name == "wingman_chat_message":
                                 chat_entry = {

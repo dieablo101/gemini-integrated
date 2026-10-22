@@ -57,7 +57,16 @@ if command -v termux-wake-lock >/dev/null 2>&1; then
     termux-wake-lock
 fi
 cd {work_dir} || exit 1
-nohup {python_bin} {script_path} node --mothership {mothership} --interval {interval} > {work_dir}/satellite.log 2>&1 &
+if [ -f "{work_dir}/.venv/bin/python" ]; then
+    PY_BIN="{work_dir}/.venv/bin/python"
+elif [ -f "{work_dir}/venv/bin/python" ]; then
+    PY_BIN="{work_dir}/venv/bin/python"
+elif [ -f "$HOME/.venv/bin/python" ]; then
+    PY_BIN="$HOME/.venv/bin/python"
+else
+    PY_BIN="{python_bin}"
+fi
+nohup $PY_BIN {script_path} node --mothership {mothership} --interval {interval} > {work_dir}/satellite.log 2>&1 &
 """
 
 TERMUX_HOOK_TEMPLATE = """{start_marker}
@@ -67,7 +76,16 @@ if ! pgrep -f 'gemini-integrated.py' >/dev/null 2>&1; then
         termux-wake-lock
     fi
     cd {work_dir} 2>/dev/null || true
-    nohup {python_bin} {script_path} node --mothership {mothership} --interval {interval} > {work_dir}/satellite.log 2>&1 &
+    if [ -f "{work_dir}/.venv/bin/python" ]; then
+        PY_BIN="{work_dir}/.venv/bin/python"
+    elif [ -f "{work_dir}/venv/bin/python" ]; then
+        PY_BIN="{work_dir}/venv/bin/python"
+    elif [ -f "$HOME/.venv/bin/python" ]; then
+        PY_BIN="$HOME/.venv/bin/python"
+    else
+        PY_BIN="{python_bin}"
+    fi
+    nohup $PY_BIN {script_path} node --mothership {mothership} --interval {interval} > {work_dir}/satellite.log 2>&1 &
 fi
 {end_marker}
 """
@@ -82,7 +100,14 @@ esac
 # Launch Gemini background node only if not already running
 if ! pgrep -f 'gemini-integrated.py' >/dev/null 2>&1; then
     cd {work_dir} 2>/dev/null || cd /root/gemini-integrated 2>/dev/null || true
-    nohup {python_bin} {script_path} node --interval {interval} > /var/log/gemini-satellite.log 2>&1 &
+    if [ -f .venv/bin/python ]; then
+        PY_BIN=".venv/bin/python"
+    elif [ -f venv/bin/python ]; then
+        PY_BIN="venv/bin/python"
+    else
+        PY_BIN="{python_bin}"
+    fi
+    nohup $PY_BIN {script_path} node --interval {interval} > /var/log/gemini-satellite.log 2>&1 &
 fi
 {end_marker}
 """

@@ -498,6 +498,14 @@ class TestFleetNodesAndAutostart(unittest.TestCase):
         self.assertEqual(res.get("action"), "restart")
         self.assertIn("RESTART_DISPATCHED", res.get("stdout"))
 
+        # Verify reboot also safely dispatches satellite daemon restart instead of kernel reboot
+        res_reboot = execute_ssh_rescue(node_id="test-rescue-node", action="reboot")
+        self.assertEqual(res_reboot.get("status"), "ok")
+        self.assertEqual(res_reboot.get("action"), "reboot")
+        # Check command passed to ssh includes .venv detection
+        call_args = mock_run.call_args[0][0]
+        self.assertIn(".venv/bin/python", call_args[-1])
+
     def test_detect_init_system(self) -> None:
         init_sys = detect_init_system()
         self.assertIn(init_sys, ["systemd", "openrc", "ish", "launchd", "cron", "unknown"])

@@ -13,14 +13,28 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR" || exit 1
 
+# Detect local virtualenv if present
+if [ -f "$SCRIPT_DIR/.venv/bin/python" ]; then
+    PY_BIN="$SCRIPT_DIR/.venv/bin/python"
+elif [ -f "$SCRIPT_DIR/venv/bin/python" ]; then
+    PY_BIN="$SCRIPT_DIR/venv/bin/python"
+elif [ -n "$VIRTUAL_ENV" ] && [ -f "$VIRTUAL_ENV/bin/python" ]; then
+    PY_BIN="$VIRTUAL_ENV/bin/python"
+elif [ -f "$HOME/.venv/bin/python" ]; then
+    PY_BIN="$HOME/.venv/bin/python"
+else
+    PY_BIN="python3"
+fi
+
 echo "======================================================="
 echo "  🛰️  GEMINI SATELLITE WATCHDOG SUPERVISOR ACTIVE"
 echo "  Directory: $SCRIPT_DIR"
-echo "  Target:    python3 gemini-integrated.py satellite $*"
+echo "  Python:    $PY_BIN"
+echo "  Target:    $PY_BIN gemini-integrated.py satellite $*"
 echo "======================================================="
 
 while true; do
-    python3 gemini-integrated.py satellite "$@"
+    "$PY_BIN" "$SCRIPT_DIR/gemini-integrated.py" satellite "$@"
     EXIT_CODE=$?
 
     if [ "$EXIT_CODE" -eq 42 ]; then

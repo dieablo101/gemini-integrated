@@ -14,7 +14,7 @@ def get_wingman_html(title: str = "Wingman // Gemini Bilateral Portal", port: in
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>{title}</title>
   <style>
     :root {{
@@ -40,16 +40,23 @@ def get_wingman_html(title: str = "Wingman // Gemini Bilateral Portal", port: in
       -webkit-tap-highlight-color: transparent;
     }}
 
+    html, body {{
+      height: 100%;
+      height: 100dvh;
+      width: 100%;
+      overflow: hidden;
+    }}
+
     body {{
       background-color: var(--bg);
       color: var(--text);
       font-family: var(--font-sans);
       font-size: 14px;
       line-height: 1.5;
-      height: 100vh;
       display: flex;
       flex-direction: column;
-      overflow: hidden;
+      touch-action: pan-y;
+      -webkit-text-size-adjust: 100%;
     }}
 
     /* Header */
@@ -127,13 +134,17 @@ def get_wingman_html(title: str = "Wingman // Gemini Bilateral Portal", port: in
 
     /* Stream Feed */
     main {{
-      flex: 1;
+      flex: 1 1 0%;
+      min-height: 0;
       overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+      touch-action: pan-y;
+      overscroll-behavior-y: contain;
       padding: 16px;
+      padding-bottom: 40px;
       display: flex;
       flex-direction: column;
       gap: 14px;
-      scroll-behavior: smooth;
     }}
 
     /* Cards */

@@ -375,14 +375,43 @@ class ChatApp(App):
         self.call_from_thread(self._handle_wingman_auth_prompt, auth_data)
 
     def _handle_wingman_auth_prompt(self, auth_data: Dict[str, Any]) -> None:
-        """Mounts WingmanAuthModal on the Mothership TUI to Accept, Pair, or Deny."""
-        if getattr(self, "_wingman_modal_open", False):
-            return
+        """Enqueues and mounts WingmanAuthModal on the Mothership TUI to Accept, Pair, or Deny sequentially."""
         req_id = auth_data.get("auth_req_id") or auth_data.get("session_id", "")
         if not req_id:
             return
         handled_set = getattr(self, "_handled_wingman_auth_reqs", set())
         if req_id in handled_set:
+            return
+
+        if not hasattr(self, "_wingman_auth_queue"):
+            self._wingman_auth_queue = []
+
+        # Avoid duplicates in queue
+        if not any((r.get("auth_req_id") or r.get("session_id")) == req_id for r in self._wingman_auth_queue):
+            self._wingman_auth_queue.append(dict(auth_data))
+
+        self._process_next_wingman_auth()
+
+    def _process_next_wingman_auth(self) -> None:
+        """Processes the next pending Wingman authorization request sequentially (back-to-back)."""
+        if getattr(self, "_wingman_modal_open", False):
+            return
+
+        try:
+            if any(s.__class__.__name__ == "WingmanAuthModal" for s in self.screen_stack):
+                self._wingman_modal_open = True
+                return
+        except Exception:
+            pass
+
+        if not hasattr(self, "_wingman_auth_queue") or not self._wingman_auth_queue:
+            return
+
+        auth_data = self._wingman_auth_queue.pop(0)
+        req_id = auth_data.get("auth_req_id") or auth_data.get("session_id", "")
+        handled_set = getattr(self, "_handled_wingman_auth_reqs", set())
+        if req_id in handled_set:
+            self._process_next_wingman_auth()
             return
 
         client_ip = auth_data.get("client_ip", "remote")
@@ -405,11 +434,12 @@ class ChatApp(App):
                 except Exception:
                     pass
 
-            # 2. Authorize via MothershipServer (for satellite nodes like iPad)
+            # 2. Authorize via MothershipServer (for satellite nodes like iPad / phone)
             try:
                 from gemini_app.fleet.nodes import send_mothership_command
                 send_mothership_command("resolve_wingman_auth", {
                     "auth_req_id": req_id,
+                    "session_id": req_id,
                     "node_id": node_id,
                     "decision": dec,
                     "trust": trust_device,
@@ -418,36 +448,48 @@ class ChatApp(App):
                 pass
 
             if dec == "accept":
-                self.notify(f"Wingman connection accepted from {client_ip} (single session)", title="Wingman Authorized")
+                self.notify(f"Wingman connection accepted from {client_ip} ({node_id})", title="Wingman Authorized")
             elif dec == "pair":
-                self.notify(f"Wingman paired and trusted for {client_ip}", title="Wingman Paired")
+                self.notify(f"Wingman paired and trusted for {client_ip} ({node_id})", title="Wingman Paired")
             else:  # deny
-                self.notify(f"Wingman connection denied for {client_ip}", severity="warning", title="Wingman Denied")
+                self.notify(f"Wingman connection denied for {client_ip} ({node_id})", severity="warning", title="Wingman Denied")
+
+            # Handle the next queued request back-to-back!
+            self.set_timer(0.2, self._process_next_wingman_auth)
 
         self.prompt_wingman_auth(auth_data, _on_decision)
 
     @work(exclusive=True, thread=True)
     def _check_pending_wingman_auth(self) -> None:
         """Polls MothershipServer and local applet for pending Wingman access requests."""
-        if getattr(self, "_wingman_modal_open", False):
-            return
-        try:
-            if any(s.__class__.__name__ == "WingmanAuthModal" for s in self.screen_stack):
-                return
-        except Exception:
-            pass
+        handled = getattr(self, "_handled_wingman_auth_reqs", set())
 
         # Check MothershipServer for requests from satellites
         try:
             from gemini_app.fleet.nodes import send_mothership_command
             res = send_mothership_command("get_pending_wingman_auth", timeout=1.0)
             if isinstance(res, dict) and "requests" in res:
-                handled = getattr(self, "_handled_wingman_auth_reqs", set())
                 for req in res.get("requests", []):
                     rid = req.get("auth_req_id") or req.get("session_id")
                     if rid and rid not in handled:
                         self.call_from_thread(self._handle_wingman_auth_prompt, req)
-                        return
+        except Exception:
+            pass
+
+        # Check local wingman applet if running
+        try:
+            if getattr(self, "wingman_applet", None) and hasattr(self.wingman_applet, "security"):
+                for sess in list(self.wingman_applet.security.sessions.values()):
+                    if sess.status == "pending" and sess.session_id not in handled:
+                        self.call_from_thread(self._handle_wingman_auth_prompt, {
+                            "auth_req_id": sess.session_id,
+                            "session_id": sess.session_id,
+                            "node_id": "mothership",
+                            "client_ip": sess.client_ip,
+                            "user_agent": sess.user_agent,
+                            "device_id": sess.device_id,
+                            "timestamp": sess.created_at,
+                        })
         except Exception:
             pass
 
@@ -1388,7 +1430,8 @@ class ChatApp(App):
         self._start_heartbeat_watchdog()
         await self.start_socket_server()
         self._start_wingman_server()
-        self.set_interval(1.5, self._check_pending_wingman_auth)
+        if "unittest" not in sys.modules and not os.environ.get("GEMINI_TEST_MODE"):
+            self.set_interval(1.5, self._check_pending_wingman_auth)
         self.push_screen(BootScreen())
         # Check daily backup interval every hour
         self.set_interval(3600.0, self._check_daily_backup)

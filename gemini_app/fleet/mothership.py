@@ -435,6 +435,14 @@ class MothershipServer:
                                     sat.last_active = time.time()
                                     if "telemetry" in msg.payload:
                                         sat.telemetry = msg.payload["telemetry"]
+                                        pending_list = sat.telemetry.get("webapplet", {}).get("pending_auth", [])
+                                        for p in pending_list:
+                                            rid = p.get("auth_req_id") or p.get("session_id")
+                                            if rid and rid not in self.pending_wingman_auth_requests:
+                                                entry = dict(p)
+                                                entry["node_id"] = node_id
+                                                self.pending_wingman_auth_requests[rid] = entry
+                                                self._notify_wingman_auth(entry)
                             try:
                                 save_active_nodes(self.list_nodes())
                             except Exception:
@@ -546,7 +554,16 @@ class MothershipServer:
                                     resp_payload["actions"] = list(self.recent_wingman_actions)
                             elif action in ("get_pending_wingman_auth", "pending_wingman_auth"):
                                 with self.lock:
-                                    resp_payload["requests"] = list(self.pending_wingman_auth_requests.values())
+                                    reqs = dict(self.pending_wingman_auth_requests)
+                                    for nid, sat in self.nodes.items():
+                                        for p in sat.telemetry.get("webapplet", {}).get("pending_auth", []):
+                                            rid = p.get("auth_req_id") or p.get("session_id")
+                                            if rid and rid not in reqs:
+                                                entry = dict(p)
+                                                entry["node_id"] = nid
+                                                reqs[rid] = entry
+                                                self.pending_wingman_auth_requests[rid] = entry
+                                    resp_payload["requests"] = list(reqs.values())
                             elif action in ("resolve_wingman_auth", "authorize_wingman"):
                                 req_id = msg.payload.get("params", {}).get("auth_req_id") or msg.payload.get("params", {}).get("session_id", "")
                                 dec = msg.payload.get("params", {}).get("decision", "accept")
@@ -598,27 +615,7 @@ class MothershipServer:
                                 }
                                 with self.lock:
                                     self.pending_wingman_auth_requests[req_id] = auth_entry
-                                sys.stdout.write(
-                                    f"[mothership] Wingman access requested on node '{node_id}' ({auth_entry['client_ip']}) - req {req_id}\n"
-                                )
-                                for cb in list(self._wingman_auth_callbacks):
-                                    try:
-                                        cb(dict(auth_entry))
-                                    except Exception:
-                                        pass
-                                try:
-                                    from gemini_app.config import SOCKET_PATH
-                                    if SOCKET_PATH.exists():
-                                        s_cli = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                                        s_cli.settimeout(0.5)
-                                        s_cli.connect(str(SOCKET_PATH))
-                                        s_cli.sendall(json.dumps({
-                                            "action": "wingman_auth_prompt",
-                                            "auth_data": auth_entry,
-                                        }).encode("utf-8"))
-                                        s_cli.close()
-                                except Exception:
-                                    pass
+                                self._notify_wingman_auth(auth_entry)
 
                             elif event_name == "wingman_chat_message":
                                 chat_entry = {
@@ -781,6 +778,33 @@ class MothershipServer:
             timeout=timeout + 5.0,
         )
 
+    def _notify_wingman_auth(self, auth_entry: Dict[str, Any]) -> None:
+        """Notifies local UI via UNIX socket and callbacks about pending Wingman authorization."""
+        req_id = auth_entry.get("auth_req_id") or auth_entry.get("session_id", "")
+        nid = auth_entry.get("node_id", "local")
+        cip = auth_entry.get("client_ip", "remote")
+        sys.stdout.write(
+            f"[mothership] Wingman access requested on node '{nid}' ({cip}) - req {req_id}\n"
+        )
+        for cb in list(self._wingman_auth_callbacks):
+            try:
+                cb(dict(auth_entry))
+            except Exception:
+                pass
+        try:
+            from gemini_app.config import SOCKET_PATH
+            if SOCKET_PATH.exists():
+                s_cli = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                s_cli.settimeout(0.5)
+                s_cli.connect(str(SOCKET_PATH))
+                s_cli.sendall(json.dumps({
+                    "action": "wingman_auth_prompt",
+                    "auth_data": auth_entry,
+                }).encode("utf-8"))
+                s_cli.close()
+        except Exception:
+            pass
+
     def on_wingman_auth(self, callback: Callable[[Dict[str, Any]], None]) -> None:
         """Registers a callback for incoming zero-trust Wingman connection requests."""
         with self.lock:
@@ -796,6 +820,9 @@ class MothershipServer:
     ) -> Dict[str, Any]:
         """Sends bilateral authorization decision (accept, trust, or deny) for an auth request."""
         with self.lock:
+            # If node_id was not explicitly specified or is local, look up who owns this auth_req_id
+            if (not node_id or node_id in ("local", "localhost")) and auth_req_id in self.pending_wingman_auth_requests:
+                node_id = self.pending_wingman_auth_requests[auth_req_id].get("node_id", node_id)
             self.pending_wingman_auth_requests.pop(auth_req_id, None)
 
         accepted = (decision in ("accept", "accepted", "trust", "pair"))
@@ -811,7 +838,13 @@ class MothershipServer:
         return self.send_command(
             node_id=node_id,
             action="authorize_wingman",
-            params={"session_id": auth_req_id, "accepted": accepted, "trust_device": trust_device},
+            params={
+                "session_id": auth_req_id,
+                "auth_req_id": auth_req_id,
+                "decision": decision,
+                "accepted": accepted,
+                "trust_device": trust_device,
+            },
             timeout=timeout,
         )
 

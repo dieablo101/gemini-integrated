@@ -166,6 +166,17 @@ def _get_git_info_fast(repo_dir: Optional[Path] = None) -> tuple[str, str]:
 _last_ipad_check = 0.0
 _cached_ipad_files = 0
 _cached_has_mount = False
+_active_wingman: Optional[Any] = None
+
+
+def get_active_wingman() -> Optional[Any]:
+    global _active_wingman
+    return _active_wingman
+
+
+def set_active_wingman(applet: Optional[Any]) -> None:
+    global _active_wingman
+    _active_wingman = applet
 
 
 def check_ipad_mount() -> tuple[bool, int]:
@@ -314,6 +325,14 @@ def collect_telemetry() -> Dict[str, Any]:
     route_info = get_local_route_info()
     mem_total_mb, mem_avail_mb = get_memory_info_fast()
 
+    wingman = get_active_wingman()
+    webapplet_info = {
+        "running": wingman.engine.is_running if (wingman and hasattr(wingman, "engine")) else False,
+        "port": wingman.engine.port if (wingman and hasattr(wingman, "engine")) else 8888,
+        "wingman_active": wingman.is_browser_open() if (wingman and hasattr(wingman, "is_browser_open")) else False,
+        "client_count": wingman.client_count if (wingman and hasattr(wingman, "client_count")) else 0,
+    }
+
     return {
         "hostname": socket.gethostname(),
         "system": uname.system,
@@ -334,6 +353,7 @@ def collect_telemetry() -> Dict[str, Any]:
         "mem_avail_mb": mem_avail_mb,
         "git_commit": git_commit,
         "git_branch": git_branch,
+        "webapplet": webapplet_info,
     }
 
 
@@ -863,6 +883,40 @@ class SatelliteNode:
         self.pending_responses: Dict[str, Any] = {}
         self.response_events: Dict[str, threading.Event] = {}
 
+        self.wingman_applet = None
+        try:
+            from gemini_app.webapplet.applets.wingman import WingmanApplet
+            self.wingman_applet = WingmanApplet(port=8888)
+            set_active_wingman(self.wingman_applet)
+            self.wingman_applet.engine.on_client_state_change(self._on_wingman_state_change)
+        except Exception:
+            pass
+
+    def _on_wingman_state_change(self, is_active: bool, count: int) -> None:
+        """Notifies Mothership immediately when user opens or closes Wingman on localhost."""
+        if not self._running or not self.sock:
+            return
+        try:
+            ev = FleetMessage(
+                msg_type=FleetMessage.TYPE_EVENT,
+                node_id=self.node_id,
+                payload={
+                    "event": "wingman_opened" if is_active else "wingman_closed",
+                    "wingman_active": is_active,
+                    "client_count": count,
+                    "port": self.wingman_applet.engine.port if self.wingman_applet else 8888,
+                },
+            )
+            self.send_message(ev)
+            hb = FleetMessage(
+                msg_type=FleetMessage.TYPE_HEARTBEAT,
+                node_id=self.node_id,
+                payload={"telemetry": collect_telemetry()},
+            )
+            self.send_message(hb)
+        except Exception:
+            pass
+
     def request_mothership_bundle(self, timeout: float = 8.0) -> tuple[Optional[str], Optional[str]]:
         """Requests direct code bundle from Mothership over persistent TCP connection."""
         if not self.sock or not self._running:
@@ -1013,6 +1067,36 @@ class SatelliteNode:
         elif action == "git_check":
             remote = params.get("remote", "https://github.com/dieablo101/gemini-integrated.git")
             result_payload["git_check"] = check_github_repo(remote)
+
+        elif action == "webapplet_push":
+            if self.wingman_applet:
+                title = params.get("title", "Gemini")
+                content = params.get("content", "")
+                actions = params.get("actions", [])
+                accent = params.get("accent", True)
+                cid = self.wingman_applet.push_card(title=title, content=content, actions=actions, accent=accent)
+                result_payload["card_id"] = cid
+            else:
+                result_payload["status"] = "error"
+                result_payload["error"] = "Wingman applet not initialized on node"
+
+        elif action == "biometric_auth":
+            reason = params.get("reason", "Authorize Action")
+            t_out = float(params.get("timeout", 30.0))
+            method = params.get("method", "auto")
+            if is_termux_platform() and method in ("auto", "android_fingerprint"):
+                try:
+                    from gemini_app.fleet.biometrics import authenticate_local_termux
+                    result_payload.update(authenticate_local_termux(reason=reason, timeout=int(t_out)))
+                except Exception as exc:
+                    result_payload["status"] = "error"
+                    result_payload["error"] = str(exc)
+            elif self.wingman_applet:
+                bio_res = self.wingman_applet.request_biometric(reason=reason, timeout=t_out)
+                result_payload.update(bio_res)
+            else:
+                result_payload["status"] = "error"
+                result_payload["error"] = "No biometric provider active on node"
 
         elif action == "fleet_upgrade":
             target_ref = params.get("target_ref", "origin/main")
@@ -1399,6 +1483,12 @@ class SatelliteNode:
 
         self._running = True
 
+        if self.wingman_applet and not self.wingman_applet.engine.is_running:
+            try:
+                self.wingman_applet.start()
+            except Exception:
+                pass
+
         # Acquire Termux wake lock on Android to prevent system Doze from killing socket
         if is_termux_platform():
             acquire_termux_wake_lock()
@@ -1558,6 +1648,11 @@ class SatelliteNode:
     def stop(self) -> None:
         """Closes socket and terminates background worker threads cleanly."""
         self._running = False
+        if self.wingman_applet:
+            try:
+                self.wingman_applet.stop()
+            except Exception:
+                pass
         if is_termux_platform():
             release_termux_wake_lock()
         if self._rendezvous_sock:

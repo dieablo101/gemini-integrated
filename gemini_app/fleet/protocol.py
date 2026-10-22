@@ -37,6 +37,8 @@ class FleetMessage:
     TYPE_ERROR = "error"
     TYPE_TELEMETRY = "telemetry"
     TYPE_EVENT = "event"
+    TYPE_WEBAPPLET_PUSH = "webapplet_push"
+    TYPE_WEBAPPLET_EVENT = "webapplet_event"
     TYPE_CHALLENGE = "challenge"
     TYPE_AUTH = "auth"
     TYPE_AUTH_OK = "auth_ok"

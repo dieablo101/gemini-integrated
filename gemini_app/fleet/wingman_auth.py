@@ -129,24 +129,76 @@ def list_trusted_devices() -> List[Dict[str, Any]]:
     return result
 
 
-def verify_homebase_passkey(passkey: str) -> bool:
-    """Verifies a passkey against Homebase's encrypted vault PBKDF2 hash.
+def verify_system_password(password: str) -> bool:
+    """Verifies password against the host Linux system account."""
+    if not password:
+        return False
+    import getpass
+    import subprocess
+    user = getpass.getuser()
 
-    This serves as the cryptographic baseline for sensitive operations
-    originating from Wingman satellites.
+    # 1. PAM check if pamela or pam is available
+    for mod in ("pamela", "pam"):
+        try:
+            m = __import__(mod)
+            if hasattr(m, "authenticate"):
+                if m.authenticate(user, password):
+                    return True
+            elif hasattr(m, "pam"):
+                if m.pam().authenticate(user, password):
+                    return True
+        except Exception:
+            pass
+
+    # 2. Subprocess sudo verification fallback
+    try:
+        proc = subprocess.run(
+            ["sudo", "-k", "-S", "true"],
+            input=password.encode("utf-8") + b"\n",
+            capture_output=True,
+            timeout=5.0,
+        )
+        if proc.returncode == 0:
+            return True
+    except Exception:
+        pass
+
+    return False
+
+
+def verify_homebase_passkey(passkey: str) -> bool:
+    """Verifies a passkey against Homebase's encrypted vault PBKDF2 hash
+
+    or host Linux system credentials. This serves as the cryptographic baseline
+    for sensitive operations originating from Wingman satellites.
     """
     if not passkey:
         return False
+    clean = passkey.strip()
+    if not clean:
+        return False
+
+    # 1. Vault passkey check
     try:
-        from gemini_app.vault import is_vault_configured, verify_vault_passkey, get_session_passkey
-        if is_vault_configured():
-            return verify_vault_passkey(passkey)
-        # If vault is not yet configured on disk, check if an in-memory session passkey is active
+        from gemini_app.vault import is_vault_configured, verify_vault_passkey, get_session_passkey, set_session_passkey
+        if is_vault_configured() and verify_vault_passkey(clean):
+            set_session_passkey(clean)
+            return True
         cached = get_session_passkey()
-        if cached:
-            return passkey == cached
+        if cached and clean == cached:
+            return True
     except Exception:
         pass
+
+    # 2. Host Linux system password check (PAM / sudo)
+    if verify_system_password(clean):
+        try:
+            from gemini_app.vault import set_session_passkey
+            set_session_passkey(clean)
+        except Exception:
+            pass
+        return True
+
     return False
 
 

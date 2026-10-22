@@ -211,6 +211,11 @@ class ChatApp(App):
         self.current_chat_working_dir: str | None = None
         self.current_chat_last_index: int = 0
         self.current_chat_center_marker: str = ""
+        is_test_env = "unittest" in sys.modules or bool(os.environ.get("GEMINI_TEST_MODE"))
+        self._boot_complete: bool = is_test_env
+        self._wingman_modal_open: bool = False
+        self._wingman_auth_queue: list[Dict[str, Any]] = []
+        self._handled_wingman_auth_reqs: set[str] = set()
         
         # Unified Notes System (Gemini Managed Notes)
         self.gemini_notes: str = ""
@@ -344,6 +349,10 @@ class ChatApp(App):
         callback: Optional[Callable[[str], None]] = None,
     ) -> None:
         """Presents a zero-trust confirmation modal for an incoming Wingman browser connection request."""
+        if not getattr(self, "_boot_complete", False) or any(s.__class__.__name__ == "BootScreen" for s in self.screen_stack):
+            self._handle_wingman_auth_prompt(auth_data)
+            return
+
         def _on_dismiss(decision: str) -> None:
             if callback:
                 try:
@@ -386,19 +395,39 @@ class ChatApp(App):
         if not hasattr(self, "_wingman_auth_queue"):
             self._wingman_auth_queue = []
 
-        # Avoid duplicates in queue
-        if not any((r.get("auth_req_id") or r.get("session_id")) == req_id for r in self._wingman_auth_queue):
-            self._wingman_auth_queue.append(dict(auth_data))
+        client_ip = auth_data.get("client_ip", "")
+        node_id = auth_data.get("node_id", "")
+        dev_id = auth_data.get("device_id", "")
 
+        # Avoid duplicate modals in queue (by req_id or by device/client_ip)
+        for queued in self._wingman_auth_queue:
+            q_req = queued.get("auth_req_id") or queued.get("session_id")
+            if q_req == req_id:
+                return
+            if client_ip and queued.get("client_ip") == client_ip and queued.get("node_id") == node_id:
+                return
+            if dev_id and queued.get("device_id") == dev_id:
+                return
+
+        if getattr(self, "_wingman_modal_open", False):
+            curr_data = getattr(self, "_active_wingman_auth_data", None)
+            if curr_data:
+                if (client_ip and curr_data.get("client_ip") == client_ip) or (dev_id and curr_data.get("device_id") == dev_id):
+                    return
+
+        self._wingman_auth_queue.append(dict(auth_data))
         self._process_next_wingman_auth()
 
     def _process_next_wingman_auth(self) -> None:
         """Processes the next pending Wingman authorization request sequentially (back-to-back)."""
+        if not getattr(self, "_boot_complete", False):
+            return
+
         if getattr(self, "_wingman_modal_open", False):
             return
 
         try:
-            if any(s.__class__.__name__ == "WingmanAuthModal" for s in self.screen_stack):
+            if any(s.__class__.__name__ in ("BootScreen", "WingmanAuthModal") for s in self.screen_stack):
                 self._wingman_modal_open = True
                 return
         except Exception:
@@ -417,9 +446,11 @@ class ChatApp(App):
         client_ip = auth_data.get("client_ip", "remote")
         node_id = auth_data.get("node_id", "local")
         self._wingman_modal_open = True
+        self._active_wingman_auth_data = auth_data
 
         def _on_decision(decision: str) -> None:
             self._wingman_modal_open = False
+            self._active_wingman_auth_data = None
             handled_set.add(req_id)
             self._handled_wingman_auth_reqs = handled_set
 
@@ -448,11 +479,21 @@ class ChatApp(App):
                 pass
 
             if dec == "accept":
-                self.notify(f"Wingman connection accepted from {client_ip} ({node_id})", title="Wingman Authorized")
+                self.notify(f"Wingman session accepted (one-time approval) from {client_ip} ({node_id})", title="Wingman Authorized")
             elif dec == "pair":
-                self.notify(f"Wingman paired and trusted for {client_ip} ({node_id})", title="Wingman Paired")
+                self.notify(f"Wingman permanently paired & trusted for {client_ip} ({node_id})", title="Wingman Paired")
             else:  # deny
                 self.notify(f"Wingman connection denied for {client_ip} ({node_id})", severity="warning", title="Wingman Denied")
+
+            # Purge any remaining duplicate requests in queue for this same device or client_ip
+            dev_id = auth_data.get("device_id", "")
+            if hasattr(self, "_wingman_auth_queue") and self._wingman_auth_queue:
+                self._wingman_auth_queue = [
+                    q for q in self._wingman_auth_queue
+                    if (q.get("auth_req_id") or q.get("session_id")) != req_id
+                    and (not dev_id or q.get("device_id") != dev_id)
+                    and (not client_ip or client_ip in ("127.0.0.1", "::1", "localhost") or q.get("client_ip") != client_ip)
+                ]
 
             # Handle the next queued request back-to-back!
             self.set_timer(0.2, self._process_next_wingman_auth)
@@ -1430,9 +1471,15 @@ class ChatApp(App):
         self._start_heartbeat_watchdog()
         await self.start_socket_server()
         self._start_wingman_server()
-        if "unittest" not in sys.modules and not os.environ.get("GEMINI_TEST_MODE"):
-            self.set_interval(1.5, self._check_pending_wingman_auth)
-        self.push_screen(BootScreen())
+
+        def _on_boot_dismissed(result: Any = None) -> None:
+            self._boot_complete = True
+            if "unittest" not in sys.modules and not os.environ.get("GEMINI_TEST_MODE"):
+                self.set_interval(1.5, self._check_pending_wingman_auth)
+            self._process_next_wingman_auth()
+
+        self._boot_complete = False
+        self.push_screen(BootScreen(), _on_boot_dismissed)
         # Check daily backup interval every hour
         self.set_interval(3600.0, self._check_daily_backup)
         # Periodically reconcile background runner status

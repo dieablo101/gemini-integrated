@@ -329,12 +329,16 @@ def collect_telemetry() -> Dict[str, Any]:
     pending_auth_list = []
     if wingman and hasattr(wingman, "security"):
         try:
+            node_lan_ip = route_info.get("local_ip") or get_local_lan_ip() or "127.0.0.1"
             for sess in list(wingman.security.sessions.values()):
                 if getattr(sess, "status", "") == "pending":
+                    cip = getattr(sess, "client_ip", "")
+                    if cip in ("127.0.0.1", "::1", "localhost", ""):
+                        cip = node_lan_ip
                     pending_auth_list.append({
                         "auth_req_id": sess.session_id,
                         "session_id": sess.session_id,
-                        "client_ip": getattr(sess, "client_ip", ""),
+                        "client_ip": cip,
                         "user_agent": getattr(sess, "user_agent", ""),
                         "device_id": getattr(sess, "device_id", ""),
                         "timestamp": getattr(sess, "created_at", time.time()),
@@ -959,6 +963,7 @@ class SatelliteNode:
             from gemini_app.webapplet.applets.wingman import WingmanApplet
             self.wingman_applet = WingmanApplet(port=8888, node_id=self.node_id)
             set_active_wingman(self.wingman_applet)
+            self.wingman_applet.set_passkey_verifier(self.verify_passkey_with_mothership)
             self.wingman_applet.engine.on_client_state_change(self._on_wingman_state_change)
             self.wingman_applet.on_action(self._on_wingman_card_action)
             self.wingman_applet.on_chat_message(self._on_wingman_chat_message)
@@ -966,12 +971,48 @@ class SatelliteNode:
         except Exception:
             pass
 
+    def verify_passkey_with_mothership(self, passkey: str, timeout: float = 6.0) -> bool:
+        """Verifies passkey with Mothership over persistent TCP connection."""
+        if not self._running or not self.sock:
+            # Fallback to local vault if mothership is unreachable
+            try:
+                from gemini_app.fleet.wingman_auth import verify_homebase_passkey
+                return verify_homebase_passkey(passkey)
+            except Exception:
+                return False
+        req_id = f"vpass-{int(time.time() * 1000)}"
+        ev = threading.Event()
+        self.response_events[req_id] = ev
+        try:
+            msg = FleetMessage(
+                msg_type=FleetMessage.TYPE_COMMAND,
+                node_id=self.node_id,
+                payload={"action": "verify_wingman_passkey", "params": {"passkey": passkey}},
+                msg_id=req_id,
+            )
+            if not self.send_message(msg):
+                return False
+            if ev.wait(timeout):
+                resp = self.pending_responses.pop(req_id, {})
+                return bool(resp.get("valid", False))
+        except Exception:
+            pass
+        finally:
+            self.response_events.pop(req_id, None)
+            self.pending_responses.pop(req_id, None)
+        return False
+
     def _on_wingman_pending_session(self, session: Any) -> None:
         """Dispatches an authorization request event to the Mothership."""
         if not self._running or not self.sock:
             return
+        device_ip = getattr(session, "client_ip", "127.0.0.1")
+        if device_ip in ("127.0.0.1", "::1", "localhost", ""):
+            route = get_local_route_info()
+            device_ip = route.get("local_ip") or get_local_lan_ip() or "127.0.0.1"
+
         if self.hud:
-            self.hud.show_toast(f"Wingman access requested from {session.client_ip}...", duration=5.0)
+            self.hud.show_toast(f"Wingman access requested from {device_ip}...", duration=5.0)
         try:
             ev = FleetMessage(
                 msg_type=FleetMessage.TYPE_EVENT,
@@ -979,10 +1020,11 @@ class SatelliteNode:
                 payload={
                     "event": "wingman_access_request",
                     "session_id": session.session_id,
+                    "auth_req_id": session.session_id,
                     "node_id": self.node_id,
-                    "client_ip": session.client_ip,
-                    "user_agent": session.user_agent,
-                    "device_id": session.device_id,
+                    "client_ip": device_ip,
+                    "user_agent": getattr(session, "user_agent", ""),
+                    "device_id": getattr(session, "device_id", ""),
                     "timestamp": time.time(),
                 },
             )

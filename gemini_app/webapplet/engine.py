@@ -188,6 +188,29 @@ class CustomThreadingHTTPServer(ThreadingHTTPServer):
         super().__init__(server_address, RequestHandlerClass)
 
 
+class Port80RedirectHandler(BaseHTTPRequestHandler):
+    """Bounces any port 80 requests to the target WebApplet port (e.g. 8888)."""
+
+    def log_message(self, format: str, *args: Any) -> None:
+        pass
+
+    def do_GET(self) -> None:
+        host_hdr = self.headers.get("Host", "127.0.0.1").split(":")[0]
+        target_port = getattr(self.server, "target_port", 8888)
+        self.send_response(HTTPStatus.FOUND)
+        self.send_header("Location", f"http://{host_hdr}:{target_port}{self.path}")
+        self.end_headers()
+
+    def do_POST(self) -> None:
+        self.do_GET()
+
+
+class Port80RedirectServer(ThreadingHTTPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+    target_port: int = 8888
+
+
 class WebAppletEngine:
     """Multi-instance capable WebApplet HTTP/SSE runtime.
 
@@ -197,14 +220,16 @@ class WebAppletEngine:
     def __init__(
         self,
         name: str = "webapplet",
-        host: str = "127.0.0.1",
+        host: str = "0.0.0.0",
         port: int = 8888,
         sse_path: str = "/events",
+        enable_port_80_redirect: bool = True,
     ) -> None:
         self.name = name
         self.host = host
         self.port = port
         self.sse_path = sse_path
+        self.enable_port_80_redirect = enable_port_80_redirect
 
         self.get_routes: Dict[str, Callable[..., Any]] = {}
         self.post_routes: Dict[str, Callable[..., Any]] = {}
@@ -215,6 +240,8 @@ class WebAppletEngine:
         self._sse_lock = threading.Lock()
         self._server: Optional[CustomThreadingHTTPServer] = None
         self._thread: Optional[threading.Thread] = None
+        self._port_80_server: Optional[Port80RedirectServer] = None
+        self._port_80_thread: Optional[threading.Thread] = None
         self.is_running = False
 
         self._last_client_seen: float = 0.0
@@ -309,6 +336,24 @@ class WebAppletEngine:
                 daemon=True,
             )
             self._thread.start()
+
+            # Attempt to launch port 80 redirect if privileged / available (e.g. root in iSH)
+            if self.enable_port_80_redirect and self.port != 80 and self.port != 0:
+                try:
+                    s80 = Port80RedirectServer((self.host, 80), Port80RedirectHandler)
+                    s80.target_port = self.port
+                    self._port_80_server = s80
+                    t80 = threading.Thread(
+                        target=s80.serve_forever,
+                        name=f"webapplet-port80-redirect-{self.port}",
+                        daemon=True,
+                    )
+                    self._port_80_thread = t80
+                    t80.start()
+                except Exception:
+                    self._port_80_server = None
+                    self._port_80_thread = None
+
             return True
         except Exception as exc:
             self.is_running = False
@@ -317,6 +362,15 @@ class WebAppletEngine:
     def stop(self) -> None:
         """Gracefully shuts down the server and cleans up threads."""
         self.is_running = False
+        if self._port_80_server:
+            try:
+                self._port_80_server.shutdown()
+                self._port_80_server.server_close()
+            except Exception:
+                pass
+            self._port_80_server = None
+            self._port_80_thread = None
+
         if self._server:
             try:
                 self._server.shutdown()

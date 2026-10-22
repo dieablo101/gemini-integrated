@@ -18,8 +18,8 @@ from gemini_app.webapplet.engine import WebAppletEngine
 class WingmanApplet:
     """Manages Wingman routes, live cards, and biometric challenges."""
 
-    def __init__(self, engine: Optional[WebAppletEngine] = None, port: int = 8888) -> None:
-        self.engine = engine or WebAppletEngine(name="wingman", host="127.0.0.1", port=port, sse_path="/applet/wingman/events")
+    def __init__(self, engine: Optional[WebAppletEngine] = None, host: str = "0.0.0.0", port: int = 8888) -> None:
+        self.engine = engine or WebAppletEngine(name="wingman", host=host, port=port, sse_path="/applet/wingman/events")
         self._action_callbacks: List[Callable[[str, str, Dict[str, Any]], None]] = []
         self._pending_biometrics: Dict[str, threading.Event] = {}
         self._biometric_results: Dict[str, Dict[str, Any]] = {}

@@ -326,11 +326,28 @@ def collect_telemetry() -> Dict[str, Any]:
     mem_total_mb, mem_avail_mb = get_memory_info_fast()
 
     wingman = get_active_wingman()
+    pending_auth_list = []
+    if wingman and hasattr(wingman, "security"):
+        try:
+            for sess in list(wingman.security.sessions.values()):
+                if getattr(sess, "status", "") == "pending":
+                    pending_auth_list.append({
+                        "auth_req_id": sess.session_id,
+                        "session_id": sess.session_id,
+                        "client_ip": getattr(sess, "client_ip", ""),
+                        "user_agent": getattr(sess, "user_agent", ""),
+                        "device_id": getattr(sess, "device_id", ""),
+                        "timestamp": getattr(sess, "created_at", time.time()),
+                    })
+        except Exception:
+            pass
+
     webapplet_info = {
         "running": wingman.engine.is_running if (wingman and hasattr(wingman, "engine")) else False,
         "port": wingman.engine.port if (wingman and hasattr(wingman, "engine")) else 8888,
         "wingman_active": wingman.is_browser_open() if (wingman and hasattr(wingman, "is_browser_open")) else False,
         "client_count": wingman.client_count if (wingman and hasattr(wingman, "client_count")) else 0,
+        "pending_auth": pending_auth_list,
     }
 
     return {

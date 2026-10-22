@@ -385,6 +385,75 @@ class TestWingmanSecurity(unittest.TestCase):
         finally:
             applet.stop()
 
+    def test_back_to_back_wingman_auth_queue(self) -> None:
+        """Tests that concurrent incoming auth requests (e.g. phone + ipad) are processed sequentially back-to-back."""
+        from gemini_app.ui.app import ChatApp
+
+        app = ChatApp()
+        app._wingman_modal_open = False
+        app._wingman_auth_queue = []
+        app._handled_wingman_auth_reqs = set()
+
+        req1 = {
+            "node_id": "phone-android",
+            "session_id": "sess-phone-1",
+            "auth_req_id": "sess-phone-1",
+            "client_ip": "192.168.1.179",
+            "user_agent": "Chrome Mobile",
+            "timestamp": time.time(),
+        }
+        req2 = {
+            "node_id": "ipad-ish",
+            "session_id": "sess-ipad-2",
+            "auth_req_id": "sess-ipad-2",
+            "client_ip": "192.168.1.38",
+            "user_agent": "Mobile Safari",
+            "timestamp": time.time(),
+        }
+
+        modal_prompts = []
+
+        def mock_prompt_wingman_auth(auth_data, callback):
+            modal_prompts.append((dict(auth_data), callback))
+
+        app.prompt_wingman_auth = mock_prompt_wingman_auth
+        app.notify = MagicMock()
+        timers_created = []
+        app.set_timer = lambda delay, cb: timers_created.append(cb)
+
+        # 1. Both requests arrive at almost the exact same instant
+        app._handle_wingman_auth_prompt(req1)
+        app._handle_wingman_auth_prompt(req2)
+
+        # 2. Only the first modal should be mounted; second request waits in queue
+        self.assertEqual(len(modal_prompts), 1)
+        active_auth, callback1 = modal_prompts[0]
+        self.assertEqual(active_auth["session_id"], "sess-phone-1")
+        self.assertTrue(app._wingman_modal_open)
+        self.assertEqual(len(app._wingman_auth_queue), 1)
+        self.assertEqual(app._wingman_auth_queue[0]["session_id"], "sess-ipad-2")
+
+        # 3. Operator resolves the first modal (Accept [A])
+        callback1("accept")
+        self.assertFalse(app._wingman_modal_open)
+        self.assertIn("sess-phone-1", app._handled_wingman_auth_reqs)
+        self.assertTrue(len(timers_created) > 0)
+
+        # 4. Timer triggers processing of the queued second modal (back-to-back!)
+        timer_cb = timers_created.pop(0)
+        timer_cb()
+
+        self.assertEqual(len(modal_prompts), 2)
+        second_auth, callback2 = modal_prompts[1]
+        self.assertEqual(second_auth["session_id"], "sess-ipad-2")
+        self.assertTrue(app._wingman_modal_open)
+        self.assertEqual(len(app._wingman_auth_queue), 0)
+
+        # 5. Operator resolves second modal (Pair [P])
+        callback2("pair")
+        self.assertFalse(app._wingman_modal_open)
+        self.assertIn("sess-ipad-2", app._handled_wingman_auth_reqs)
+
 
 if __name__ == "__main__":
     unittest.main()

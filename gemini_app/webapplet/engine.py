@@ -7,11 +7,13 @@ Supports running multiple isolated servers concurrently on different ports
 
 from __future__ import annotations
 
+import errno
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import queue
 import socket
+import sys
 import threading
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -25,78 +27,124 @@ class WebAppletHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:
         pass
 
+    def handle(self) -> None:
+        """Wraps request handling loop to catch client disconnects cleanly."""
+        try:
+            super().handle()
+        except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
+            pass
+        except OSError as exc:
+            if exc.errno in (errno.ECONNRESET, errno.EPIPE, errno.ECONNABORTED, errno.ENOTCONN):
+                pass
+            else:
+                raise
+
+    def finish(self) -> None:
+        """Ensures socket flush on disconnect does not raise unhandled exceptions."""
+        try:
+            if not self.wfile.closed:
+                try:
+                    self.wfile.flush()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            super().finish()
+        except Exception:
+            pass
+
     @property
     def engine(self) -> WebAppletEngine:
         return self.server.engine  # type: ignore
 
     def do_OPTIONS(self) -> None:
         """Permissive CORS pre-flight support for local node browsers."""
-        self.send_response(HTTPStatus.NO_CONTENT)
-        self._send_cors_headers()
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
-        self.end_headers()
+        try:
+            self.send_response(HTTPStatus.NO_CONTENT)
+            self._send_cors_headers()
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+            self.end_headers()
+        except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError, OSError):
+            self.close_connection = True
 
     def do_GET(self) -> None:
-        self.engine.record_client_activity(self.client_address[0])
-        parsed = urllib.parse.urlparse(self.path)
-        path = parsed.path
-        query = urllib.parse.parse_qs(parsed.query)
+        try:
+            self.engine.record_client_activity(self.client_address[0])
+            parsed = urllib.parse.urlparse(self.path)
+            path = parsed.path
+            query = urllib.parse.parse_qs(parsed.query)
 
-        # 1. Check SSE stream route
-        if path == self.engine.sse_path:
-            self._handle_sse_stream()
-            return
-
-        # 2. Match exact registered GET routes
-        handler = self.engine.get_routes.get(path)
-        if handler:
-            self._execute_route_handler(handler, query, None)
-            return
-
-        # 3. Match prefix route handlers
-        for prefix, p_handler in self.engine.prefix_get_routes.items():
-            if path.startswith(prefix):
-                self._execute_route_handler(p_handler, query, None)
+            # 1. Check SSE stream route
+            if path == self.engine.sse_path:
+                self._handle_sse_stream()
                 return
 
-        # 4. Default 404
-        self.send_response(HTTPStatus.NOT_FOUND)
-        self._send_cors_headers()
-        self.send_header("Content-Type", "application/json")
-        self.end_headers()
-        self.wfile.write(json.dumps({"error": f"Path not found: {path}"}).encode("utf-8"))
+            # 2. Match exact registered GET routes
+            handler = self.engine.get_routes.get(path)
+            if handler:
+                self._execute_route_handler(handler, query, None)
+                return
+
+            # 3. Match prefix route handlers
+            for prefix, p_handler in self.engine.prefix_get_routes.items():
+                if path.startswith(prefix):
+                    self._execute_route_handler(p_handler, query, None)
+                    return
+
+            # 4. Default 404
+            self.send_response(HTTPStatus.NOT_FOUND)
+            self._send_cors_headers()
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": f"Path not found: {path}"}).encode("utf-8"))
+        except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
+            self.close_connection = True
+        except OSError as exc:
+            if exc.errno in (errno.ECONNRESET, errno.EPIPE, errno.ECONNABORTED, errno.ENOTCONN):
+                self.close_connection = True
+            else:
+                raise
 
     def do_POST(self) -> None:
-        self.engine.record_client_activity(self.client_address[0])
-        parsed = urllib.parse.urlparse(self.path)
-        path = parsed.path
-        query = urllib.parse.parse_qs(parsed.query)
+        try:
+            self.engine.record_client_activity(self.client_address[0])
+            parsed = urllib.parse.urlparse(self.path)
+            path = parsed.path
+            query = urllib.parse.parse_qs(parsed.query)
 
-        content_length = int(self.headers.get("Content-Length", 0))
-        body_bytes = self.rfile.read(content_length) if content_length > 0 else b""
-        body: Any = {}
-        if body_bytes:
-            try:
-                body = json.loads(body_bytes.decode("utf-8"))
-            except Exception:
-                body = body_bytes
+            content_length = int(self.headers.get("Content-Length", 0))
+            body_bytes = self.rfile.read(content_length) if content_length > 0 else b""
+            body: Any = {}
+            if body_bytes:
+                try:
+                    body = json.loads(body_bytes.decode("utf-8"))
+                except Exception:
+                    body = body_bytes
 
-        handler = self.engine.post_routes.get(path)
-        if handler:
-            self._execute_route_handler(handler, query, body)
-            return
-
-        for prefix, p_handler in self.engine.prefix_post_routes.items():
-            if path.startswith(prefix):
-                self._execute_route_handler(p_handler, query, body)
+            handler = self.engine.post_routes.get(path)
+            if handler:
+                self._execute_route_handler(handler, query, body)
                 return
 
-        self.send_response(HTTPStatus.NOT_FOUND)
-        self._send_cors_headers()
-        self.send_header("Content-Type", "application/json")
-        self.end_headers()
-        self.wfile.write(json.dumps({"error": f"POST path not found: {path}"}).encode("utf-8"))
+            for prefix, p_handler in self.engine.prefix_post_routes.items():
+                if path.startswith(prefix):
+                    self._execute_route_handler(p_handler, query, body)
+                    return
+
+            self.send_response(HTTPStatus.NOT_FOUND)
+            self._send_cors_headers()
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": f"POST path not found: {path}"}).encode("utf-8"))
+        except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
+            self.close_connection = True
+        except OSError as exc:
+            if exc.errno in (errno.ECONNRESET, errno.EPIPE, errno.ECONNABORTED, errno.ENOTCONN):
+                self.close_connection = True
+            else:
+                raise
 
     def _execute_route_handler(self, handler: Callable[..., Any], query: Dict[str, List[str]], body: Any) -> None:
         try:
@@ -132,22 +180,37 @@ class WebAppletHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(data_bytes)))
             self.end_headers()
             self.wfile.write(data_bytes)
+        except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
+            self.close_connection = True
+            return
+        except OSError as exc:
+            if exc.errno in (errno.ECONNRESET, errno.EPIPE, errno.ECONNABORTED, errno.ENOTCONN):
+                self.close_connection = True
+                return
+            raise
         except Exception as exc:
-            self.send_response(HTTPStatus.INTERNAL_SERVER_ERROR)
-            self._send_cors_headers()
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps({"error": str(exc)}).encode("utf-8"))
+            try:
+                self.send_response(HTTPStatus.INTERNAL_SERVER_ERROR)
+                self._send_cors_headers()
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": str(exc)}).encode("utf-8"))
+            except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError, OSError):
+                self.close_connection = True
 
     def _handle_sse_stream(self) -> None:
         """Streams Server-Sent Events (SSE) to connected browser tab."""
-        self.send_response(HTTPStatus.OK)
-        self._send_cors_headers()
-        self.send_header("Content-Type", "text/event-stream")
-        self.send_header("Cache-Control", "no-cache")
-        self.send_header("Connection", "keep-alive")
-        self.send_header("X-Accel-Buffering", "no")
-        self.end_headers()
+        self.close_connection = True
+        try:
+            self.send_response(HTTPStatus.OK)
+            self._send_cors_headers()
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self.send_header("X-Accel-Buffering", "no")
+            self.end_headers()
+        except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError, OSError):
+            return
 
         client_q: queue.Queue[Tuple[str, str]] = queue.Queue(maxsize=100)
         self.engine.register_sse_client(client_q)
@@ -157,7 +220,7 @@ class WebAppletHandler(BaseHTTPRequestHandler):
             self.wfile.write(init_msg.encode("utf-8"))
             self.wfile.flush()
 
-            while self.engine.is_running:
+            while self.engine.is_running and not self.close_connection:
                 try:
                     event_type, event_data = client_q.get(timeout=2.0)
                     chunk = f"event: {event_type}\ndata: {event_data}\n\n"
@@ -167,9 +230,10 @@ class WebAppletHandler(BaseHTTPRequestHandler):
                     # Send periodic keepalive comment
                     self.wfile.write(b": keepalive\n\n")
                     self.wfile.flush()
-        except (BrokenPipeError, ConnectionResetError, OSError):
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
             pass
         finally:
+            self.close_connection = True
             self.engine.unregister_sse_client(client_q)
 
     def _send_cors_headers(self) -> None:
@@ -187,6 +251,21 @@ class CustomThreadingHTTPServer(ThreadingHTTPServer):
         self.engine = engine
         super().__init__(server_address, RequestHandlerClass)
 
+    def handle_error(self, request: Any, client_address: Any) -> None:
+        """Suppresses normal client network disconnections without dumping tracebacks to stderr."""
+        exc_type, exc_val, _ = sys.exc_info()
+        if exc_type in (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
+            return
+        if isinstance(exc_val, OSError) and exc_val.errno in (
+            errno.ECONNRESET,
+            errno.EPIPE,
+            errno.ECONNABORTED,
+            errno.ENOTCONN,
+            errno.ETIMEDOUT,
+        ):
+            return
+        super().handle_error(request, client_address)
+
 
 class Port80RedirectHandler(BaseHTTPRequestHandler):
     """Bounces any port 80 requests to the target WebApplet port (e.g. 8888)."""
@@ -194,12 +273,40 @@ class Port80RedirectHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:
         pass
 
+    def handle(self) -> None:
+        try:
+            super().handle()
+        except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
+            pass
+        except OSError as exc:
+            if exc.errno in (errno.ECONNRESET, errno.EPIPE, errno.ECONNABORTED, errno.ENOTCONN):
+                pass
+            else:
+                raise
+
+    def finish(self) -> None:
+        try:
+            if not self.wfile.closed:
+                try:
+                    self.wfile.flush()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            super().finish()
+        except Exception:
+            pass
+
     def do_GET(self) -> None:
-        host_hdr = self.headers.get("Host", "127.0.0.1").split(":")[0]
-        target_port = getattr(self.server, "target_port", 8888)
-        self.send_response(HTTPStatus.FOUND)
-        self.send_header("Location", f"http://{host_hdr}:{target_port}{self.path}")
-        self.end_headers()
+        try:
+            host_hdr = self.headers.get("Host", "127.0.0.1").split(":")[0]
+            target_port = getattr(self.server, "target_port", 8888)
+            self.send_response(HTTPStatus.FOUND)
+            self.send_header("Location", f"http://{host_hdr}:{target_port}{self.path}")
+            self.end_headers()
+        except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError, OSError):
+            self.close_connection = True
 
     def do_POST(self) -> None:
         self.do_GET()
@@ -209,6 +316,21 @@ class Port80RedirectServer(ThreadingHTTPServer):
     allow_reuse_address = True
     daemon_threads = True
     target_port: int = 8888
+
+    def handle_error(self, request: Any, client_address: Any) -> None:
+        """Suppresses normal client network disconnections without dumping tracebacks to stderr."""
+        exc_type, exc_val, _ = sys.exc_info()
+        if exc_type in (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
+            return
+        if isinstance(exc_val, OSError) and exc_val.errno in (
+            errno.ECONNRESET,
+            errno.EPIPE,
+            errno.ECONNABORTED,
+            errno.ENOTCONN,
+            errno.ETIMEDOUT,
+        ):
+            return
+        super().handle_error(request, client_address)
 
 
 class WebAppletEngine:

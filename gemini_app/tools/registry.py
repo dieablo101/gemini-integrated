@@ -284,6 +284,8 @@ class ToolRegistry:
                     ],
                     "accent": True,
                 })
+            elif act in ("actions", "wingman_actions", "get_actions", "poll_actions"):
+                return send_mothership_command("get_wingman_actions", {})
             elif act in ("biometric", "biometric_auth", "webauthn"):
                 target = node_id or "ipad-ish-localhost"
                 return send_mothership_command("biometric_auth", {

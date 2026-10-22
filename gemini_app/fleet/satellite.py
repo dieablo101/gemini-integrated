@@ -889,6 +889,27 @@ class SatelliteNode:
             self.wingman_applet = WingmanApplet(port=8888)
             set_active_wingman(self.wingman_applet)
             self.wingman_applet.engine.on_client_state_change(self._on_wingman_state_change)
+            self.wingman_applet.on_action(self._on_wingman_card_action)
+        except Exception:
+            pass
+
+    def _on_wingman_card_action(self, card_id: str, action: str, body: Dict[str, Any]) -> None:
+        """Transmits user button click from Wingman UI back to Mothership."""
+        if not self._running or not self.sock:
+            return
+        try:
+            ev = FleetMessage(
+                msg_type=FleetMessage.TYPE_EVENT,
+                node_id=self.node_id,
+                payload={
+                    "event": "wingman_action",
+                    "card_id": card_id,
+                    "action": action,
+                    "body": body,
+                    "timestamp": time.time(),
+                },
+            )
+            self.send_message(ev)
         except Exception:
             pass
 

@@ -69,6 +69,28 @@ class TestWebAppletEngine(unittest.TestCase):
         self.assertTrue(self.engine1.is_client_active(window_seconds=5.0))
         self.assertGreaterEqual(self.engine1.get_active_client_count(), 1)
 
+    def test_client_abrupt_disconnect_suppression(self) -> None:
+        """Verifies abrupt client TCP reset (Errno 104 / ECONNRESET) is silently absorbed."""
+        import socket
+        import struct
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.connect(("127.0.0.1", self.engine1.port))
+        req = f"GET {self.engine1.sse_path} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"
+        s.sendall(req.encode())
+        s.recv(64)
+        # Enable SO_LINGER with 0 timeout to force hard TCP RST packet
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+        s.close()
+
+        # Broadcast event across closed socket
+        self.engine1.broadcast_event("test_event", {"data": "ping"})
+        time.sleep(0.1)
+        # Verify server remains healthy and accepts new requests
+        self.engine1.register_get("/alive", lambda h, q: "ok")
+        url = f"http://127.0.0.1:{self.engine1.port}/alive"
+        with urllib.request.urlopen(url, timeout=2.0) as resp:
+            self.assertEqual(resp.read().decode(), "ok")
+
 
 class TestWingmanAndInspectorApplets(unittest.TestCase):
     """Tests Wingman portal and Inspector applets."""

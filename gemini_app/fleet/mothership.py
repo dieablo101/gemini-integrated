@@ -96,6 +96,9 @@ class MothershipServer:
         self._node_upgrade_attempts: Dict[str, tuple[str, int]] = {}
         self.local_wingman = None
         self.local_inspector = None
+        self.recent_wingman_actions: List[Dict[str, Any]] = []
+        self._action_events: Dict[str, threading.Event] = {}
+        self._action_results: Dict[str, Dict[str, Any]] = {}
 
     def start(self) -> bool:
         """Binds and starts accepting incoming satellite node connections."""
@@ -522,6 +525,9 @@ class MothershipServer:
                                     reason=b_reason,
                                     timeout=b_timeout,
                                 )
+                            elif action in ("get_wingman_actions", "wingman_actions"):
+                                with self.lock:
+                                    resp_payload["actions"] = list(self.recent_wingman_actions)
                             reply = FleetMessage(
                                 msg_type=FleetMessage.TYPE_RESPONSE,
                                 node_id="mothership",
@@ -531,6 +537,26 @@ class MothershipServer:
                             with self.lock:
                                 if node_id in self.nodes:
                                     self.nodes[node_id].send(reply)
+
+                        elif msg.type == FleetMessage.TYPE_EVENT:
+                            event_name = msg.payload.get("event", "")
+                            if event_name == "wingman_action":
+                                card_id = msg.payload.get("card_id", "")
+                                action = msg.payload.get("action", "")
+                                action_entry = {
+                                    "node_id": node_id,
+                                    "card_id": card_id,
+                                    "action": action,
+                                    "body": msg.payload.get("body", {}),
+                                    "timestamp": msg.payload.get("timestamp", time.time()),
+                                }
+                                with self.lock:
+                                    self.recent_wingman_actions.append(action_entry)
+                                    if len(self.recent_wingman_actions) > 100:
+                                        self.recent_wingman_actions.pop(0)
+                                    if card_id in self._action_events:
+                                        self._action_results[card_id] = action_entry
+                                        self._action_events[card_id].set()
 
                         elif msg.type == FleetMessage.TYPE_DISCONNECT:
                             sys.stdout.write(f"[mothership] Satellite requested disconnect: '{node_id}'\n")

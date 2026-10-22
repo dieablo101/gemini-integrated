@@ -367,9 +367,10 @@ def send_mothership_command(
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.settimeout(timeout)
         s.connect(("127.0.0.1", DEFAULT_PORT))
+        f = s.makefile("r", encoding="utf-8")
 
         # 1. Receive challenge
-        line = s.recv(2048).decode("utf-8")
+        line = f.readline()
         if not line:
             s.close()
             return {"status": "error", "error": "No challenge from Mothership"}
@@ -387,11 +388,17 @@ def send_mothership_command(
         s.sendall(auth_msg.serialize())
 
         # 3. Receive AUTH_OK
-        auth_ok_line = s.recv(2048).decode("utf-8")
-        a_msg = FleetMessage.deserialize(auth_ok_line)
-        if a_msg.type != FleetMessage.TYPE_AUTH_OK:
-            s.close()
-            return {"status": "error", "error": f"Auth rejected: {a_msg.payload}"}
+        while True:
+            line = f.readline()
+            if not line:
+                s.close()
+                return {"status": "error", "error": "Connection closed during auth"}
+            a_msg = FleetMessage.deserialize(line)
+            if a_msg.type == FleetMessage.TYPE_AUTH_FAIL:
+                s.close()
+                return {"status": "error", "error": f"Auth rejected: {a_msg.payload}"}
+            if a_msg.type == FleetMessage.TYPE_AUTH_OK:
+                break
 
         # 4. Send Command
         cmd_ts = time.time()
@@ -408,12 +415,15 @@ def send_mothership_command(
         )
         s.sendall(cmd_msg.serialize())
 
-        # 5. Receive Response
-        resp_line = s.recv(16384).decode("utf-8")
-        s.close()
-        if not resp_line:
-            return {"status": "error", "error": "Empty response from Mothership"}
-        r_msg = FleetMessage.deserialize(resp_line)
-        return r_msg.payload
+        # 5. Receive Response (skipping any async telemetry greetings)
+        while True:
+            line = f.readline()
+            if not line:
+                s.close()
+                return {"status": "error", "error": "Connection closed waiting for command response"}
+            r_msg = FleetMessage.deserialize(line)
+            if r_msg.type == FleetMessage.TYPE_RESPONSE:
+                s.close()
+                return r_msg.payload
     except Exception as exc:
         return {"status": "error", "error": str(exc)}

@@ -483,11 +483,13 @@ class TestWingmanSecurity(unittest.TestCase):
             applet.stop()
 
     def test_verify_homebase_passkey_system_password_fallback(self) -> None:
-        """Verifies that verify_homebase_passkey falls back to host Linux system password."""
+        """Verifies that verify_homebase_passkey falls back to host Linux system password and fleet key."""
         with patch("gemini_app.vault.is_vault_configured", return_value=True), \
              patch("gemini_app.vault.verify_vault_passkey", return_value=False), \
-             patch("gemini_app.fleet.wingman_auth.verify_system_password", side_effect=lambda p: p == "host-user-password"):
+             patch("gemini_app.fleet.wingman_auth.verify_system_password", side_effect=lambda p: p == "host-user-password"), \
+             patch("gemini_app.fleet.security.get_existing_fleet_key", return_value="fleet-secret-key"):
             self.assertTrue(verify_homebase_passkey("host-user-password"))
+            self.assertTrue(verify_homebase_passkey("fleet-secret-key"))
             self.assertFalse(verify_homebase_passkey("wrong-system-password"))
 
     def test_accept_vs_pair_differentiation(self) -> None:

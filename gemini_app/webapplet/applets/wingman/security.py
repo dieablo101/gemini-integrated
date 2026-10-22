@@ -150,10 +150,9 @@ class WingmanSecurity:
                     session.last_seen = now
                     return session
 
-            # 2. Check if device is permanently trusted or local loopback
+            # 2. Check if device is permanently trusted
             device_trusted = (
-                is_loopback
-                or (bool(device_id) and self.is_device_trusted(device_id))
+                (bool(device_id) and self.is_device_trusted(device_id))
                 or (bool(client_ip) and self.is_device_trusted(client_ip))
             )
 

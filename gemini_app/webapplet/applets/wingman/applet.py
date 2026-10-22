@@ -148,8 +148,12 @@ class WingmanApplet:
         is_loopback = client_ip in ("127.0.0.1", "::1", "localhost")
         token, _ = self._extract_token_and_device(handler, query)
         sess = self.security.get_session_by_token(token) if token else None
-        if not is_loopback and (not sess or not sess.is_unlocked):
-            return {"status": "error", "message": "Session is locked. Passkey unlock required."}
+
+        if self.security.require_pairing:
+            if sess and not sess.is_unlocked:
+                return {"status": "error", "message": "Session is locked. Passkey unlock required."}
+            elif not sess and not is_loopback:
+                return {"status": "error", "message": "Session is locked. Passkey unlock required."}
 
         with self._lock:
             for cb in self._action_callbacks:
@@ -172,8 +176,12 @@ class WingmanApplet:
         is_loopback = client_ip in ("127.0.0.1", "::1", "localhost")
         token, _ = self._extract_token_and_device(handler, query)
         sess = self.security.get_session_by_token(token) if token else None
-        if not is_loopback and (not sess or not sess.is_unlocked):
-            return {"status": "error", "message": "Session is locked. Passkey unlock required."}
+
+        if self.security.require_pairing:
+            if sess and not sess.is_unlocked:
+                return {"status": "error", "message": "Session is locked. Passkey unlock required."}
+            elif not sess and not is_loopback:
+                return {"status": "error", "message": "Session is locked. Passkey unlock required."}
 
         msg_obj = {
             "id": f"msg-{int(now * 1000)}",

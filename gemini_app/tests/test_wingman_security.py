@@ -32,10 +32,13 @@ class TestWingmanSecurity(unittest.TestCase):
 
         self.vault_patch = patch("gemini_app.fleet.wingman_auth.VAULT_DIR", self.fake_vault)
         self.file_patch = patch("gemini_app.fleet.wingman_auth.TRUSTED_WINGMAN_FILE", self.trusted_file)
+        self.sec_vault_patch = patch("gemini_app.webapplet.applets.wingman.security.VAULT_DIR", self.fake_vault)
         self.vault_patch.start()
         self.file_patch.start()
+        self.sec_vault_patch.start()
 
     def tearDown(self) -> None:
+        self.sec_vault_patch.stop()
         self.file_patch.stop()
         self.vault_patch.stop()
         self.tmp_dir.cleanup()
@@ -99,7 +102,9 @@ class TestWingmanSecurity(unittest.TestCase):
             mock_handler.headers = {"User-Agent": "Mozilla/5.0 Safari/605.1.15"}
 
             html = applet._handle_index(mock_handler, {})
-            self.assertIn("Awaiting Mothership Console Authorization...", html)
+            self.assertIn("Awaiting mothership console authorization...", html)
+            self.assertNotIn("OR UNLOCK WITH PASSKEY", html)
+            self.assertNotIn("Trust & pair this device", html)
 
             # Trigger session check from remote IP
             sess_data = applet._handle_session_check(mock_handler, {})
@@ -218,11 +223,11 @@ class TestWingmanSecurity(unittest.TestCase):
         modal.action_accept()
         self.assertEqual(dismiss_results, ["accept"])
 
-        modal.action_trust()
-        self.assertEqual(dismiss_results, ["accept", "trust"])
+        modal.action_pair()
+        self.assertEqual(dismiss_results, ["accept", "pair"])
 
         modal.action_deny()
-        self.assertEqual(dismiss_results, ["accept", "trust", "deny"])
+        self.assertEqual(dismiss_results, ["accept", "pair", "deny"])
 
     def test_wingman_ui_contains_dropdown_and_chat_view(self) -> None:
         """Verifies UI includes the Work vs Chat dropdown and bilateral chat stream containers."""
@@ -248,8 +253,8 @@ class TestWingmanSecurity(unittest.TestCase):
 
             # Security gate & passkey unlock elements
             self.assertIn("securityGate", html)
-            self.assertIn("passkeyInput", html)
-            self.assertIn("trustDeviceCheck", html)
+            self.assertIn("modalPasskeyInput", html)
+            self.assertIn("passkeyModal", html)
         finally:
             applet.stop()
 
@@ -327,6 +332,56 @@ class TestWingmanSecurity(unittest.TestCase):
                 check_after = applet._handle_session_check(mock_handler, {})
                 self.assertTrue(check_after["authenticated"])
                 self.assertEqual(check_after["token"], token)
+        finally:
+            applet.stop()
+
+    def test_action_gated_passkey_per_session(self) -> None:
+        """Verifies session allows reading content but sensitive action/chat requires passkey unlock."""
+        applet = WingmanApplet(port=0, node_id="test-node", require_pairing=True)
+        self.assertTrue(applet.start())
+        try:
+            mock_handler = MagicMock()
+            mock_handler.client_address = ("192.168.1.99", 54321)
+            mock_handler.headers = {}
+
+            # Authorize the device from Mothership
+            sess = applet.security.create_or_resume_session(client_ip="192.168.1.99", is_loopback=False)
+            applet.authorize_session(sess.session_id, accepted=True, trust_device=False)
+            token = sess.token
+            mock_handler.headers = {"X-Wingman-Token": token}
+
+            # Device is authorized - can read session info and content
+            check = applet._handle_session_check(mock_handler, {})
+            self.assertTrue(check["authenticated"])
+            self.assertFalse(check["is_unlocked"])  # Action-locked by default!
+
+            # Attempt sensitive action while locked
+            act_res = applet._handle_action(mock_handler, {}, {"card_id": "card-1", "action": "approve"})
+            self.assertEqual(act_res["status"], "error")
+            self.assertIn("Passkey unlock required", act_res["message"])
+
+            # Attempt chat while locked
+            chat_res = applet._handle_chat(mock_handler, {}, {"text": "secret command"})
+            self.assertEqual(chat_res["status"], "error")
+            self.assertIn("Passkey unlock required", chat_res["message"])
+
+            # Unlock with passkey
+            with patch("gemini_app.fleet.wingman_auth.verify_homebase_passkey", return_value=True):
+                unlock_res = applet._handle_verify_passkey(mock_handler, {}, {
+                    "passkey": "vault-secret",
+                    "session_id": sess.session_id,
+                })
+                self.assertTrue(unlock_res["valid"])
+
+            # Now session is unlocked!
+            self.assertTrue(sess.is_unlocked)
+
+            # Actions and chats succeed for remainder of session without re-prompt
+            act_ok = applet._handle_action(mock_handler, {}, {"card_id": "card-1", "action": "approve"})
+            self.assertEqual(act_ok["status"], "ok")
+
+            chat_ok = applet._handle_chat(mock_handler, {}, {"text": "hello gemini"})
+            self.assertEqual(chat_ok["status"], "ok")
         finally:
             applet.stop()
 

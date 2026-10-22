@@ -114,6 +114,7 @@ class WingmanApplet:
             "session_id": session.session_id,
             "authenticated": (session.status == "authorized"),
             "status": session.status,
+            "is_unlocked": session.is_unlocked,
             "token": session.token if session.status == "authorized" else "",
             "mode": session.current_mode,
             "device_id": session.device_id,
@@ -143,6 +144,13 @@ class WingmanApplet:
     def _handle_action(self, handler: Any, query: Dict[str, List[str]], body: Any) -> Dict[str, Any]:
         card_id = body.get("card_id", "")
         action = body.get("action", "")
+        client_ip = handler.client_address[0] if hasattr(handler, "client_address") else "127.0.0.1"
+        is_loopback = client_ip in ("127.0.0.1", "::1", "localhost")
+        token, _ = self._extract_token_and_device(handler, query)
+        sess = self.security.get_session_by_token(token) if token else None
+        if not is_loopback and (not sess or not sess.is_unlocked):
+            return {"status": "error", "message": "Session is locked. Passkey unlock required."}
+
         with self._lock:
             for cb in self._action_callbacks:
                 try:
@@ -159,6 +167,13 @@ class WingmanApplet:
 
         if not text:
             return {"status": "error", "message": "Empty message"}
+
+        client_ip = handler.client_address[0] if hasattr(handler, "client_address") else "127.0.0.1"
+        is_loopback = client_ip in ("127.0.0.1", "::1", "localhost")
+        token, _ = self._extract_token_and_device(handler, query)
+        sess = self.security.get_session_by_token(token) if token else None
+        if not is_loopback and (not sess or not sess.is_unlocked):
+            return {"status": "error", "message": "Session is locked. Passkey unlock required."}
 
         msg_obj = {
             "id": f"msg-{int(now * 1000)}",
@@ -183,7 +198,7 @@ class WingmanApplet:
         return {
             "status": "ok",
             "message_id": msg_obj["id"],
-            "reply": "Message received by node security stream.",
+            "reply": "Transmitted to Mothership — awaiting Gemini reply...",
         }
 
     def _handle_chat_history(self, handler: Any, query: Dict[str, List[str]]) -> Dict[str, Any]:
@@ -241,16 +256,24 @@ class WingmanApplet:
             return {"status": "error", "valid": False}
         passkey = str(body.get("passkey", "")).strip()
         sess_id = body.get("session_id") or body.get("prompt_id") or ""
-        from gemini_app.vault import is_vault_configured, verify_vault_passkey
-        valid = verify_vault_passkey(passkey) if is_vault_configured() else False
-        if valid and sess_id:
-            self.resolve_auth_request(sess_id, decision="accept")
+        token = body.get("session_token", "")
+        from gemini_app.fleet.wingman_auth import verify_homebase_passkey
+        valid = verify_homebase_passkey(passkey)
+        if valid:
+            sess = None
+            if sess_id:
+                sess = self.security.get_session(sess_id)
+            if not sess and token:
+                sess = self.security.get_session_by_token(token)
+            if sess:
+                sess.is_unlocked = True
         return {"status": "ok" if valid else "invalid", "valid": valid}
 
     def resolve_auth_request(self, auth_req_id: str, decision: str = "accept", trust: bool = False) -> Dict[str, Any]:
         """Resolves an incoming zero-trust session request from the operator or Mothership."""
-        accepted = decision in ("accept", "trust")
-        sess = self.security.authorize_session(auth_req_id, trust_device=trust) if accepted else self.security.deny_session(auth_req_id)
+        accepted = decision in ("accept", "trust", "pair")
+        trust_device = trust or (decision in ("trust", "pair"))
+        sess = self.security.authorize_session(auth_req_id, trust_device=trust_device) if accepted else self.security.deny_session(auth_req_id)
         if sess:
             ev_name = "auth_approved" if accepted else "auth_denied"
             self.engine.broadcast_event(ev_name, {
@@ -286,11 +309,22 @@ class WingmanApplet:
                     "token": sess.token,
                     "status": "authorized",
                 })
+                self.engine.broadcast_event("auth_approved", {
+                    "auth_req_id": session_id,
+                    "session_id": session_id,
+                    "token": sess.token,
+                    "status": "approved",
+                })
                 return {"status": "ok", "session_id": session_id, "token": sess.token}
             return {"status": "error", "error": f"Session '{session_id}' not found"}
         else:
             self.security.deny_session(session_id)
             self.engine.broadcast_event("session_denied", {
+                "session_id": session_id,
+                "status": "denied",
+            })
+            self.engine.broadcast_event("auth_denied", {
+                "auth_req_id": session_id,
                 "session_id": session_id,
                 "status": "denied",
             })

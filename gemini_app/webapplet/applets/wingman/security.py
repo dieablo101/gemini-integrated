@@ -33,6 +33,7 @@ class WingmanSession:
     user_agent: str = ""
     device_id: str = ""
     status: str = "pending"  # "pending", "authorized", "denied"
+    is_unlocked: bool = False  # Action-gated session passkey status
     created_at: float = field(default_factory=time.time)
     last_seen: float = field(default_factory=time.time)
     current_mode: str = "work"  # "work" or "chat"
@@ -45,6 +46,7 @@ class WingmanSession:
             "user_agent": self.user_agent,
             "device_id": self.device_id,
             "status": self.status,
+            "is_unlocked": self.is_unlocked,
             "created_at": self.created_at,
             "last_seen": self.last_seen,
             "current_mode": self.current_mode,
@@ -89,17 +91,21 @@ class WingmanSecurity:
 
     def trust_device(self, device_id: str, label: str = "", client_ip: str = "") -> bool:
         """Stores device in trusted paired devices registry."""
-        if not device_id:
+        if not device_id and not client_ip:
             return False
         with self._lock:
             devices = self._load_trusted_devices()
-            devices[device_id] = {
-                "device_id": device_id,
-                "label": label or "Paired Satellite Browser",
+            entry = {
+                "device_id": device_id or f"ip-{client_ip}",
+                "label": label or f"Paired Satellite ({client_ip or device_id})",
                 "client_ip": client_ip,
                 "paired_at": time.time(),
                 "last_used": time.time(),
             }
+            if device_id:
+                devices[device_id] = entry
+            if client_ip:
+                devices[client_ip] = entry
             return self._save_trusted_devices(devices)
 
     def revoke_device(self, device_id: str) -> bool:
@@ -136,7 +142,7 @@ class WingmanSecurity:
         """Retrieves existing session by token, auto-authorizes trusted devices, or creates pending."""
         now = time.time()
         with self._lock:
-            # 1. Check existing token
+            # 1. Check existing token for active authorized session
             if existing_token and existing_token in self.tokens_to_session:
                 sess_id = self.tokens_to_session[existing_token]
                 session = self.sessions.get(sess_id)
@@ -144,8 +150,12 @@ class WingmanSecurity:
                     session.last_seen = now
                     return session
 
-            # 2. Check if device is permanently trusted
-            device_trusted = self.is_device_trusted(device_id) if device_id else False
+            # 2. Check if device is permanently trusted or local loopback
+            device_trusted = (
+                is_loopback
+                or (bool(device_id) and self.is_device_trusted(device_id))
+                or (bool(client_ip) and self.is_device_trusted(client_ip))
+            )
 
             # If device is already trusted or require_pairing is False
             status = "authorized" if (device_trusted or not self.require_pairing) else "pending"
@@ -159,6 +169,7 @@ class WingmanSecurity:
                 user_agent=user_agent,
                 device_id=device_id or f"dev-{hashlib.sha256(f'{client_ip}-{user_agent}'.encode('utf-8')).hexdigest()[:12]}",
                 status=status,
+                is_unlocked=False,
                 created_at=now,
                 last_seen=now,
             )

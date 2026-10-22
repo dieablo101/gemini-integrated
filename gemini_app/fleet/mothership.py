@@ -544,6 +544,17 @@ class MothershipServer:
                             elif action in ("get_wingman_actions", "wingman_actions"):
                                 with self.lock:
                                     resp_payload["actions"] = list(self.recent_wingman_actions)
+                            elif action in ("get_pending_wingman_auth", "pending_wingman_auth"):
+                                with self.lock:
+                                    resp_payload["requests"] = list(self.pending_wingman_auth_requests.values())
+                            elif action in ("resolve_wingman_auth", "authorize_wingman"):
+                                req_id = msg.payload.get("params", {}).get("auth_req_id") or msg.payload.get("params", {}).get("session_id", "")
+                                dec = msg.payload.get("params", {}).get("decision", "accept")
+                                nid = msg.payload.get("params", {}).get("node_id", "")
+                                trust_dev = bool(msg.payload.get("params", {}).get("trust", False)) or (dec == "pair")
+                                if not nid and req_id in self.pending_wingman_auth_requests:
+                                    nid = self.pending_wingman_auth_requests[req_id].get("node_id", "local")
+                                resp_payload["result"] = self.authorize_wingman(node_id=nid or "local", auth_req_id=req_id, decision=dec, trust=trust_dev)
                             reply = FleetMessage(
                                 msg_type=FleetMessage.TYPE_RESPONSE,
                                 node_id="mothership",
@@ -595,6 +606,19 @@ class MothershipServer:
                                         cb(dict(auth_entry))
                                     except Exception:
                                         pass
+                                try:
+                                    from gemini_app.config import SOCKET_PATH
+                                    if SOCKET_PATH.exists():
+                                        s_cli = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                                        s_cli.settimeout(0.5)
+                                        s_cli.connect(str(SOCKET_PATH))
+                                        s_cli.sendall(json.dumps({
+                                            "action": "wingman_auth_prompt",
+                                            "auth_data": auth_entry,
+                                        }).encode("utf-8"))
+                                        s_cli.close()
+                                except Exception:
+                                    pass
 
                             elif event_name == "wingman_chat_message":
                                 chat_entry = {
@@ -612,6 +636,20 @@ class MothershipServer:
                                             cb(dict(chat_entry))
                                         except Exception:
                                             pass
+                                try:
+                                    from gemini_app.config import SOCKET_PATH
+                                    if SOCKET_PATH.exists():
+                                        s_cli = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                                        s_cli.settimeout(0.5)
+                                        s_cli.connect(str(SOCKET_PATH))
+                                        s_cli.sendall(json.dumps({
+                                            "action": "wingman_chat",
+                                            "sender": chat_entry["sender"],
+                                            "text": chat_entry["text"],
+                                        }).encode("utf-8"))
+                                        s_cli.close()
+                                except Exception:
+                                    pass
 
                         elif msg.type == FleetMessage.TYPE_DISCONNECT:
                             sys.stdout.write(f"[mothership] Satellite requested disconnect: '{node_id}'\n")
@@ -760,14 +798,14 @@ class MothershipServer:
         with self.lock:
             self.pending_wingman_auth_requests.pop(auth_req_id, None)
 
-        accepted = (decision in ("accept", "accepted", "trust"))
-        trust_device = trust or (decision == "trust")
+        accepted = (decision in ("accept", "accepted", "trust", "pair"))
+        trust_device = trust or (decision in ("trust", "pair"))
 
         if node_id in ("local", "localhost", "mothership"):
             if self.local_wingman and hasattr(self.local_wingman, "authorize_session"):
                 return self.local_wingman.authorize_session(auth_req_id, accepted=accepted, trust_device=trust_device)
             elif self.local_wingman and hasattr(self.local_wingman, "resolve_auth_request"):
-                return self.local_wingman.resolve_auth_request(auth_req_id, decision=decision, trust=trust)
+                return self.local_wingman.resolve_auth_request(auth_req_id, decision=decision, trust=trust_device)
             return {"status": "error", "error": "Local Wingman not running"}
 
         return self.send_command(

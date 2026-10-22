@@ -16,7 +16,7 @@ import sys
 import tempfile
 import threading
 import time
-from typing import Callable
+from typing import Any, Callable, Dict, Optional
 from uuid import uuid4
 
 import pyperclip
@@ -239,6 +239,7 @@ class ChatApp(App):
 
         self.history: list[dict] = []
         self._server: asyncio.AbstractServer | None = None
+        self.wingman_applet: Optional[Any] = None
 
         self._prefix_c_c: bool = False
         self._c_c_timer: Timer | None = None
@@ -350,6 +351,128 @@ class ChatApp(App):
                 except Exception:
                     pass
         self.push_screen(WingmanAuthModal(auth_data=auth_data), _on_dismiss)
+
+    def _start_wingman_server(self, port: int = 8888) -> None:
+        """Starts local Wingman bilateral talk portal on port 8888 and binds zero-trust auth handlers."""
+        if "unittest" in sys.modules or os.environ.get("GEMINI_TEST_MODE"):
+            return
+        if getattr(self, "wingman_applet", None) and self.wingman_applet.engine.is_running:
+            return
+        try:
+            from gemini_app.webapplet.applets.wingman import WingmanApplet
+            from gemini_app.fleet.satellite import set_active_wingman
+
+            self.wingman_applet = WingmanApplet(port=port, node_id="mothership")
+            set_active_wingman(self.wingman_applet)
+            self.wingman_applet.on_auth_request(self._on_wingman_auth_request)
+            self.wingman_applet.on_chat_message(self._on_wingman_remote_chat)
+            self.wingman_applet.start()
+        except Exception:
+            pass
+
+    def _on_wingman_auth_request(self, auth_data: Dict[str, Any]) -> None:
+        """Invoked from Wingman engine thread when an incoming device requests access."""
+        self.call_from_thread(self._handle_wingman_auth_prompt, auth_data)
+
+    def _handle_wingman_auth_prompt(self, auth_data: Dict[str, Any]) -> None:
+        """Mounts WingmanAuthModal on the Mothership TUI to Accept, Pair, or Deny."""
+        if getattr(self, "_wingman_modal_open", False):
+            return
+        req_id = auth_data.get("auth_req_id") or auth_data.get("session_id", "")
+        if not req_id:
+            return
+        handled_set = getattr(self, "_handled_wingman_auth_reqs", set())
+        if req_id in handled_set:
+            return
+
+        client_ip = auth_data.get("client_ip", "remote")
+        node_id = auth_data.get("node_id", "local")
+        self._wingman_modal_open = True
+
+        def _on_decision(decision: str) -> None:
+            self._wingman_modal_open = False
+            handled_set.add(req_id)
+            self._handled_wingman_auth_reqs = handled_set
+
+            dec = decision or "deny"
+            trust_device = (dec == "pair")
+            accepted = (dec in ("accept", "pair"))
+
+            # 1. Authorize on local Wingman applet if running
+            if getattr(self, "wingman_applet", None):
+                try:
+                    self.wingman_applet.authorize_session(req_id, accepted=accepted, trust_device=trust_device)
+                except Exception:
+                    pass
+
+            # 2. Authorize via MothershipServer (for satellite nodes like iPad)
+            try:
+                from gemini_app.fleet.nodes import send_mothership_command
+                send_mothership_command("resolve_wingman_auth", {
+                    "auth_req_id": req_id,
+                    "node_id": node_id,
+                    "decision": dec,
+                    "trust": trust_device,
+                }, timeout=3.0)
+            except Exception:
+                pass
+
+            if dec == "accept":
+                self.notify(f"Wingman connection accepted from {client_ip} (single session)", title="Wingman Authorized")
+            elif dec == "pair":
+                self.notify(f"Wingman paired and trusted for {client_ip}", title="Wingman Paired")
+            else:  # deny
+                self.notify(f"Wingman connection denied for {client_ip}", severity="warning", title="Wingman Denied")
+
+        self.prompt_wingman_auth(auth_data, _on_decision)
+
+    @work(exclusive=True, thread=True)
+    def _check_pending_wingman_auth(self) -> None:
+        """Polls MothershipServer and local applet for pending Wingman access requests."""
+        if getattr(self, "_wingman_modal_open", False):
+            return
+        try:
+            if any(s.__class__.__name__ == "WingmanAuthModal" for s in self.screen_stack):
+                return
+        except Exception:
+            pass
+
+        # Check MothershipServer for requests from satellites
+        try:
+            from gemini_app.fleet.nodes import send_mothership_command
+            res = send_mothership_command("get_pending_wingman_auth", timeout=1.0)
+            if isinstance(res, dict) and "requests" in res:
+                handled = getattr(self, "_handled_wingman_auth_reqs", set())
+                for req in res.get("requests", []):
+                    rid = req.get("auth_req_id") or req.get("session_id")
+                    if rid and rid not in handled:
+                        self.call_from_thread(self._handle_wingman_auth_prompt, req)
+                        return
+        except Exception:
+            pass
+
+    def _on_wingman_remote_chat(self, sender: str, text: str, meta: Dict[str, Any]) -> None:
+        """Invoked from Wingman engine thread when a remote chat message is submitted."""
+        self.call_from_thread(self._handle_wingman_incoming_chat, sender, text)
+
+    def _handle_wingman_incoming_chat(self, sender: str, text: str) -> None:
+        """Appends incoming Wingman message to ChatApp feed, saves, and prompts Gemini."""
+        from uuid import uuid4
+        from gemini_app.ui.widgets.feed import FeedArea
+
+        msg_body = f"📱 **[Wingman - {sender}]**\n{text}"
+        try:
+            feed = self.query_one("#feed", FeedArea)
+            new_turn_id = f"turn_{uuid4().hex[:8]}"
+            self.history.append({"turn_id": new_turn_id, "role": "user", "text": msg_body})
+            self.current_chat_last_index = max(0, len(self.history) - 1)
+            self.current_chat_center_marker = new_turn_id
+            self.run_worker(feed.append_message("user", msg_body, jump_to_start=False))
+            self.notify(f"Wingman: {text[:40]}...", title=f"Message from {sender}")
+            self.save_current_chat()
+            self.ask_gemini()
+        except Exception:
+            pass
 
     def request_vault_passkey(
         self,
@@ -518,7 +641,7 @@ class ChatApp(App):
         from uuid import uuid4
         from gemini_app.fleet.nodes import get_local_lan_ip
         from gemini_app.helpers import generate_terminal_qr
-        from gemini_app.ui.feed import FeedArea
+        from gemini_app.ui.widgets.feed import FeedArea
 
         target = arg.strip()
         if not target:
@@ -1264,6 +1387,8 @@ class ChatApp(App):
 
         self._start_heartbeat_watchdog()
         await self.start_socket_server()
+        self._start_wingman_server()
+        self.set_interval(1.5, self._check_pending_wingman_auth)
         self.push_screen(BootScreen())
         # Check daily backup interval every hour
         self.set_interval(3600.0, self._check_daily_backup)
@@ -1670,6 +1795,15 @@ class ChatApp(App):
                     if payload.get("pulse_nav"):
                         pal = payload.get("palette", "purple")
                         self.trigger_nav_indicator("navbar", palette=pal, duration=2.0)
+                elif action == "wingman_auth_prompt":
+                    auth_data = payload.get("auth_data", {})
+                    if auth_data:
+                        self.call_from_thread(self._handle_wingman_auth_prompt, auth_data)
+                elif action == "wingman_chat":
+                    text = payload.get("text", "")
+                    sender = payload.get("sender", "operator")
+                    if text:
+                        self.call_from_thread(self._handle_wingman_incoming_chat, sender, text)
                 elif action in ("chat_message", "notify_chat"):
                     text = payload.get("text", "")
                     if text:
@@ -1944,6 +2078,12 @@ class ChatApp(App):
             self._server.close()
             if SOCKET_PATH.exists():
                 SOCKET_PATH.unlink(missing_ok=True)
+
+        if getattr(self, "wingman_applet", None):
+            try:
+                self.wingman_applet.stop()
+            except Exception:
+                pass
 
     def _get_ancestor_lineage(self, parent_id: str | None) -> list[dict]:
         ancestors: list[dict] = []
@@ -2808,6 +2948,11 @@ class ChatApp(App):
     async def append_to_feed(self, sender: str, text: str, jump_to_start: bool = False) -> None:
         feed = self.query_one("#feed", FeedArea)
         await feed.append_message(sender, text, jump_to_start=jump_to_start)
+        if getattr(self, "wingman_applet", None) and self.wingman_applet.engine.is_running:
+            try:
+                self.wingman_applet.push_chat_message(sender=sender, text=text, is_user=(sender == "user"))
+            except Exception:
+                pass
 
     def _handle_slash_command(self, raw_cmd: str) -> bool:
         """Handles client-side slash commands instantly without sending to API."""

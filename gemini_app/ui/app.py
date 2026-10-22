@@ -279,6 +279,8 @@ class ChatApp(App):
             "sys-deps": lambda _: self._cmd_sys_deps(),
             "backup-now": lambda _: self._cmd_backup_now(),
             "backup": lambda _: self._cmd_backup_now(),
+            "qr": lambda arg: self._cmd_qr(arg),
+            "qrcode": lambda arg: self._cmd_qr(arg),
         }
 
     @property
@@ -494,6 +496,34 @@ class ChatApp(App):
         else:
             err = res.get("error", "Unknown error")
             self.app.call_from_thread(self.notify, f"Backup error: {err}", severity="error", title="Backup Failed")
+
+    @work(exclusive=True)
+    async def _cmd_qr(self, arg: str) -> None:
+        """Renders an ASCII/Unicode QR code directly into the chat feed."""
+        from uuid import uuid4
+        from gemini_app.fleet.nodes import get_local_lan_ip
+        from gemini_app.helpers import generate_terminal_qr
+        from gemini_app.ui.feed import FeedArea
+
+        target = arg.strip()
+        if not target:
+            lan_ip = get_local_lan_ip()
+            target = f"http://{lan_ip}:8888"
+
+        qr_text = generate_terminal_qr(target)
+        msg = f"### 📱 Terminal QR Code\n\n```text\n{qr_text}\n```\n**Payload:** `{target}`\n\n*Point your mobile camera at your screen to scan.*"
+
+        try:
+            feed = self.query_one("#feed", FeedArea)
+            await feed.append_message("gemini", msg, jump_to_start=True)
+            new_turn_id = f"turn_{uuid4().hex[:8]}"
+            self.history.append({"turn_id": new_turn_id, "role": "model", "text": msg})
+            self.current_chat_last_index = max(0, len(self.history) - 1)
+            self.current_chat_center_marker = new_turn_id
+            self.save_current_chat()
+            self.notify(f"Rendered QR code for '{target}'", title="QR Code Ready")
+        except Exception as exc:
+            self.notify(f"QR render notice: {exc}", severity="warning")
 
     @work(exclusive=False, thread=True)
     def _check_daily_backup(self) -> None:

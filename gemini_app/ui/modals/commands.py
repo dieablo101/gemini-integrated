@@ -124,6 +124,7 @@ class CommandsModal(ResponsiveModalScreen[None]):
 
             yield Label("Slash Commands:", classes="cmd_section_title")
             yield Label("[bold]/vault [cmd][/]      : Master vault manager (password, file, secret, sync, change, lock)", classes="cmd_row")
+            yield Label("[bold]/qr [payload][/]      : Generate terminal QR code for phone scanning / node pairing", classes="cmd_row")
             yield Label("[bold]/api-key[/]          : Configure / update Google Gemini API key", classes="cmd_row")
             yield Label("[bold]/git-setup[/]        : Configure Real Name & Git credentials", classes="cmd_row")
             yield Label("[bold]/scaffold <name>[/]  : Scaffold new project in ~/Projects with Git & License", classes="cmd_row")

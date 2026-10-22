@@ -94,6 +94,8 @@ class MothershipServer:
         self._cognitive_override: Dict[str, Any] = {}
         self._upgrade_cooldowns: Dict[str, float] = {}
         self._node_upgrade_attempts: Dict[str, tuple[str, int]] = {}
+        self.local_wingman = None
+        self.local_inspector = None
 
     def start(self) -> bool:
         """Binds and starts accepting incoming satellite node connections."""
@@ -567,6 +569,77 @@ class MothershipServer:
         )
         return self.broadcast(msg)
 
+    def start_local_wingman(self, port: int = 8888) -> bool:
+        """Starts a local Wingman instance on the Mothership (e.g. for dual-screen desktop use)."""
+        if self.local_wingman and self.local_wingman.engine.is_running:
+            return True
+        try:
+            from gemini_app.webapplet.applets.wingman import WingmanApplet
+            self.local_wingman = WingmanApplet(port=port)
+            return self.local_wingman.start()
+        except Exception as exc:
+            sys.stderr.write(f"[mothership] Failed to start local Wingman on port {port}: {exc}\n")
+            return False
+
+    def start_local_inspector(self, port: int = 8889) -> bool:
+        """Starts a local Photon 3D Inspector on a separate port independently of Wingman."""
+        if self.local_inspector and self.local_inspector.engine.is_running:
+            return True
+        try:
+            from gemini_app.webapplet.applets.inspector import InspectorApplet
+            self.local_inspector = InspectorApplet(port=port)
+            return self.local_inspector.start()
+        except Exception as exc:
+            sys.stderr.write(f"[mothership] Failed to start local Inspector on port {port}: {exc}\n")
+            return False
+
+    def push_wingman_card(
+        self,
+        node_id: str,
+        title: str,
+        content: str,
+        actions: Optional[List[Dict[str, str]]] = None,
+        accent: bool = True,
+        timeout: float = 10.0,
+    ) -> Dict[str, Any]:
+        """Dispatches an interactive card to a node's open Wingman portal or local Wingman."""
+        if node_id in ("local", "localhost", "mothership"):
+            if self.local_wingman and self.local_wingman.engine.is_running:
+                cid = self.local_wingman.push_card(title=title, content=content, actions=actions, accent=accent)
+                return {"status": "ok", "card_id": cid}
+            return {"status": "error", "error": "Local Wingman is not running"}
+
+        return self.send_command(
+            node_id=node_id,
+            action="webapplet_push",
+            params={
+                "title": title,
+                "content": content,
+                "actions": actions or [],
+                "accent": accent,
+            },
+            timeout=timeout,
+        )
+
+    def request_node_biometric(
+        self,
+        node_id: str,
+        reason: str = "Authorize Operation",
+        timeout: float = 30.0,
+    ) -> Dict[str, Any]:
+        """Requests biometric authentication (Face ID or Fingerprint) from a specific node."""
+        if node_id in ("local", "localhost", "mothership"):
+            if self.local_wingman and self.local_wingman.engine.is_running:
+                return self.local_wingman.request_biometric(reason=reason, timeout=timeout)
+            return {"status": "error", "error": "Local Wingman not running for biometrics"}
+
+        return self.send_command(
+            node_id=node_id,
+            action="biometric_auth",
+            params={"reason": reason, "timeout": timeout},
+            timeout=timeout + 5.0,
+        )
+
     def set_cognitive_state(
         self,
         state_desc: str = "",
@@ -822,6 +895,16 @@ class MothershipServer:
     def stop(self) -> None:
         """Shuts down server socket and disconnects connected satellites."""
         self._running = False
+        if self.local_wingman:
+            try:
+                self.local_wingman.stop()
+            except Exception:
+                pass
+        if self.local_inspector:
+            try:
+                self.local_inspector.stop()
+            except Exception:
+                pass
         if self.server_sock:
             try:
                 self.server_sock.close()

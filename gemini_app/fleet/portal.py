@@ -10,20 +10,24 @@ TERMUX_APK = os.path.join(APK_DIR, "termux-app_v0.118.3_arm64.apk")
 API_APK = os.path.join(APK_DIR, "termux-api-app_v0.53.0.apk")
 BUNDLE_TAR = os.path.join(APK_DIR, "gemini-integrated.tar.gz")
 
-STREAM_CMD = "curl -s http://192.168.1.91:8888/go | bash"
+STREAM_CMD = "cd ~/gemini-integrated && git pull && python3 gemini-integrated.py node 192.168.1.91"
 
 JOIN_SCRIPT = """#!/bin/bash
 set -e
-echo "[+] Gemini Mothership Satellite Provisioning initiating..."
-pkg update -y
-pkg install -y python termux-api curl tar
+echo "[+] Gemini Mothership Satellite Connecting..."
+pkg install -y git python termux-api
 cd "$HOME"
-rm -rf gemini-integrated
-mkdir -p gemini-integrated
-echo "[+] Streaming verified Mothership codebase over high-speed LAN..."
-curl -s http://192.168.1.91:8888/download/bundle | tar -xz -C "$HOME/gemini-integrated"
-cd "$HOME/gemini-integrated"
-echo "[+] Connecting to Mothership at 192.168.1.91..."
+if [ -d "gemini-integrated/.git" ]; then
+    echo "[+] Updating local repository..."
+    cd gemini-integrated
+    git fetch origin
+    git reset --hard origin/main
+else
+    echo "[+] Cloning repository from GitHub..."
+    git clone https://github.com/dieablo101/gemini-integrated.git
+    cd gemini-integrated
+fi
+echo "[+] Launching satellite node connecting to 192.168.1.91..."
 python3 gemini-integrated.py node 192.168.1.91
 """
 

@@ -833,6 +833,59 @@ def save_mothership(host: str, port: Optional[int] = None) -> bool:
         return save_mothership_dual_endpoints(wan_ip=host, port=port)
 
 
+def format_node_error(exc: Any, context: str = "") -> Dict[str, Any]:
+    """Formats an exception into a compact error code and relational summary for HUD and Mothership reporting."""
+    errno_val = getattr(exc, "errno", None)
+    err_str = str(exc)
+    err_lower = err_str.lower()
+
+    if errno_val:
+        code = f"ERR#{errno_val}"
+    elif "timed out" in err_lower or isinstance(exc, (TimeoutError, socket.timeout)):
+        code = "ERR#TIMEOUT"
+    elif "auth" in err_lower or "reject" in err_lower or isinstance(exc, PermissionError):
+        code = "ERR#AUTH"
+    elif "upg" in err_lower or "git" in err_lower:
+        code = "ERR#UPG"
+    elif "signature" in err_lower:
+        code = "ERR#SIG"
+    else:
+        name = type(exc).__name__.replace("Error", "")
+        code = f"ERR#{name[:6].upper()}" if name else "ERR#UNKNOWN"
+
+    if errno_val == 104 or "connection reset" in err_lower:
+        rel = "ConnReset"
+    elif errno_val == 111 or "connection refused" in err_lower:
+        rel = "Refused"
+    elif errno_val == 113 or "no route" in err_lower:
+        rel = "NoRoute"
+    elif errno_val == 32 or "broken pipe" in err_lower:
+        rel = "BrokenPipe"
+    elif errno_val == 110 or "timed out" in err_lower:
+        rel = "TimedOut"
+    elif "auth" in err_lower or isinstance(exc, PermissionError):
+        rel = "AuthFail"
+    elif "signature" in err_lower:
+        rel = "SigFail"
+    elif "not connected" in err_lower:
+        rel = "NotConn"
+    else:
+        words = re.sub(r"[^a-zA-Z0-9 ]", "", err_str).split()
+        rel = "".join(w.capitalize() for w in words[:2]) if words else "Err"
+
+    rel_ctx = f"{rel}:{context}" if context else rel
+    short_str = f"{code} ({rel_ctx})"
+
+    return {
+        "errno": errno_val,
+        "code": code,
+        "relationals": rel_ctx,
+        "short_str": short_str,
+        "details": err_str[:120],
+        "timestamp": time.time(),
+    }
+
+
 class SatelliteNode:
     """Satellite client connecting to the Mothership."""
 
@@ -882,6 +935,7 @@ class SatelliteNode:
         self._pending_ping_t0: Optional[float] = None
         self.pending_responses: Dict[str, Any] = {}
         self.response_events: Dict[str, threading.Event] = {}
+        self._pending_errors: List[Dict[str, Any]] = []
 
         self.wingman_applet = None
         try:
@@ -937,6 +991,44 @@ class SatelliteNode:
             self.send_message(hb)
         except Exception:
             pass
+
+    def report_error(self, exc: Any, context: str = "") -> Dict[str, Any]:
+        """Formats and reports a node error on HUD and transmits telemetry back to Mothership."""
+        err_data = format_node_error(exc, context=context)
+        if self.hud:
+            self.hud.show_toast(err_data["short_str"], duration=5.0)
+            self.hud.log_event(f"Error: {err_data['short_str']}")
+
+        msg = FleetMessage(
+            msg_type=FleetMessage.TYPE_ERROR,
+            node_id=self.node_id,
+            payload={"error": err_data},
+        )
+        sent = False
+        if self._running and self.sock:
+            try:
+                sent = self.send_message(msg)
+            except Exception:
+                sent = False
+        if not sent:
+            self._pending_errors.append(err_data)
+            if len(self._pending_errors) > 10:
+                self._pending_errors.pop(0)
+
+        return err_data
+
+    def _flush_pending_errors(self) -> None:
+        """Sends queued errors to Mothership once connection is established."""
+        if not self._running or not self.sock or not self._pending_errors:
+            return
+        while self._pending_errors:
+            err = self._pending_errors.pop(0)
+            msg = FleetMessage(
+                msg_type=FleetMessage.TYPE_ERROR,
+                node_id=self.node_id,
+                payload={"error": err},
+            )
+            self.send_message(msg)
 
     def request_mothership_bundle(self, timeout: float = 8.0) -> tuple[Optional[str], Optional[str]]:
         """Requests direct code bundle from Mothership over persistent TCP connection."""
@@ -1015,6 +1107,8 @@ class SatelliteNode:
 
         if self.hud:
             self.hud.set_connection_status(False)
+            if last_exc:
+                self.report_error(last_exc, context="connect")
         return False
 
     def send_message(self, msg: FleetMessage) -> bool:
@@ -1029,11 +1123,14 @@ class SatelliteNode:
                 self._running = False
                 if self.hud:
                     self.hud.set_connection_status(False)
+                    self.report_error(exc, context="send")
                 else:
                     sys.stderr.write(f"[satellite] Connection lost: {exc}\n")
                 return False
             except Exception as exc:
-                if not self.hud:
+                if self.hud:
+                    self.report_error(exc, context="send")
+                else:
                     sys.stderr.write(f"[satellite] Send failed: {exc}\n")
                 return False
 
@@ -1265,6 +1362,7 @@ class SatelliteNode:
                 if not data:
                     if self.hud:
                         self.hud.set_connection_status(False)
+                        self.report_error(ConnectionResetError(104, "Connection closed by peer"), context="recv")
                     else:
                         sys.stdout.write("[satellite] Connection closed by Mothership.\n")
                     self._running = False
@@ -1295,10 +1393,11 @@ class SatelliteNode:
                         elif msg.type == FleetMessage.TYPE_AUTH_OK:
                             if self.hud:
                                 self.hud.set_connection_status(True)
+                            self._flush_pending_errors()
                         elif msg.type == FleetMessage.TYPE_AUTH_FAIL:
                             err_str = msg.payload.get("error", "Authentication rejected by Mothership")
                             if self.hud:
-                                self.hud.show_toast(f"Auth failed: {err_str}", duration=5.0)
+                                self.report_error(PermissionError(err_str), context="auth")
                             else:
                                 sys.stderr.write(f"[satellite] AUTH FAILED: {err_str}\n")
                             self._running = False
@@ -1359,12 +1458,16 @@ class SatelliteNode:
                             if self.hud:
                                 self.hud.log_event(msg.payload.get("event", "Event received"))
                     except Exception as err:
-                        sys.stderr.write(f"[satellite] Error handling message: {err}\n")
-            except Exception:
+                        if self.hud:
+                            self.report_error(err, context="msg_parse")
+                        else:
+                            sys.stderr.write(f"[satellite] Error handling message: {err}\n")
+            except Exception as exc:
                 if self._running:
                     self._running = False
                 if self.hud:
                     self.hud.set_connection_status(False)
+                    self.report_error(exc, context="conn")
                 break
 
     def _start_rendezvous_listener(self) -> None:
@@ -1601,10 +1704,25 @@ class SatelliteNode:
                                 self.hud.show_toast(f"Upgrade failed: {res.get('error', 'unknown')}", duration=5.0)
                         elif key.lower() == "r":
                             # Force screen clear & redraw
+                            self.hud.show_toast("Screen Redrawn", duration=2.0)
                             self.hud.render_loop_tick(force_redraw=True)
 
-                    # Low-power tick sleep (optimized for iOS/mobile battery and memory stability)
-                    time.sleep(tick_delay)
+                    # Responsive low-power tick sleep: slices delay so keypresses (e.g. 'r') respond immediately
+                    elapsed = 0.0
+                    slice_sec = 0.08
+                    while elapsed < tick_delay:
+                        time.sleep(slice_sec)
+                        elapsed += slice_sec
+                        k = self.hud.check_keyboard_input()
+                        if k:
+                            if k.lower() == "q":
+                                return
+                            elif k.lower() == "r":
+                                self.hud.show_toast("Screen Redrawn", duration=2.0)
+                                self.hud.render_loop_tick(force_redraw=True)
+                                break
+                            elif k.lower() == "u":
+                                break
 
                     # Periodic memory garbage collection (safeguard against iOS iSH emulator memory creep)
                     hud_ticks = getattr(self, "_hud_ticks", 0) + 1

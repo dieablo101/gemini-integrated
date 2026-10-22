@@ -361,3 +361,32 @@ def format_reconnect_countdown(remaining_seconds: float) -> str:
     secs = rem % 60
     return f"{mins}m {secs:.1f}s"
 
+
+def generate_terminal_qr(data: str, invert: bool = True) -> str:
+    """Renders a data string into a high-contrast terminal Unicode/ASCII QR code.
+
+    Args:
+        data: Payload string, URL, token, or command to encode.
+        invert: Whether to invert colors (black-on-white / white-on-black) for terminal readability.
+
+    Returns:
+        ASCII/Unicode block rendered QR code string.
+    """
+    if not data or not data.strip():
+        return ""
+    try:
+        import io
+        import qrcode
+
+        qr = qrcode.QRCode(box_size=1, border=1)
+        qr.add_data(data.strip())
+        qr.make(fit=True)
+        buf = io.StringIO()
+        qr.print_ascii(out=buf, invert=invert)
+        return buf.getvalue().rstrip()
+    except ImportError:
+        return f"[qrcode library unavailable: {data}]"
+    except Exception as exc:
+        return f"[QR generation error: {exc}]"
+
+

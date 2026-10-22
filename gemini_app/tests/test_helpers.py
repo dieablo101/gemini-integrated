@@ -10,6 +10,7 @@ from gemini_app.helpers import (
     detect_language,
     extract_retry_delay,
     format_reconnect_countdown,
+    generate_terminal_qr,
     truncate_wire_snippets,
     write_code_to_disk,
 )
@@ -159,6 +160,19 @@ class TestHelpers(unittest.TestCase):
         self.assertEqual(format_reconnect_countdown(75.32), "1m 15.3s")
         self.assertEqual(format_reconnect_countdown(134.8), "2m 14.8s")
 
+    def test_generate_terminal_qr(self):
+        # Empty string yields empty
+        self.assertEqual(generate_terminal_qr(""), "")
+        self.assertEqual(generate_terminal_qr("   "), "")
+
+        # Non-empty generates valid block representation containing blocks
+        qr = generate_terminal_qr("http://192.168.1.91:8888")
+        self.assertTrue(len(qr) > 0)
+        self.assertTrue("█" in qr or "▄" in qr or "▀" in qr)
+
+        # Inverted mode generates
+        qr_inv = generate_terminal_qr("test-payload", invert=False)
+        self.assertTrue(len(qr_inv) > 0)
 
 
 if __name__ == "__main__":

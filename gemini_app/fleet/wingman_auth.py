@@ -134,6 +134,7 @@ def verify_system_password(password: str) -> bool:
     if not password:
         return False
     import getpass
+    import os
     import subprocess
     user = getpass.getuser()
 
@@ -150,10 +151,29 @@ def verify_system_password(password: str) -> bool:
         except Exception:
             pass
 
-    # 2. Subprocess sudo verification fallback
+    # 2. Linux PAM unix_chkpwd helper (direct shadow check, unprivileged setgid shadow)
+    for chkpwd in ("/sbin/unix_chkpwd", "/usr/sbin/unix_chkpwd"):
+        if os.path.isfile(chkpwd):
+            try:
+                proc = subprocess.run(
+                    [chkpwd, user, "check"],
+                    input=password.encode("utf-8") + b"\x00",
+                    capture_output=True,
+                    timeout=3.0,
+                )
+                if proc.returncode == 0:
+                    return True
+            except Exception:
+                pass
+
+    # 3. Subprocess sudo verification fallback (supports both classic sudo and sudo-rs)
     try:
+        try:
+            subprocess.run(["sudo", "-k"], capture_output=True, timeout=2.0)
+        except Exception:
+            pass
         proc = subprocess.run(
-            ["sudo", "-k", "-S", "true"],
+            ["sudo", "-S", "-p", "", "true"],
             input=password.encode("utf-8") + b"\n",
             capture_output=True,
             timeout=5.0,
@@ -167,10 +187,10 @@ def verify_system_password(password: str) -> bool:
 
 
 def verify_homebase_passkey(passkey: str) -> bool:
-    """Verifies a passkey against Homebase's encrypted vault PBKDF2 hash
+    """Verifies a passkey against Homebase's encrypted vault PBKDF2 hash,
 
-    or host Linux system credentials. This serves as the cryptographic baseline
-    for sensitive operations originating from Wingman satellites.
+    host Linux system credentials, or cluster fleet key. This serves as the
+    cryptographic baseline for sensitive operations originating from Wingman satellites.
     """
     if not passkey:
         return False
@@ -178,26 +198,36 @@ def verify_homebase_passkey(passkey: str) -> bool:
     if not clean:
         return False
 
-    # 1. Vault passkey check
+    # 1. Vault passkey check (check clean and raw)
     try:
         from gemini_app.vault import is_vault_configured, verify_vault_passkey, get_session_passkey, set_session_passkey
-        if is_vault_configured() and verify_vault_passkey(clean):
-            set_session_passkey(clean)
-            return True
+        if is_vault_configured():
+            if verify_vault_passkey(clean) or verify_vault_passkey(passkey):
+                set_session_passkey(clean)
+                return True
         cached = get_session_passkey()
-        if cached and clean == cached:
+        if cached and (clean == cached or passkey == cached):
             return True
     except Exception:
         pass
 
-    # 2. Host Linux system password check (PAM / sudo)
-    if verify_system_password(clean):
+    # 2. Host Linux system password check (PAM / unix_chkpwd / sudo)
+    if verify_system_password(clean) or verify_system_password(passkey):
         try:
             from gemini_app.vault import set_session_passkey
             set_session_passkey(clean)
         except Exception:
             pass
         return True
+
+    # 3. Cluster fleet key fallback
+    try:
+        from gemini_app.fleet.security import get_existing_fleet_key
+        fkey = get_existing_fleet_key()
+        if fkey and (clean == fkey or passkey == fkey):
+            return True
+    except Exception:
+        pass
 
     return False
 

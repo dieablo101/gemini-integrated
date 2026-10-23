@@ -4138,7 +4138,7 @@ class ChatApp(App):
                 ),
             )
 
-            # Helper for silent reconnection and resume on quota limit / ResourceExhausted
+            # Helper for silent reconnection and resume on quota limit / ResourceExhausted or transient network/DNS drops
             def _send_with_silent_quota_retry(send_call: Callable[[], Any], max_retries: int = 5, base_delay: float = 3.0) -> Any:
                 attempt = 0
                 while True:
@@ -4150,31 +4150,50 @@ class ChatApp(App):
                         if getattr(self, "_abort_requested", False):
                             return None
                         err_text = str(call_err)
+                        err_lower = err_text.lower()
                         is_quota = (
-                            "ResourceExhausted" in err_text
+                            "resourceexhausted" in err_lower
                             or "429" in err_text
-                            or "quota" in err_text.lower()
-                            or "rate limit" in err_text.lower()
-                            or "resource has been exhausted" in err_text.lower()
+                            or "quota" in err_lower
+                            or "rate limit" in err_lower
+                            or "resource has been exhausted" in err_lower
                         )
-                        if not is_quota or attempt >= max_retries:
+                        is_transient_network = (
+                            "temporary failure in name resolution" in err_lower
+                            or "nameresolutionerror" in err_lower
+                            or "getaddrinfo failed" in err_lower
+                            or "gaierror" in err_lower
+                            or "connecterror" in err_lower
+                            or "connection error" in err_lower
+                            or "connection reset" in err_lower
+                            or "remotedisconnected" in err_lower
+                            or "socket.timeout" in err_lower
+                            or "timed out" in err_lower
+                            or "502" in err_text
+                            or "503" in err_text
+                            or "504" in err_text
+                        )
+                        if (not is_quota and not is_transient_network) or attempt >= max_retries:
                             raise call_err
 
                         attempt += 1
                         delay_hint = extract_retry_delay(err_text)
                         if delay_hint is not None and delay_hint > 0:
                             wait_sec = max(delay_hint + 0.1, 0.5)
+                        elif is_transient_network:
+                            # Transient DNS or connection reset: retry quickly in 1.5s - 3s
+                            wait_sec = min(base_delay * (1.5 ** (attempt - 1)), 10.0)
                         else:
                             wait_sec = base_delay * (2 ** (attempt - 1))
 
                         target_time = time.monotonic() + wait_sec
 
-                        def _update_reconnect_ui(t=target_time, att=attempt, mr=max_retries):
+                        def _update_reconnect_ui(t=target_time, att=attempt, mr=max_retries, net=is_transient_network):
                             self._reconnect_target_time = t
                             self._reconnect_attempt = att
                             self._reconnect_max_retries = mr
                             self._request_phase = "reconnecting"
-                            self._request_details = ""
+                            self._request_details = "DNS/network reconnecting..." if net else ""
                             self._tick_status()
 
                         self.app.call_from_thread(_update_reconnect_ui)

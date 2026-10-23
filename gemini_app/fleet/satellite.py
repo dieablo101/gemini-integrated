@@ -86,6 +86,35 @@ def release_termux_wake_lock() -> None:
 atexit.register(release_termux_wake_lock)
 
 
+def ensure_termux_mobile_environment(mothership_host: Optional[str] = None) -> None:
+    """Configures mobile background persistence, wake-lock, and autostart on Android Termux."""
+    if not is_termux_platform():
+        return
+
+    # 1. Acquire wake lock immediately so process is not frozen during Doze
+    acquire_termux_wake_lock()
+
+    # 2. Check termux-api tool availability
+    if not shutil.which("termux-battery-status"):
+        sys.stderr.write(
+            "[satellite] Notice: 'termux-api' utilities not found.\n"
+            "   Run 'pkg install -y termux-api' in Termux and install the Termux:API app\n"
+            "   from F-Droid/GitHub for real-time mobile battery & thermal vitals.\n"
+        )
+
+    # 3. Check and auto-provision Termux:Boot autostart
+    try:
+        from gemini_app.fleet.autostart import check_autostart_status, install_autostart
+        st = check_autostart_status()
+        if not st.get("installed"):
+            target = mothership_host or get_saved_mothership() or "192.168.1.90"
+            res = install_autostart(mothership=target)
+            if res.get("status") == "ok":
+                sys.stdout.write(f"[satellite] Auto-provisioned Termux:Boot autostart service for Mothership ({target}).\n")
+    except Exception:
+        pass
+
+
 def find_repo_root(start: Optional[Path] = None) -> Path:
     """Finds the root repository directory containing .git, traversing upwards if needed."""
     curr = (start or Path.cwd()).resolve()
@@ -651,7 +680,7 @@ CONFIG_FILE: Path = Path.home() / ".gemini" / "config.json"
 
 
 def is_lan_address(addr: Optional[str]) -> bool:
-    """Checks whether an address is a local LAN address (RFC 1918 / loopback)."""
+    """Checks whether an address is a local LAN address (RFC 1918 / loopback / ULA)."""
     if not addr or not isinstance(addr, str):
         return False
     a = addr.strip().lower()
@@ -665,12 +694,30 @@ def is_lan_address(addr: Optional[str]) -> bool:
             second = int(parts[1])
             if 16 <= second <= 31:
                 return True
+    if a.startswith("fe80:") or a.startswith("fd") or a.startswith("fc"):
+        return True
     return False
 
 
 def get_config_path() -> Path:
     """Returns path to ~/.gemini/config.json."""
     return CONFIG_FILE
+
+
+def get_saved_mothership_ipv6() -> Optional[str]:
+    """Retrieves saved WAN IPv6 address from ~/.gemini/config.json or env."""
+    cfg_file = get_config_path()
+    if cfg_file.exists():
+        try:
+            cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
+            if cfg.get("mothership_wan_ipv6"):
+                return str(cfg["mothership_wan_ipv6"]).strip()
+        except Exception:
+            pass
+    env_v6 = os.getenv("GEMINI_MOTHERSHIP_IPV6")
+    if env_v6:
+        return env_v6.strip()
+    return None
 
 
 def get_saved_mothership_endpoints() -> Tuple[Optional[str], Optional[str], int]:
@@ -714,8 +761,9 @@ def save_mothership_dual_endpoints(
     lan_ip: Optional[str] = None,
     wan_ip: Optional[str] = None,
     port: Optional[int] = None,
+    wan_ipv6: Optional[str] = None,
 ) -> bool:
-    """Persists dynamic LAN and WAN IPs to ~/.gemini/config.json."""
+    """Persists dynamic LAN, WAN, and IPv6 endpoints to ~/.gemini/config.json."""
     cfg_file = get_config_path()
     cfg_file.parent.mkdir(parents=True, exist_ok=True)
     cfg: Dict[str, Any] = {}
@@ -730,6 +778,8 @@ def save_mothership_dual_endpoints(
         cfg["mothership_host"] = lan_ip.strip()
     if wan_ip:
         cfg["mothership_wan"] = wan_ip.strip()
+    if wan_ipv6:
+        cfg["mothership_wan_ipv6"] = wan_ipv6.strip()
     if port is not None:
         cfg["mothership_port"] = int(port)
 
@@ -922,11 +972,16 @@ class SatelliteNode:
         saved_lan, saved_wan, saved_port = get_saved_mothership_endpoints()
         self.lan_host: Optional[str] = saved_lan or ("192.168.1.90" if self._explicit_host is None else (self._explicit_host if is_lan_address(self._explicit_host) else "192.168.1.90"))
         self.wan_host: Optional[str] = saved_wan or (self._explicit_host if (self._explicit_host and not is_lan_address(self._explicit_host)) else None)
+        self.wan_ipv6: Optional[str] = get_saved_mothership_ipv6()
 
         self.mothership_port = mothership_port if mothership_port is not None else saved_port
-        self.mothership_host = self._explicit_host or self.lan_host or self.wan_host or "192.168.1.90"
+        self.mothership_host = self._explicit_host or self.lan_host or self.wan_host or self.wan_ipv6 or "192.168.1.90"
         self.active_host: str = self.mothership_host
         self.active_route_type: str = "LAN" if is_lan_address(self.active_host) else "WAN"
+
+        # Auto-configure mobile environment on Android Termux
+        if is_termux_platform():
+            ensure_termux_mobile_environment(mothership_host=self.lan_host or self.mothership_host)
 
         self.heartbeat_interval = heartbeat_interval
         self.auto_upgrade = auto_upgrade
@@ -1165,22 +1220,41 @@ class SatelliteNode:
         """Establishes TCP connection to the Mothership with automatic LAN -> WAN failover."""
         # Candidates in priority order
         candidates = []
+        seen_hosts = set()
+
+        def add_candidate(h: Optional[str], route: str):
+            if h and h.strip() and h.strip() not in seen_hosts:
+                seen_hosts.add(h.strip())
+                candidates.append((h.strip(), route))
+
         if self._explicit_host:
-            candidates.append((self._explicit_host, "LAN" if is_lan_address(self._explicit_host) else "WAN"))
+            explicit_route = "LAN" if is_lan_address(self._explicit_host) else "WAN"
+            add_candidate(self._explicit_host, explicit_route)
+            # Automatic WAN failover for roaming/cellular even when explicit LAN host was specified
+            if explicit_route == "LAN":
+                if self.wan_host:
+                    add_candidate(self.wan_host, "WAN")
+                if getattr(self, "wan_ipv6", None):
+                    add_candidate(self.wan_ipv6, "WAN-IPv6")
+            else:
+                if self.lan_host:
+                    add_candidate(self.lan_host, "LAN")
         else:
             if self.lan_host:
-                candidates.append((self.lan_host, "LAN"))
+                add_candidate(self.lan_host, "LAN")
             if self.wan_host and self.wan_host != self.lan_host:
-                candidates.append((self.wan_host, "WAN"))
+                add_candidate(self.wan_host, "WAN")
+            if getattr(self, "wan_ipv6", None):
+                add_candidate(self.wan_ipv6, "WAN-IPv6")
             if not candidates and self.mothership_host:
-                candidates.append((self.mothership_host, "LAN" if is_lan_address(self.mothership_host) else "WAN"))
+                add_candidate(self.mothership_host, "LAN" if is_lan_address(self.mothership_host) else "WAN")
 
         last_exc = None
         for host, route_type in candidates:
             try:
                 # Fast timeout on LAN (1.8s) when WAN fallback exists so off-wifi nodes don't stall
                 t_out = 1.8 if (route_type == "LAN" and len(candidates) > 1) else timeout
-                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s = socket.create_connection((host, self.mothership_port), timeout=t_out)
                 # Mobile-hardened TCP Keepalive (detects carrier/Wi-Fi drops in ~20-30s instead of hanging 15+ minutes)
                 try:
                     s.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
@@ -1192,8 +1266,6 @@ class SatelliteNode:
                         s.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3)
                 except Exception:
                     pass
-                s.settimeout(t_out)
-                s.connect((host, self.mothership_port))
                 s.settimeout(None)  # Switch to blocking / select-ready for threads
                 self.sock = s
                 self.active_host = host
@@ -1564,9 +1636,10 @@ class SatelliteNode:
                             if net_info:
                                 ms_lan = net_info.get("lan_ip")
                                 ms_wan = net_info.get("wan_ip")
+                                ms_v6 = net_info.get("wan_ipv6")
                                 ms_port = net_info.get("port", self.mothership_port)
-                                if ms_lan or ms_wan:
-                                    self._update_dual_endpoints(ms_lan, ms_wan, ms_port)
+                                if ms_lan or ms_wan or ms_v6:
+                                    self._update_dual_endpoints(ms_lan, ms_wan, ms_port, wan_ipv6=ms_v6)
 
                             # Autonomous check: has mothership advanced past local node git commit?
                             if self.auto_upgrade and not self._is_upgrading:
@@ -1698,8 +1771,8 @@ class SatelliteNode:
             except Exception:
                 pass
 
-    def _update_dual_endpoints(self, lan_ip: Optional[str], wan_ip: Optional[str], port: int) -> None:
-        """Dynamically caches updated LAN and WAN IPs streamed from Mothership."""
+    def _update_dual_endpoints(self, lan_ip: Optional[str], wan_ip: Optional[str], port: int, wan_ipv6: Optional[str] = None) -> None:
+        """Dynamically caches updated LAN, WAN, and IPv6 endpoints streamed from Mothership."""
         changed = False
         if lan_ip and lan_ip != self.lan_host:
             self.lan_host = lan_ip
@@ -1707,11 +1780,14 @@ class SatelliteNode:
         if wan_ip and wan_ip != self.wan_host:
             self.wan_host = wan_ip
             changed = True
+        if wan_ipv6 and wan_ipv6 != getattr(self, "wan_ipv6", None):
+            self.wan_ipv6 = wan_ipv6
+            changed = True
         if port and port != self.mothership_port:
             self.mothership_port = port
             changed = True
         if changed:
-            save_mothership_dual_endpoints(self.lan_host, self.wan_host, self.mothership_port)
+            save_mothership_dual_endpoints(self.lan_host, self.wan_host, self.mothership_port, wan_ipv6=getattr(self, "wan_ipv6", None))
             if self.hud:
                 self.hud.set_endpoints(self.lan_host, self.wan_host)
 
@@ -1875,7 +1951,7 @@ class SatelliteNode:
                     # Reconnect attempt if disconnected
                     if not self._running:
                         self.hud.set_connection_status(False)
-                        self.stop()
+                        self.stop(release_wake_lock=False)
                         time.sleep(2.0)
                         saved_lan, saved_wan, saved_p = get_saved_mothership_endpoints()
                         if saved_lan:
@@ -1884,6 +1960,7 @@ class SatelliteNode:
                             self.wan_host = saved_wan
                         if saved_p:
                             self.mothership_port = saved_p
+                        self.wan_ipv6 = get_saved_mothership_ipv6()
                         self.start()
                 except Exception:
                     time.sleep(0.5)
@@ -1893,7 +1970,7 @@ class SatelliteNode:
         finally:
             if self.hud:
                 self.hud.restore_terminal()
-            self.stop()
+            self.stop(release_wake_lock=True)
 
     def run_forever(self) -> None:
         """Blocks while satellite is running; handles Ctrl+C cleanly and auto-reconnects."""
@@ -1902,7 +1979,7 @@ class SatelliteNode:
         try:
             while True:
                 if not self._running:
-                    self.stop()
+                    self.stop(release_wake_lock=False)
                     sys.stdout.write(f"[satellite] Connection lost. Reconnecting to {self.mothership_host}:{self.mothership_port} in {int(backoff)}s...\n")
                     time.sleep(backoff)
                     saved_lan, saved_wan, saved_p = get_saved_mothership_endpoints()
@@ -1912,6 +1989,7 @@ class SatelliteNode:
                         self.wan_host = saved_wan
                     if saved_p:
                         self.mothership_port = saved_p
+                    self.wan_ipv6 = get_saved_mothership_ipv6()
                     if self.start():
                         sys.stdout.write(f"[satellite] Reconnected successfully.\n")
                         backoff = 2.0
@@ -1923,9 +2001,9 @@ class SatelliteNode:
         except KeyboardInterrupt:
             sys.stdout.write("\n[satellite] Interrupt received. Shutting down...\n")
         finally:
-            self.stop()
+            self.stop(release_wake_lock=True)
 
-    def stop(self) -> None:
+    def stop(self, release_wake_lock: bool = False) -> None:
         """Closes socket and terminates background worker threads cleanly."""
         self._running = False
         if self.wingman_applet:
@@ -1933,7 +2011,7 @@ class SatelliteNode:
                 self.wingman_applet.stop()
             except Exception:
                 pass
-        if is_termux_platform():
+        if release_wake_lock and is_termux_platform():
             release_termux_wake_lock()
         if self._rendezvous_sock:
             try:
@@ -1967,6 +2045,7 @@ class SatelliteNode:
 
 def main() -> int:
     ensure_ish_background_keepalive()
+    ensure_termux_mobile_environment()
 
     saved_host = get_saved_mothership()
     saved_port = get_saved_mothership_port()

@@ -109,9 +109,24 @@ class MothershipServer:
         if self._running:
             return True
         try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            s.bind((self.host, self.port))
+            s = None
+            if self.host in ("0.0.0.0", "", "::"):
+                try:
+                    s = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+                    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+                    s.bind(("::", self.port))
+                except Exception:
+                    if s:
+                        try:
+                            s.close()
+                        except Exception:
+                            pass
+                    s = None
+            if s is None:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                s.bind((self.host, self.port))
             self.port = s.getsockname()[1]
             s.listen(10)
             self.server_sock = s
@@ -134,6 +149,9 @@ class MothershipServer:
         while self._running and self.server_sock:
             try:
                 conn, addr = self.server_sock.accept()
+                # Normalize IPv4-mapped IPv6 address (::ffff:192.168.1.x -> 192.168.1.x)
+                if addr and isinstance(addr[0], str) and addr[0].startswith("::ffff:"):
+                    addr = (addr[0][7:], addr[1])
                 try:
                     conn.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
                     if hasattr(socket, "TCP_KEEPIDLE"):

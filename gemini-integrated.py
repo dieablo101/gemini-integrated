@@ -16,6 +16,17 @@ import subprocess
 import sys
 
 
+def is_termux_platform() -> bool:
+    """Detects Android Termux environment."""
+    if "com.termux" in os.environ.get("PREFIX", ""):
+        return True
+    if Path("/data/data/com.termux").exists():
+        return True
+    if "TERMUX_VERSION" in os.environ:
+        return True
+    return False
+
+
 def is_constrained_platform() -> bool:
     """Detects whether running on a constrained, emulated, or 32-bit platform."""
     if sys.maxsize <= 2**32:
@@ -290,7 +301,13 @@ if __name__ == "__main__":
         from gemini_app.fleet.mothership import main as mothership_main
         sys.exit(mothership_main())
 
-    # 8. If on a constrained platform without google-genai, auto-route gracefully
+    # 8. If on Android Termux or a constrained platform, auto-route gracefully
+    if is_termux_platform():
+        if "--ui" not in sys.argv:
+            from gemini_app.fleet.satellite import ensure_termux_mobile_environment, main as satellite_main
+            ensure_termux_mobile_environment()
+            sys.exit(satellite_main())
+
     if is_constrained_platform():
         try:
             import google.genai

@@ -875,6 +875,52 @@ class TestFleetNodesAndAutostart(unittest.TestCase):
             sat.stop()
             server.stop()
 
+    def test_termux_mobile_environment_auto_setup(self) -> None:
+        """Verifies ensure_termux_mobile_environment acquires wake lock and provisions autostart."""
+        from gemini_app.fleet.satellite import ensure_termux_mobile_environment
+
+        with patch("gemini_app.fleet.satellite.is_termux_platform", return_value=True):
+            with patch("gemini_app.fleet.satellite.acquire_termux_wake_lock") as mock_lock:
+                with patch("shutil.which", return_value="/data/data/com.termux/files/usr/bin/termux-battery-status"):
+                    with patch("gemini_app.fleet.autostart.check_autostart_status", return_value={"installed": False}):
+                        with patch("gemini_app.fleet.autostart.install_autostart", return_value={"status": "ok"}) as mock_install:
+                            ensure_termux_mobile_environment("192.168.1.90")
+                            mock_lock.assert_called_once()
+                            mock_install.assert_called_once_with(mothership="192.168.1.90")
+
+    def test_satellite_candidates_wan_failover_with_explicit_lan(self) -> None:
+        """Verifies SatelliteNode includes WAN host in failover candidates even with explicit LAN host."""
+        with patch("gemini_app.fleet.satellite.get_saved_mothership_endpoints", return_value=("192.168.1.90", "203.0.113.199", 7331)):
+            with patch("gemini_app.fleet.satellite.get_saved_mothership_ipv6", return_value="2603:900b:d4f1:8a10::1"):
+                node = SatelliteNode("192.168.1.90", 7331, node_id="mobile-phone-node")
+                with patch("socket.create_connection") as mock_conn:
+                    # Let first attempt (LAN) fail, and second (WAN) succeed
+                    mock_sock = MagicMock()
+                    mock_conn.side_effect = [OSError("LAN unreachable"), mock_sock]
+                    res = node.connect()
+                    self.assertTrue(res)
+                    self.assertEqual(node.active_host, "203.0.113.199")
+                    self.assertEqual(node.active_route_type, "WAN")
+                    self.assertEqual(mock_conn.call_count, 2)
+
+    def test_satellite_stop_wake_lock_preservation(self) -> None:
+        """Verifies stop() only releases wake lock when release_wake_lock=True."""
+        node = SatelliteNode("127.0.0.1", 7331, node_id="wake-lock-node")
+        with patch("gemini_app.fleet.satellite.is_termux_platform", return_value=True):
+            with patch("gemini_app.fleet.satellite.release_termux_wake_lock") as mock_rel:
+                node.stop(release_wake_lock=False)
+                mock_rel.assert_not_called()
+
+                node.stop(release_wake_lock=True)
+                mock_rel.assert_called_once()
+
+    def test_mothership_wan_ipv6_telemetry(self) -> None:
+        """Verifies telemetry payload includes wan_ipv6."""
+        with patch("gemini_app.fleet.telemetry.get_public_wan_ipv6", return_value="2603:900b:d4f1:8a10::1"):
+            telem = collect_mothership_telemetry()
+            self.assertIn("network", telem)
+            self.assertEqual(telem["network"].get("wan_ipv6"), "2603:900b:d4f1:8a10::1")
+
 
 if __name__ == "__main__":
     unittest.main()

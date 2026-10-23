@@ -1778,6 +1778,8 @@ class ChatApp(App):
     def _start_status_ticker(self) -> None:
         if self._status_timer:
             self._status_timer.stop()
+        if getattr(self, "cognitive_adapter", None):
+            self.cognitive_adapter.set_streaming(True)
         self._request_start_time = time.monotonic()
         self._spinner_idx = 0
         self._tick_status()
@@ -1787,6 +1789,8 @@ class ChatApp(App):
         if self._status_timer:
             self._status_timer.stop()
             self._status_timer = None
+        if getattr(self, "cognitive_adapter", None):
+            self.cognitive_adapter.set_streaming(False)
         self._request_phase = "idle"
         self._request_details = ""
         self._reconnect_target_time = 0.0

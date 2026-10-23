@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import secrets
 import time
 from typing import Any, Dict, List, Optional
 
@@ -29,6 +30,7 @@ CLUSTER_KEY_ENC: Path = FLEET_VAULT_DIR / "id_cluster.enc"
 _KEYRING_FLEET_KEY: Optional[str] = None
 _KEYRING_SSH_KEY_DATA: Optional[str] = None
 _KEYRING_UNLOCKED_AT: Optional[float] = None
+_KEYRING_UNLOCKING: bool = False
 
 
 class FleetKeyring:
@@ -43,8 +45,10 @@ class FleetKeyring:
     @classmethod
     def get_fleet_key(cls) -> Optional[str]:
         """Returns active HMAC PSK fleet key from in-memory keyring."""
-        global _KEYRING_FLEET_KEY
+        global _KEYRING_FLEET_KEY, _KEYRING_UNLOCKING
         if _KEYRING_FLEET_KEY:
+            return _KEYRING_FLEET_KEY
+        if _KEYRING_UNLOCKING:
             return _KEYRING_FLEET_KEY
         passkey = get_session_passkey()
         if passkey and verify_vault_passkey(passkey):
@@ -122,9 +126,7 @@ class FleetKeyring:
                     pass
 
         if not fleet_key_val:
-            from gemini_app.fleet.security import get_or_create_fleet_key
-
-            fleet_key_val = get_or_create_fleet_key()
+            fleet_key_val = secrets.token_hex(32)
             try:
                 enc = encrypt_bytes(fleet_key_val.encode("utf-8"), passkey)
                 FLEET_KEY_ENC.write_bytes(enc)

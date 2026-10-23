@@ -45,14 +45,21 @@ fleet.key
 *.secret
 *.pem
 *.env
+config.json
 vault/*.txt
 vault/*.token
 vault/*.key
 !vault/*.enc
+!vault/*/*.enc
+!vault/*/*.sec.enc
 !vault/.vault_meta.json
+!vault/trusted_wingman_devices.json
 
 # Screenshots & transient audit captures
 screenshots/
+
+__pycache__/
+*.pyc
 """
 
 

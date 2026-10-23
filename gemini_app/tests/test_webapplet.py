@@ -181,6 +181,24 @@ class TestWingmanAndInspectorApplets(unittest.TestCase):
         self.assertEqual(res.get("status"), "authenticated")
         self.assertEqual(res.get("method"), "apple_secure_enclave")
 
+    def test_wingman_portal_and_cmd_routes(self) -> None:
+        """Verifies Wingman serves setup portal HTML and raw bootstrap cmd."""
+        port = self.wingman.engine.port
+
+        url_setup = f"http://127.0.0.1:{port}/setup"
+        with urllib.request.urlopen(url_setup, timeout=2.0) as resp:
+            content = resp.read().decode()
+            self.assertEqual(resp.status, 200)
+            self.assertIn("Mothership Gate", content)
+            self.assertIn("TAP TO COPY RECONNECT COMMAND", content)
+
+        url_cmd = f"http://127.0.0.1:{port}/cmd"
+        with urllib.request.urlopen(url_cmd, timeout=2.0) as resp:
+            cmd_content = resp.read().decode()
+            self.assertEqual(resp.status, 200)
+            self.assertIn("gemini-integrated.py autostart", cmd_content)
+            self.assertIn("192.168.1.90", cmd_content)
+
 
 class TestFleetBiometrics(unittest.TestCase):
     """Tests platform-aware fleet biometrics detection and coordinator."""

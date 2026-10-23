@@ -813,13 +813,13 @@ def get_wingman_html(
         <div class="modal-icon">🔐</div>
         <div>
           <div class="modal-title">Homebase Passkey Required</div>
-          <div class="modal-subtitle" id="passkeyPromptSubtitle">Authorize interactive bilateral operations for this session with your Homebase passkey or system password.</div>
+          <div class="modal-subtitle" id="passkeyPromptSubtitle">Authorize interactive bilateral operations for this session with your Homebase vault passkey.</div>
         </div>
       </div>
-      <div class="gate-error" id="modalPasskeyError" style="display: none; margin-bottom: 12px;">Invalid passkey or system password. Verification denied.</div>
+      <div class="gate-error" id="modalPasskeyError" style="display: none; margin-bottom: 12px;">Invalid vault passkey. Verification denied.</div>
       <form id="passkeyModalForm" onsubmit="handleSessionPasskeySubmit(event)">
         <div class="input-wrapper">
-          <input type="password" id="modalPasskeyInput" class="gate-input" placeholder="Enter Homebase vault passkey or system password..." autocomplete="current-password" required>
+          <input type="password" id="modalPasskeyInput" class="gate-input" placeholder="Enter Homebase vault passkey..." autocomplete="current-password" required>
           <button type="button" class="btn-toggle-eye" onclick="togglePasskeyVisibility()" title="Show/Hide passkey">👁</button>
         </div>
         <div class="modal-actions">
@@ -949,7 +949,7 @@ def get_wingman_html(
           }}
         }} else {{
           if (errEl) {{
-            errEl.textContent = data.error || data.message || "Invalid passkey or system password. Verification denied.";
+            errEl.textContent = data.error || data.message || "Invalid vault passkey. Verification denied.";
             errEl.style.display = 'block';
           }}
           if (input) {{

@@ -453,26 +453,29 @@ class MothershipServer:
                                     sat.last_active = time.time()
                                     if "telemetry" in msg.payload:
                                         sat.telemetry = msg.payload["telemetry"]
+                                        self._prune_pending_wingman_requests()
                                         pending_list = sat.telemetry.get("webapplet", {}).get("pending_auth", [])
-                                        for p in pending_list:
-                                            rid = p.get("auth_req_id") or p.get("session_id")
-                                            dev_id = p.get("device_id", "")
-                                            cip = p.get("client_ip", "")
-                                            if cip in ("127.0.0.1", "::1", "localhost", ""):
-                                                cip = addr[0]
-                                            already_queued = any(
-                                                r.get("node_id") == node_id and (
-                                                    (dev_id and r.get("device_id") == dev_id)
-                                                    or (r.get("auth_req_id") or r.get("session_id")) == rid
+                                        is_w_active = sat.telemetry.get("webapplet", {}).get("wingman_active", False)
+                                        if is_w_active:
+                                            for p in pending_list:
+                                                rid = p.get("auth_req_id") or p.get("session_id")
+                                                dev_id = p.get("device_id", "")
+                                                cip = p.get("client_ip", "")
+                                                if cip in ("127.0.0.1", "::1", "localhost", ""):
+                                                    cip = addr[0]
+                                                already_queued = any(
+                                                    r.get("node_id") == node_id and (
+                                                        (dev_id and r.get("device_id") == dev_id)
+                                                        or (r.get("auth_req_id") or r.get("session_id")) == rid
+                                                    )
+                                                    for r in self.pending_wingman_auth_requests.values()
                                                 )
-                                                for r in self.pending_wingman_auth_requests.values()
-                                            )
-                                            if rid and not already_queued:
-                                                entry = dict(p)
-                                                entry["node_id"] = node_id
-                                                entry["client_ip"] = cip
-                                                self.pending_wingman_auth_requests[rid] = entry
-                                                self._notify_wingman_auth(entry)
+                                                if rid and not already_queued:
+                                                    entry = dict(p)
+                                                    entry["node_id"] = node_id
+                                                    entry["client_ip"] = cip
+                                                    self.pending_wingman_auth_requests[rid] = entry
+                                                    self._notify_wingman_auth(entry)
                             try:
                                 save_active_nodes(self.list_nodes())
                             except Exception:
@@ -584,15 +587,17 @@ class MothershipServer:
                                     resp_payload["actions"] = list(self.recent_wingman_actions)
                             elif action in ("get_pending_wingman_auth", "pending_wingman_auth"):
                                 with self.lock:
+                                    self._prune_pending_wingman_requests()
                                     reqs = dict(self.pending_wingman_auth_requests)
                                     for nid, sat in self.nodes.items():
-                                        for p in sat.telemetry.get("webapplet", {}).get("pending_auth", []):
-                                            rid = p.get("auth_req_id") or p.get("session_id")
-                                            if rid and rid not in reqs:
-                                                entry = dict(p)
-                                                entry["node_id"] = nid
-                                                reqs[rid] = entry
-                                                self.pending_wingman_auth_requests[rid] = entry
+                                        if sat.telemetry.get("webapplet", {}).get("wingman_active", False):
+                                            for p in sat.telemetry.get("webapplet", {}).get("pending_auth", []):
+                                                rid = p.get("auth_req_id") or p.get("session_id")
+                                                if rid and rid not in reqs:
+                                                    entry = dict(p)
+                                                    entry["node_id"] = nid
+                                                    reqs[rid] = entry
+                                                    self.pending_wingman_auth_requests[rid] = entry
                                     resp_payload["requests"] = list(reqs.values())
                             elif action in ("resolve_wingman_auth", "authorize_wingman"):
                                 req_id = msg.payload.get("params", {}).get("auth_req_id") or msg.payload.get("params", {}).get("session_id", "")
@@ -635,6 +640,12 @@ class MothershipServer:
                                     if card_id in self._action_events:
                                         self._action_results[card_id] = action_entry
                                         self._action_events[card_id].set()
+
+                            elif event_name == "wingman_closed":
+                                with self.lock:
+                                    to_del = [rid for rid, r in self.pending_wingman_auth_requests.items() if r.get("node_id") == node_id]
+                                    for rid in to_del:
+                                        self.pending_wingman_auth_requests.pop(rid, None)
 
                             elif event_name in ("wingman_auth_request", "wingman_access_request"):
                                 req_id = msg.payload.get("session_id") or msg.payload.get("auth_req_id", "")
@@ -824,8 +835,28 @@ class MothershipServer:
             timeout=timeout + 5.0,
         )
 
+    def _prune_pending_wingman_requests(self, max_age: float = 45.0) -> None:
+        """Removes expired pending auth requests and entries from nodes whose browser is closed."""
+        now = time.time()
+        to_remove = []
+        for rid, req in list(self.pending_wingman_auth_requests.items()):
+            ts = req.get("timestamp", now)
+            if now - ts > max_age:
+                to_remove.append(rid)
+                continue
+            nid = req.get("node_id")
+            if nid and nid in self.nodes:
+                telem = self.nodes[nid].telemetry or {}
+                # If node explicitly reports wingman browser is not open, discard pending auth!
+                if telem.get("webapplet", {}).get("wingman_active") is False:
+                    to_remove.append(rid)
+        for rid in to_remove:
+            self.pending_wingman_auth_requests.pop(rid, None)
+
     def _notify_wingman_auth(self, auth_entry: Dict[str, Any]) -> None:
         """Notifies local UI via UNIX socket and callbacks about pending Wingman authorization."""
+        if time.time() - auth_entry.get("timestamp", time.time()) > 45.0:
+            return
         req_id = auth_entry.get("auth_req_id") or auth_entry.get("session_id", "")
         nid = auth_entry.get("node_id", "local")
         cip = auth_entry.get("client_ip", "remote")
@@ -916,8 +947,13 @@ class MothershipServer:
 
     def verify_wingman_passkey(self, passkey: str) -> bool:
         """Cryptographically verifies a passkey against Homebase's PBKDF2 vault hash."""
-        from gemini_app.fleet.wingman_auth import verify_homebase_passkey
-        return verify_homebase_passkey(passkey)
+        import importlib
+        import gemini_app.fleet.wingman_auth as wauth
+        try:
+            importlib.reload(wauth)
+        except Exception:
+            pass
+        return wauth.verify_homebase_passkey(passkey)
 
     def set_cognitive_state(
         self,

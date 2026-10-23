@@ -312,6 +312,7 @@ class WingmanApplet:
         req_id = query.get("req_id", [""])[0] or query.get("session_id", [""])[0]
         sess = self.security.get_session(req_id)
         if sess:
+            sess.last_seen = time.time()
             is_trusted = self.security.is_device_trusted(sess.device_id) or self.security.is_device_trusted(sess.client_ip)
             return {
                 "status": "approved" if sess.status == "authorized" else sess.status,
@@ -349,7 +350,7 @@ class WingmanApplet:
         return {
             "status": "ok" if valid else "invalid",
             "valid": valid,
-            "message": "Authenticated successfully" if valid else "Invalid Homebase passkey or system password.",
+            "message": "Authenticated successfully" if valid else "Invalid Homebase vault passkey.",
         }
 
     def resolve_auth_request(self, auth_req_id: str, decision: str = "accept", trust: bool = False) -> Dict[str, Any]:

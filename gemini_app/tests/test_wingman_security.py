@@ -482,15 +482,13 @@ class TestWingmanSecurity(unittest.TestCase):
         finally:
             applet.stop()
 
-    def test_verify_homebase_passkey_system_password_fallback(self) -> None:
-        """Verifies that verify_homebase_passkey falls back to host Linux system password and fleet key."""
+    def test_verify_homebase_passkey_vault_only(self) -> None:
+        """Verifies that verify_homebase_passkey strictly checks vault passkey and rejects system password."""
         with patch("gemini_app.vault.is_vault_configured", return_value=True), \
-             patch("gemini_app.vault.verify_vault_passkey", return_value=False), \
-             patch("gemini_app.fleet.wingman_auth.verify_system_password", side_effect=lambda p: p == "host-user-password"), \
-             patch("gemini_app.fleet.security.get_existing_fleet_key", return_value="fleet-secret-key"):
-            self.assertTrue(verify_homebase_passkey("host-user-password"))
-            self.assertTrue(verify_homebase_passkey("fleet-secret-key"))
-            self.assertFalse(verify_homebase_passkey("wrong-system-password"))
+             patch("gemini_app.vault.verify_vault_passkey", side_effect=lambda p: p == "vault-secret-123"):
+            self.assertTrue(verify_homebase_passkey("vault-secret-123"))
+            self.assertFalse(verify_homebase_passkey("host-user-password"))
+            self.assertFalse(verify_homebase_passkey("wrong-password"))
 
     def test_accept_vs_pair_differentiation(self) -> None:
         """Verifies that Accept is a one-time session access whereas Pair permanently trusts the device."""

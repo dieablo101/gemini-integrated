@@ -485,7 +485,6 @@ class ExpandingInput(EmacsBaseTextArea):
             return
 
         feed = self.app.query_one("#feed", FeedArea)
-        fork_active = feed.fork_ui_active
 
         if event.key in ("tab", "shift+tab"):
             event.prevent_default(); event.stop()
@@ -596,32 +595,6 @@ class ExpandingInput(EmacsBaseTextArea):
         elif event.key == "end":
             event.prevent_default(); event.stop()
             feed.jump_to_end()
-            return
-
-        if fork_active:
-            if event.key in ("escape", "ctrl+g"):
-                event.prevent_default(); event.stop()
-                feed.toggle_fork_ui()
-                self.app.update_feed_nav_banner()
-                self.app.notify("Exited fork mode")
-                return
-
-            if event.key == "space":
-                event.prevent_default(); event.stop()
-                feed.toggle_current_card_selection()
-                return
-
-            if event.key == "a":
-                event.prevent_default(); event.stop()
-                feed.toggle_all_fork_checkboxes()
-                return
-
-            if event.key in ("enter", "return"):
-                event.prevent_default(); event.stop()
-                self.app.action_confirm_fork()
-                return
-
-            event.prevent_default(); event.stop()
             return
 
         if event.key in ("shift+enter", "shift+return", "ctrl+j", "alt+enter", "meta+enter"):

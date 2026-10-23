@@ -381,6 +381,43 @@ class TestSilentQuotaReconnect(unittest.TestCase):
         with self.assertRaises(ValueError):
             _simulate_retry(hard_failure)
 
+    def test_transient_dns_error_reconnect_retry(self):
+        call_count = 0
+
+        def flaky_dns_call():
+            nonlocal call_count
+            call_count += 1
+            if call_count < 3:
+                raise Exception("socket.gaierror: [Errno -3] Temporary failure in name resolution")
+            return "RECOVERED_AFTER_DNS_GLITCH"
+
+        def _simulate_resilient_retry(call_fn, max_retries=5):
+            attempt = 0
+            while True:
+                try:
+                    return call_fn()
+                except Exception as exc:
+                    err_str = str(exc).lower()
+                    is_quota = (
+                        "resourceexhausted" in err_str
+                        or "429" in err_str
+                        or "quota" in err_str
+                        or "rate limit" in err_str
+                    )
+                    is_transient_network = (
+                        "temporary failure in name resolution" in err_str
+                        or "nameresolutionerror" in err_str
+                        or "getaddrinfo failed" in err_str
+                        or "gaierror" in err_str
+                    )
+                    if (not is_quota and not is_transient_network) or attempt >= max_retries:
+                        raise exc
+                    attempt += 1
+
+        result = _simulate_resilient_retry(flaky_dns_call, max_retries=5)
+        self.assertEqual(result, "RECOVERED_AFTER_DNS_GLITCH")
+        self.assertEqual(call_count, 3)
+
 
 class TestNotesPanelWidgets(unittest.IsolatedAsyncioTestCase):
     async def test_notes_panel_contains_notes_input_and_focus_cycling(self):

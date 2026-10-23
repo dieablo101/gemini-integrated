@@ -236,8 +236,13 @@ class FeedArea(VerticalScroll):
             if isinstance(child, TurnCard) and child.turn_index == idx:
                 return None
 
-        sender = CURRENT_USER if turn["role"] == "user" else "gemini"
+        sender = CURRENT_USER if turn.get("role") == "user" else "gemini"
+        if turn.get("sender"):
+            sender = turn["sender"]
         is_sel = idx in self._fork_selected_indices
+        badge = turn.get("badge", "")
+        card_type = turn.get("card_type", "turn")
+        theme_shade = turn.get("theme_shade", "")
 
         card = TurnCard(
             index=idx,
@@ -245,6 +250,9 @@ class FeedArea(VerticalScroll):
             text=turn["text"],
             turn_id=turn_id,
             is_selected=is_sel,
+            badge=badge,
+            card_type=card_type,
+            theme_shade=theme_shade,
         )
 
         if idx == self.active_turn_index:
@@ -676,6 +684,18 @@ class FeedArea(VerticalScroll):
     def jump_to_home(self) -> None:
         if self.is_locked():
             return
+        cadapter = getattr(self.app, "cognitive_adapter", None)
+        if cadapter:
+            target_idx, toast_msg = cadapter.handle_home_key(self._all_messages)
+            if target_idx == 0:
+                self.highlight_card(0, scroll=False)
+                self._run_target_mutation("jump_home")
+            else:
+                self.jump_to_turn(target_idx)
+            if hasattr(self.app, "trigger_nav_indicator"):
+                self.app.trigger_nav_indicator("edge_home", toast_message=toast_msg, duration=1.5)
+            return
+
         self.highlight_card(0, scroll=False)
         self._run_target_mutation("jump_home")
         if hasattr(self.app, "trigger_nav_indicator"):
@@ -707,12 +727,24 @@ class FeedArea(VerticalScroll):
         else:
             self.request_wall_shift(turn_idx, discrete_dock=True)
 
-    async def append_message(self, sender: str, text: str, jump_to_start: bool = False) -> None:
+    async def append_message(
+        self,
+        sender: str,
+        text: str,
+        jump_to_start: bool = False,
+        badge: str = "",
+        card_type: str = "turn",
+        theme_shade: str = "",
+    ) -> None:
         safe_text = text if (text and text.strip()) else "✓ Action completed."
         new_idx = len(self._all_messages)
         turn_data = {
             "turn_id": f"turn_{uuid4().hex[:8]}",
             "role": "user" if sender == CURRENT_USER else "model",
+            "sender": sender,
+            "badge": badge,
+            "card_type": card_type,
+            "theme_shade": theme_shade,
             "text": safe_text,
         }
         self._all_messages.append(turn_data)

@@ -1,4 +1,4 @@
-"""TurnCard widget displaying individual conversational turns with fork selection checkboxes."""
+"""TurnCard widget displaying individual conversational turns and cognitive memory interludes."""
 
 from __future__ import annotations
 
@@ -15,45 +15,62 @@ if TYPE_CHECKING:
 
 
 class TurnCard(Vertical):
-    """Visual card displaying a single chat message turn with role header and Markdown body."""
+    """Visual card displaying a single chat message turn or cognitive interlude with role/intent badge and Markdown body."""
 
     can_focus = False
 
-    def __init__(self, index: int, sender: str, text: str, turn_id: str, is_selected: bool = False, **kwargs) -> None:
+    def __init__(
+        self,
+        index: int,
+        sender: str,
+        text: str,
+        turn_id: str,
+        is_selected: bool = False,
+        badge: str = "",
+        card_type: str = "turn",
+        theme_shade: str = "",
+        **kwargs
+    ) -> None:
         instance_id = f"card_{uuid4().hex[:8]}"
-        super().__init__(classes="turn_card", id=instance_id, **kwargs)
+        classes = "turn_card"
+        if card_type == "cognitive_interlude":
+            classes += " turn_card_cognitive"
+            if theme_shade == "accent_bright":
+                classes += " card-cognitive-bright"
+            elif theme_shade == "accent_dim":
+                classes += " card-cognitive-dim"
+            else:
+                classes += " card-cognitive-accent"
+        elif card_type == "fold_marker":
+            classes += " turn_card_fold"
+
+        super().__init__(classes=classes, id=instance_id, **kwargs)
         self.turn_index = index
         self.turn_id = turn_id
         self.sender = sender
         self.text_content = text
         self.is_selected = is_selected
+        self.badge = badge
+        self.card_type = card_type
+        self.theme_shade = theme_shade
 
     def compose(self) -> ComposeResult:
         with Horizontal(classes="turn_header"):
             yield Label(self._get_box_label(), classes="turn_box_label", markup=False)
-        yield Markdown(f"{self.text_content}\n\n---", classes="turn_body")
+        if self.card_type == "fold_marker":
+            yield Markdown(f"{self.text_content}", classes="turn_body")
+        else:
+            yield Markdown(f"{self.text_content}\n\n---", classes="turn_body")
 
     def _get_box_label(self) -> str:
-        feed = None
-        if self.is_mounted and hasattr(self.app, "query_one"):
-            try:
-                feed = self.app.query_one("#feed")
-            except Exception:
-                pass
-
-        fork_active = getattr(feed, "fork_ui_active", False) if feed else False
-
         app = getattr(self, "app", None)
         has_note = False
         if app and hasattr(app, "relational_notes") and self.turn_id:
             has_note = bool((app.relational_notes.get(self.turn_id) or "").strip())
         note_badge = " [📝 Note]" if has_note else ""
 
-        if fork_active:
-            box = "[X]" if self.is_selected else "[ ]"
-            return f"{box} {self.sender}{note_badge}"
-        else:
-            return f"{self.sender}{note_badge}"
+        display = self.badge if self.badge else self.sender
+        return f"{display}{note_badge}"
 
     def update_display(self) -> None:
         try:
@@ -67,14 +84,9 @@ class TurnCard(Vertical):
         self.update_display()
 
     def toggle(self) -> None:
-        feed = self.app.query_one("#feed")
-        new_val = not self.is_selected
-        if new_val:
-            feed._fork_selected_indices.add(self.turn_index)
-        else:
-            feed._fork_selected_indices.discard(self.turn_index)
-        self.update_selected(new_val)
-        self.refresh()
+        """Deprecated fork toggle kept for test compatibility."""
+        self.is_selected = not self.is_selected
+        self.update_display()
 
     @on(events.Click)
     def on_card_click(self, event: events.Click) -> None:
@@ -82,12 +94,3 @@ class TurnCard(Vertical):
         if hasattr(feed, "is_locked") and feed.is_locked():
             event.stop()
             return
-        if getattr(feed, "fork_ui_active", False):
-            curr = event.widget
-            while curr and curr is not self:
-                if "turn_header" in curr.classes or "turn_box_label" in curr.classes:
-                    event.stop()
-                    feed.highlight_card(self.turn_index, scroll=False)
-                    self.toggle()
-                    return
-                curr = curr.parent

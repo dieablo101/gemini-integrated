@@ -696,7 +696,7 @@ class MothershipServer:
                                 chat_text = msg.payload.get("text", "")
                                 chat_sender = msg.payload.get("sender", "operator")
                                 chat_msg_id = msg.payload.get("id") or msg.payload.get("msg_id", "")
-                                chat_ts = msg.payload.get("timestamp", time.time())
+                                chat_ts = time.time()
                                 chat_entry = {
                                     "node_id": node_id,
                                     "sender": chat_sender,

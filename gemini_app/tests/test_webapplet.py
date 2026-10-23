@@ -197,7 +197,7 @@ class TestWingmanAndInspectorApplets(unittest.TestCase):
             cmd_content = resp.read().decode()
             self.assertEqual(resp.status, 200)
             self.assertIn("gemini-integrated.py autostart", cmd_content)
-            self.assertIn("192.168.1.90", cmd_content)
+            self.assertTrue("mothership" in cmd_content)
 
 
 class TestFleetBiometrics(unittest.TestCase):

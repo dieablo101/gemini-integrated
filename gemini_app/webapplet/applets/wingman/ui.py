@@ -811,10 +811,24 @@ def get_wingman_html(
           <div>Bilateral chat stream connected. Messages sent here are validated through the node security gate and received directly by the Mothership.</div>
         </div>
       </div>
-      <div class="chat-input-container">
-        <input type="text" id="chatInput" class="chat-input" placeholder="Message Gemini on Mothership..." onkeydown="handleChatKeyDown(event)">
-        <button class="btn btn-primary" onclick="submitChatMessage()">Send ↵</button>
-      </div>
+      <form class="chat-input-container" id="chatForm" autocomplete="off" onsubmit="event.preventDefault(); submitChatMessage();">
+        <input type="text"
+               id="chatInput"
+               name="gemini_bilateral_chat_prompt"
+               class="chat-input"
+               placeholder="Message Gemini on Mothership..."
+               autocomplete="off"
+               autocorrect="on"
+               autocapitalize="sentences"
+               spellcheck="true"
+               enterkeyhint="send"
+               data-form-type="other"
+               data-lpignore="true"
+               data-1p-ignore="true"
+               aria-autocomplete="none"
+               onkeydown="handleChatKeyDown(event)">
+        <button type="submit" class="btn btn-primary" id="chatSendBtn">Send ↵</button>
+      </form>
     </div>
 
   </div>
@@ -830,9 +844,9 @@ def get_wingman_html(
         </div>
       </div>
       <div class="gate-error" id="modalPasskeyError" style="display: none; margin-bottom: 12px;">Invalid vault passkey. Verification denied.</div>
-      <form id="passkeyModalForm" onsubmit="handleSessionPasskeySubmit(event)">
+      <form id="passkeyModalForm" autocomplete="off" onsubmit="handleSessionPasskeySubmit(event)">
         <div class="input-wrapper">
-          <input type="password" id="modalPasskeyInput" class="gate-input" placeholder="Enter Homebase vault passkey..." autocomplete="current-password" required>
+          <input type="password" id="modalPasskeyInput" name="vault_session_passkey" class="gate-input" placeholder="Enter Homebase vault passkey..." autocomplete="current-password" required>
           <button type="button" class="btn-toggle-eye" onclick="togglePasskeyVisibility()" title="Show/Hide passkey">👁</button>
         </div>
         <div class="modal-actions">
@@ -870,6 +884,7 @@ def get_wingman_html(
 
     let currentMode = 'work';
     let chatMessages = [];
+    let serverTimeOffset = 0;
     let sseSource = null;
     let pingInterval = null;
     let authPollingInterval = null;
@@ -1062,25 +1077,21 @@ def get_wingman_html(
         const res = await fetch('/applet/wingman/chat_history', {{ headers }});
         const data = await res.json();
         if (data && data.history && Array.isArray(data.history)) {{
-          let updated = false;
-          data.history.forEach(m => {{
-            const mId = m.id || ('msg-' + (m.timestamp || Math.random()));
-            const ts = (typeof m.timestamp === 'number' && m.timestamp > 0) ? m.timestamp : (Date.now() / 1000);
-            if (!chatMessages.some(existing => existing.id === mId)) {{
-              chatMessages.push({{
-                id: mId,
-                sender: m.sender || 'Gemini',
-                text: m.text || '',
-                is_user: Boolean(m.is_user),
-                timestamp: ts,
-              }});
-              updated = true;
-            }}
-          }});
-          if (updated || chatMessages.length === 0) {{
-            chatMessages.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
-            renderChatFeed();
-          }}
+          const serverIds = new Set(data.history.map(m => m.id).filter(Boolean));
+          const pendingLocal = chatMessages.filter(m => m.pending && !serverIds.has(m.id));
+
+          const canonical = data.history.map(m => ({{
+            id: m.id || ('msg-' + (m.timestamp || Math.random())),
+            sender: m.sender || 'Gemini',
+            text: m.text || '',
+            is_user: Boolean(m.is_user),
+            timestamp: (typeof m.timestamp === 'number' && m.timestamp > 0) ? m.timestamp : ((Date.now() / 1000) + serverTimeOffset),
+            pending: false
+          }}));
+
+          // Canonical server history preserves true conversational order regardless of client clock skew
+          chatMessages = canonical.concat(pendingLocal);
+          renderChatFeed();
         }}
       }} catch (err) {{}}
     }}
@@ -1387,14 +1398,13 @@ def get_wingman_html(
 
     function addChatMessage(sender, text, isUser = false, msgId = '', timestamp = null) {{
       const mId = msgId || ('msg-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6));
-      const ts = (typeof timestamp === 'number' && timestamp > 0) ? timestamp : (Date.now() / 1000);
+      const ts = (typeof timestamp === 'number' && timestamp > 0) ? timestamp : ((Date.now() / 1000) + serverTimeOffset);
       const existingIdx = chatMessages.findIndex(m => m.id === mId);
       if (existingIdx !== -1) {{
-        chatMessages[existingIdx] = {{ id: mId, sender, text, is_user: isUser, timestamp: ts }};
+        chatMessages[existingIdx] = {{ id: mId, sender, text, is_user: isUser, timestamp: ts, pending: false }};
       }} else {{
-        chatMessages.push({{ id: mId, sender, text, is_user: isUser, timestamp: ts }});
+        chatMessages.push({{ id: mId, sender, text, is_user: isUser, timestamp: ts, pending: false }});
       }}
-      chatMessages.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
       renderChatFeed();
     }}
 
@@ -1404,7 +1414,7 @@ def get_wingman_html(
 
     async function executeSubmitChatMessage(text) {{
       const msgId = 'msg-' + Date.now() + '-' + Math.random().toString(36).substring(2, 7);
-      const nowSec = Date.now() / 1000;
+      const nowSec = (Date.now() / 1000) + serverTimeOffset;
       chatInput.value = '';
 
       if (text.trim().toLowerCase() === '/clear') {{
@@ -1412,7 +1422,8 @@ def get_wingman_html(
         renderChatFeed();
         addChatMessage('Gemini Core', 'Clearing bilateral chat across all devices...', false);
       }} else {{
-        addChatMessage('Operator', text, true, msgId, nowSec);
+        chatMessages.push({{ id: msgId, sender: 'Operator', text: text, is_user: true, timestamp: nowSec, pending: true }});
+        renderChatFeed();
       }}
 
       try {{
@@ -1442,6 +1453,14 @@ def get_wingman_html(
           return;
         }}
         if (reply.status === 'error') {{
+          addChatMessage('System', '✗ ' + (reply.message || 'Message dispatch failed.'), false);
+        }} else if (reply.timestamp) {{
+          const idx = chatMessages.findIndex(m => m.id === msgId);
+          if (idx !== -1) {{
+            chatMessages[idx].timestamp = reply.timestamp;
+            chatMessages[idx].pending = false;
+          }}
+        }}
           addChatMessage('System', '✗ ' + (reply.message || 'Message dispatch failed.'), false);
         }}
       }} catch (err) {{
@@ -1533,6 +1552,10 @@ def get_wingman_html(
         .then(data => {{
           const rtt = Math.round(performance.now() - t0);
           footerPing.textContent = 'PING: ' + rtt + 'ms';
+          if (data && typeof data.time === 'number') {{
+            const clientNow = Date.now() / 1000;
+            serverTimeOffset = data.time - (clientNow - (rtt / 2000));
+          }}
           if (data && data.boot_id) {{
             if (currentBootId && currentBootId !== data.boot_id) {{
               checkSession();

@@ -875,7 +875,7 @@ class TestWingmanSecurity(unittest.TestCase):
             applet.stop()
 
     def test_screen_off_device_approval_and_wake_unlock(self) -> None:
-        """Verifies that when a device is approved while its screen is off, waking unlocks immediately."""
+        """Verifies that when a device is approved while its screen is off, auth_status polling unlocks immediately with token, while fresh unpaired session checks require Mothership auth."""
         notifications = []
         applet = WingmanApplet(port=0, node_id="test-node", require_pairing=True)
         applet.on_auth_request(lambda req: notifications.append(req))
@@ -894,17 +894,30 @@ class TestWingmanSecurity(unittest.TestCase):
             applet.authorize_session(sess_id, accepted=True, trust_device=False)
             self.assertEqual(s1.status, "authorized")
 
-            # 3. iPad screen turns on / wakes up -> calls session check with existing_session_id
-            s2 = applet.security.create_or_resume_session(
+            # 3. iPad screen turns on / wakes up -> auth polling receives approved status and token
+            mock_handler = MagicMock()
+            auth_res = applet._handle_auth_status(mock_handler, {"session_id": [sess_id]})
+            self.assertEqual(auth_res.get("status"), "approved")
+            self.assertEqual(auth_res.get("token"), s1.token)
+
+            # 4. With token, active session resumes seamlessly
+            s_resumed = applet.security.create_or_resume_session(
                 client_ip="192.168.1.99",
                 device_id="dev-ipad-sleep",
                 existing_session_id=sess_id,
+                existing_token=s1.token,
+            )
+            self.assertEqual(s_resumed.status, "authorized")
+            self.assertEqual(s_resumed.token, s1.token)
+
+            # 5. Without token, an unpaired device is NOT auto-resumed (prevents bypassing Mothership gate on reload)
+            s_unpaired = applet.security.create_or_resume_session(
+                client_ip="192.168.1.99",
+                device_id="dev-ipad-sleep",
+                existing_session_id="sess-ipad-new-tab",
                 existing_token="",
             )
-            # Must unlock immediately as authorized, without overwriting or re-prompting!
-            self.assertEqual(s2.status, "authorized")
-            self.assertEqual(s2.token, s1.token)
-            self.assertEqual(len(notifications), 1)  # No extra pending prompts!
+            self.assertEqual(s_unpaired.status, "pending")
         finally:
             applet.stop()
 
@@ -953,6 +966,39 @@ class TestWingmanSecurity(unittest.TestCase):
             # Re-attempt chat now that session is unlocked
             res_after = applet._handle_chat(mock_handler, {}, {"text": "hello again", "sender": "Operator"})
             self.assertEqual(res_after.get("status"), "ok")
+        finally:
+            applet.stop()
+
+    def test_security_gate_has_no_passkey_option_and_prevents_unauthorized_bypass(self) -> None:
+        """Verifies security gate has no passkey/password option and pending sessions cannot be authorized via passkey."""
+        applet = WingmanApplet(port=0, node_id="test-node", require_pairing=True)
+        try:
+            mock_handler = MagicMock()
+            mock_handler.headers = {"User-Agent": "Mozilla/5.0 (Linux; Android)"}
+            html = applet._handle_index(mock_handler, {})
+
+            # Must have security gate and radar
+            self.assertIn("securityGate", html)
+            self.assertIn("Awaiting mothership console authorization...", html)
+
+            # Must NOT have any password or passkey fields on the security gate
+            self.assertNotIn("gatePasskeyForm", html)
+            self.assertNotIn("gatePasskeyInput", html)
+            self.assertNotIn("gateUnlockBtn", html)
+            self.assertNotIn("ENTER VAULT PASSKEY DIRECTLY", html)
+
+            # Pending session cannot be authorized via passkey verification
+            applet._passkey_verifier = lambda p: p == "secret123"
+            sess = applet.security.create_or_resume_session(client_ip="192.168.1.180", device_id="dev-phone")
+            self.assertEqual(sess.status, "pending")
+
+            unlock_res = applet._handle_verify_passkey(mock_handler, {}, {
+                "passkey": "secret123",
+                "session_id": sess.session_id,
+            })
+            self.assertEqual(unlock_res.get("status"), "ok")
+            # Session status must remain pending! Mothership must authorize it!
+            self.assertEqual(sess.status, "pending")
         finally:
             applet.stop()
 

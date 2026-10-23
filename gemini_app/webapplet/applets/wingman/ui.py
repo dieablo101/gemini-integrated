@@ -797,42 +797,6 @@ def get_wingman_html(
           <div class="radar-pulse"></div>
           <span id="gateStatusText">Awaiting mothership console authorization...</span>
         </div>
-
-        <div class="gate-divider">
-          <span>ENTER VAULT PASSKEY DIRECTLY</span>
-        </div>
-
-        <div class="gate-error" id="gatePasskeyError" style="display: none; margin-bottom: 12px;"></div>
-
-        <form class="gate-form" id="gatePasskeyForm" onsubmit="handleGatePasskeySubmit(event); return false;" autocomplete="off">
-          <div class="input-wrapper" style="margin-bottom: 10px;">
-            <input type="text"
-                   id="gatePasskeyInput"
-                   name="vault_gate_key"
-                   class="gate-input passkey-secure-input"
-                   placeholder="Enter Homebase vault passkey..."
-                   autocomplete="off"
-                   autocorrect="off"
-                   autocapitalize="off"
-                   spellcheck="false"
-                   inputmode="text"
-                   enterkeyhint="go"
-                   data-form-type="other"
-                   data-lpignore="true"
-                   data-1p-ignore="true"
-                   data-bwignore="true"
-                   data-protonpass-ignore="true"
-                   onkeydown="if(event.key==='Enter')handleGatePasskeySubmit(event)">
-            <button type="button" class="btn-toggle-eye" onclick="toggleGatePasskeyVisibility()" title="Show/Hide passkey">👁</button>
-          </div>
-          <div class="gate-checkbox-row">
-            <input type="checkbox" id="gateTrustCheckbox" name="trust_device">
-            <label for="gateTrustCheckbox" style="cursor: pointer;">Remember device pairing</label>
-          </div>
-          <button type="submit" class="btn btn-primary btn-block" id="gateUnlockBtn">
-            Authorize & Unlock Session ↵
-          </button>
-        </form>
       </div>
     </div>
 
@@ -988,13 +952,23 @@ def get_wingman_html(
     const deviceLabel = detectDeviceType();
 
     // Ephemeral session ID for the active browser tab session
-    let sessionId = sessionStorage.getItem('wingman_session_id') || '{auth_req_id}' || ('sess-' + Math.random().toString(36).substring(2, 10));
-    sessionStorage.setItem('wingman_session_id', sessionId);
+    // For unpaired devices, every page load/refresh gets a fresh session ID requiring Mothership approval!
+    let sessionId = isPairedDevice
+      ? (localStorage.getItem('wingman_session_id') || ('sess-' + Math.random().toString(36).substring(2, 10)))
+      : ('sess-' + Math.random().toString(36).substring(2, 10));
+    if (isPairedDevice) {{
+      localStorage.setItem('wingman_session_id', sessionId);
+    }} else {{
+      sessionStorage.removeItem('wingman_session_id');
+      sessionStorage.removeItem('wingman_token');
+    }}
 
     // Only permanently paired devices retain credentials across page reload
     let sessionToken = isPairedDevice ? (localStorage.getItem('wingman_token') || '') : '';
     if (!isPairedDevice) {{
       sessionStorage.removeItem('wingman_token');
+      localStorage.removeItem('wingman_token');
+      localStorage.removeItem('wingman_paired');
     }}
 
     /* First-action session passkey state (resets every session/refresh) */
@@ -1033,73 +1007,6 @@ def get_wingman_html(
       const input = document.getElementById('modalPasskeyInput');
       if (input) {{
         input.classList.toggle('plain-text');
-      }}
-    }}
-
-    function toggleGatePasskeyVisibility() {{
-      const input = document.getElementById('gatePasskeyInput');
-      if (input) {{
-        input.classList.toggle('plain-text');
-      }}
-    }}
-
-    async function handleGatePasskeySubmit(e) {{
-      if (e && e.preventDefault) e.preventDefault();
-      const input = document.getElementById('gatePasskeyInput');
-      const errEl = document.getElementById('gatePasskeyError');
-      const btn = document.getElementById('gateUnlockBtn');
-      const trustBox = document.getElementById('gateTrustCheckbox');
-      const pass = input ? input.value.trim() : '';
-      if (!pass) return;
-
-      if (btn) {{
-        btn.disabled = true;
-        btn.textContent = 'Verifying with Homebase...';
-      }}
-      if (errEl) errEl.style.display = 'none';
-
-      try {{
-        const trustVal = trustBox ? Boolean(trustBox.checked) : false;
-        const res = await fetch('/applet/wingman/auth', {{
-          method: 'POST',
-          headers: {{
-            'Content-Type': 'application/json',
-            'X-Wingman-Device': deviceId,
-            'X-Wingman-Session': sessionId
-          }},
-          body: JSON.stringify({{
-            session_id: sessionId,
-            passkey: pass,
-            trust_device: trustVal
-          }})
-        }});
-        const data = await res.json();
-        if (data.status === 'ok' && data.token) {{
-          isSessionUnlocked = true;
-          unlockUI(data.token, trustVal);
-          if (input) input.value = '';
-          playTone(880, 'sine', 0.1);
-        }} else {{
-          if (errEl) {{
-            errEl.textContent = data.message || "Invalid Homebase vault passkey. Verification denied.";
-            errEl.style.display = 'block';
-          }}
-          if (input) {{
-            input.focus();
-            input.select();
-          }}
-          playTone(220, 'sawtooth', 0.15);
-        }}
-      }} catch (err) {{
-        if (errEl) {{
-          errEl.textContent = "Passkey check failed: " + err.message;
-          errEl.style.display = 'block';
-        }}
-      }} finally {{
-        if (btn) {{
-          btn.disabled = false;
-          btn.textContent = 'Authorize & Unlock Session ↵';
-        }}
       }}
     }}
 
@@ -1457,13 +1364,6 @@ def get_wingman_html(
       gateStatusText.textContent = reason;
       statusText.textContent = "PENDING AUTH";
       statusDot.className = "status-dot pending";
-      const gateErr = document.getElementById('gatePasskeyError');
-      if (gateErr) gateErr.style.display = 'none';
-      const gateInput = document.getElementById('gatePasskeyInput');
-      if (gateInput) {{
-        gateInput.value = '';
-        gateInput.classList.remove('plain-text');
-      }}
     }}
 
     /* SSE Stream Connection */
@@ -1952,8 +1852,24 @@ def get_wingman_html(
     /* Immediate wake-up & visibility sync for mobile / screen-off devices */
     async function onWakeOrVisibilityChange() {{
       if (document.visibilityState === 'visible') {{
-        // Instant check: if operator approved while iPad screen was off, unlock immediately!
-        await checkSession();
+        if (securityGate && securityGate.style.display !== 'none') {{
+          // If sitting on the gate awaiting authorization, immediately poll auth_status!
+          try {{
+            const res = await fetch('/applet/wingman/auth_status?req_id=' + encodeURIComponent(sessionId));
+            const data = await res.json();
+            if (data.status === 'approved' && data.token) {{
+              if (authPollingInterval) clearInterval(authPollingInterval);
+              if (!data.is_paired) {{
+                localStorage.removeItem('wingman_token');
+                localStorage.removeItem('wingman_paired');
+                isPairedDevice = false;
+              }}
+              unlockUI(data.token, Boolean(data.is_paired));
+            }}
+          }} catch (e) {{}}
+        }} else {{
+          await checkSession();
+        }}
         measurePing();
         // Check if SSE stream disconnected or stalled while screen was off
         if (!sseSource || sseSource.readyState === 2 || sseSource.readyState === EventSource.CLOSED) {{

@@ -161,24 +161,26 @@ class WingmanSecurity:
                     session.last_seen = now
                     return session
 
-            # 2. Check if existing_session_id is already in sessions (e.g. approved while screen-off)
+            device_trusted = bool(effective_device_id) and self.is_device_trusted(effective_device_id)
+
+            # 2. Check if existing_session_id is already in sessions
             if existing_session_id and existing_session_id in self.sessions:
                 cand = self.sessions[existing_session_id]
                 match_dev = bool(effective_device_id and cand.device_id == effective_device_id)
-                match_ip = bool(client_ip and cand.client_ip == client_ip)
-                if match_dev or match_ip or is_loopback:
+                if match_dev or is_loopback:
                     cand.last_seen = now
                     if cand.status == "authorized":
+                        # Only permanently paired / trusted devices can resume an authorized session without presenting a token
+                        if device_trusted or cand.is_paired:
+                            return cand
+                    elif cand.status == "denied":
                         return cand
-                    if cand.status == "denied":
-                        return cand
-                    if cand.status == "pending":
+                    elif cand.status == "pending":
                         if user_agent:
                             cand.user_agent = user_agent
                         should_notify = (now - getattr(cand, "_last_notified", 0.0)) > 3.0
                         if should_notify:
                             cand._last_notified = now
-                        if should_notify:
                             for cb in list(self._on_pending_session_callbacks):
                                 try:
                                     cb(cand)
@@ -186,20 +188,16 @@ class WingmanSecurity:
                                     pass
                         return cand
 
-            # 3. Check if device is permanently trusted
-            device_trusted = bool(effective_device_id) and self.is_device_trusted(effective_device_id)
-
-            # If device is already trusted or require_pairing is False
+            # 3. If device is permanently trusted or require_pairing is False
             status = "authorized" if (device_trusted or not self.require_pairing) else "pending"
 
-            # 4. If there is already an existing pending session for this device/IP, reuse it!
+            # 4. If there is already an existing pending session for this device, reuse it!
             if status == "pending":
                 matched_existing = None
                 for cand in self.sessions.values():
                     if cand.status == "pending":
                         match_dev = bool(effective_device_id and cand.device_id == effective_device_id)
-                        match_ip = bool(client_ip and cand.client_ip == client_ip)
-                        if match_dev or match_ip:
+                        if match_dev:
                             matched_existing = cand
                             break
 

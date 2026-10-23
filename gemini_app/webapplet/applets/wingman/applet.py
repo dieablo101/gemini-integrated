@@ -443,8 +443,6 @@ class WingmanApplet:
                 sess = self.security.get_session_by_token(token)
             if sess:
                 sess.is_unlocked = True
-                if sess.status == "pending":
-                    self.security.authorize_session(sess.session_id)
         return {
             "status": "ok" if valid else "invalid",
             "valid": valid,

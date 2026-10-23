@@ -138,7 +138,72 @@ def verify_system_password(password: str) -> bool:
     import subprocess
     user = getpass.getuser()
 
-    # 1. PAM check if pamela or pam is available
+    # 1. Direct PAM ctypes check (libpam.so.0)
+    try:
+        import ctypes
+        import ctypes.util
+        libpam = ctypes.CDLL("libpam.so.0")
+        libc = ctypes.CDLL(ctypes.util.find_library("c"))
+
+        class PamMessage(ctypes.Structure):
+            _fields_ = [("msg_style", ctypes.c_int), ("msg", ctypes.c_char_p)]
+
+        class PamResponse(ctypes.Structure):
+            _fields_ = [("resp", ctypes.c_char_p), ("resp_retcode", ctypes.c_int)]
+
+        class PamConv(ctypes.Structure):
+            _fields_ = [
+                ("conv", ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int, ctypes.POINTER(ctypes.POINTER(PamMessage)), ctypes.POINTER(ctypes.POINTER(PamResponse)), ctypes.c_void_p)),
+                ("appdata_ptr", ctypes.c_void_p),
+            ]
+
+        @ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int, ctypes.POINTER(ctypes.POINTER(PamMessage)), ctypes.POINTER(ctypes.POINTER(PamResponse)), ctypes.c_void_p)
+        def conv_handler(n_msgs, msgs, resp_out, appdata):
+            resps = (PamResponse * n_msgs)()
+            for i in range(n_msgs):
+                msg = msgs[i].contents
+                if msg.msg_style in (1, 2):  # PAM_PROMPT_ECHO_OFF, PAM_PROMPT_ECHO_ON
+                    resps[i].resp = libc.strdup(password.encode("utf-8"))
+                    resps[i].resp_retcode = 0
+                else:
+                    resps[i].resp = None
+                    resps[i].resp_retcode = 0
+            resp_mem = libc.malloc(ctypes.sizeof(PamResponse) * n_msgs)
+            ctypes.memmove(resp_mem, resps, ctypes.sizeof(PamResponse) * n_msgs)
+            resp_out[0] = ctypes.cast(resp_mem, ctypes.POINTER(PamResponse))
+            return 0
+
+        conv = PamConv(conv_handler, None)
+        for service in (b"login", b"common-auth", b"sudo", b"passwd"):
+            pamh = ctypes.c_void_p()
+            ret = libpam.pam_start(service, user.encode("utf-8"), ctypes.byref(conv), ctypes.byref(pamh))
+            if ret == 0:
+                try:
+                    ret = libpam.pam_authenticate(pamh, 0)
+                    if ret == 0:
+                        return True
+                finally:
+                    libpam.pam_end(pamh, ret)
+    except Exception:
+        pass
+
+    # 2. Linux PAM unix_chkpwd helper (direct shadow check, unprivileged setgid shadow)
+    for chkpwd in ("/sbin/unix_chkpwd", "/usr/sbin/unix_chkpwd"):
+        if os.path.isfile(chkpwd):
+            for mode in ("nullok", "nonull"):
+                try:
+                    proc = subprocess.run(
+                        [chkpwd, user, mode],
+                        input=password.encode("utf-8") + b"\x00",
+                        capture_output=True,
+                        timeout=3.0,
+                    )
+                    if proc.returncode == 0:
+                        return True
+                except Exception:
+                    pass
+
+    # 3. PAM check if pamela or pam is available
     for mod in ("pamela", "pam"):
         try:
             m = __import__(mod)
@@ -151,46 +216,32 @@ def verify_system_password(password: str) -> bool:
         except Exception:
             pass
 
-    # 2. Linux PAM unix_chkpwd helper (direct shadow check, unprivileged setgid shadow)
-    for chkpwd in ("/sbin/unix_chkpwd", "/usr/sbin/unix_chkpwd"):
-        if os.path.isfile(chkpwd):
+    # 4. Subprocess sudo verification fallback (supports both classic sudo and sudo-rs)
+    for sudo_cmd in (["sudo", "-S", "-p", "", "true"], ["sudo", "-S", "true"]):
+        try:
             try:
-                proc = subprocess.run(
-                    [chkpwd, user, "check"],
-                    input=password.encode("utf-8") + b"\x00",
-                    capture_output=True,
-                    timeout=3.0,
-                )
-                if proc.returncode == 0:
-                    return True
+                subprocess.run(["sudo", "-k"], capture_output=True, timeout=1.5)
             except Exception:
                 pass
-
-    # 3. Subprocess sudo verification fallback (supports both classic sudo and sudo-rs)
-    try:
-        try:
-            subprocess.run(["sudo", "-k"], capture_output=True, timeout=2.0)
+            proc = subprocess.run(
+                sudo_cmd,
+                input=password.encode("utf-8") + b"\n",
+                capture_output=True,
+                timeout=4.0,
+            )
+            if proc.returncode == 0:
+                return True
         except Exception:
             pass
-        proc = subprocess.run(
-            ["sudo", "-S", "-p", "", "true"],
-            input=password.encode("utf-8") + b"\n",
-            capture_output=True,
-            timeout=5.0,
-        )
-        if proc.returncode == 0:
-            return True
-    except Exception:
-        pass
 
     return False
 
 
 def verify_homebase_passkey(passkey: str) -> bool:
-    """Verifies a passkey against Homebase's encrypted vault PBKDF2 hash,
+    """Verifies a passkey strictly against Mothership's encrypted vault PBKDF2 hash.
 
-    host Linux system credentials, or cluster fleet key. This serves as the
-    cryptographic baseline for sensitive operations originating from Wingman satellites.
+    The host Linux system credentials are intentionally excluded; Wingman authorization
+    strictly relies on the console /vault passkey.
     """
     if not passkey:
         return False
@@ -198,7 +249,7 @@ def verify_homebase_passkey(passkey: str) -> bool:
     if not clean:
         return False
 
-    # 1. Vault passkey check (check clean and raw)
+    # Vault passkey check (check clean and raw)
     try:
         from gemini_app.vault import is_vault_configured, verify_vault_passkey, get_session_passkey, set_session_passkey
         if is_vault_configured():
@@ -207,24 +258,6 @@ def verify_homebase_passkey(passkey: str) -> bool:
                 return True
         cached = get_session_passkey()
         if cached and (clean == cached or passkey == cached):
-            return True
-    except Exception:
-        pass
-
-    # 2. Host Linux system password check (PAM / unix_chkpwd / sudo)
-    if verify_system_password(clean) or verify_system_password(passkey):
-        try:
-            from gemini_app.vault import set_session_passkey
-            set_session_passkey(clean)
-        except Exception:
-            pass
-        return True
-
-    # 3. Cluster fleet key fallback
-    try:
-        from gemini_app.fleet.security import get_existing_fleet_key
-        fkey = get_existing_fleet_key()
-        if fkey and (clean == fkey or passkey == fkey):
             return True
     except Exception:
         pass

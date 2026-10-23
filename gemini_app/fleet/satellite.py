@@ -356,29 +356,42 @@ def collect_telemetry() -> Dict[str, Any]:
 
     wingman = get_active_wingman()
     pending_auth_list = []
+    is_active_browser = False
+    if wingman and hasattr(wingman, "is_browser_open"):
+        is_active_browser = bool(wingman.is_browser_open())
+
     if wingman and hasattr(wingman, "security"):
         try:
-            node_lan_ip = route_info.get("local_ip") or get_local_lan_ip() or "127.0.0.1"
-            for sess in list(wingman.security.sessions.values()):
-                if getattr(sess, "status", "") == "pending":
-                    cip = getattr(sess, "client_ip", "")
-                    if cip in ("127.0.0.1", "::1", "localhost", ""):
-                        cip = node_lan_ip
-                    pending_auth_list.append({
-                        "auth_req_id": sess.session_id,
-                        "session_id": sess.session_id,
-                        "client_ip": cip,
-                        "user_agent": getattr(sess, "user_agent", ""),
-                        "device_id": getattr(sess, "device_id", ""),
-                        "timestamp": getattr(sess, "created_at", time.time()),
-                    })
+            # Prune stale or abandoned sessions older than 30s
+            if hasattr(wingman.security, "prune_stale_sessions"):
+                wingman.security.prune_stale_sessions(max_pending_age=30.0)
+
+            # ONLY advertise pending auth requests if a browser is actively connected to Wingman!
+            if is_active_browser:
+                now = time.time()
+                node_lan_ip = route_info.get("local_ip") or get_local_lan_ip() or "127.0.0.1"
+                for sess in list(wingman.security.sessions.values()):
+                    if getattr(sess, "status", "") == "pending":
+                        age = now - getattr(sess, "last_seen", sess.created_at)
+                        if age < 30.0:
+                            cip = getattr(sess, "client_ip", "")
+                            if cip in ("127.0.0.1", "::1", "localhost", ""):
+                                cip = node_lan_ip
+                            pending_auth_list.append({
+                                "auth_req_id": sess.session_id,
+                                "session_id": sess.session_id,
+                                "client_ip": cip,
+                                "user_agent": getattr(sess, "user_agent", ""),
+                                "device_id": getattr(sess, "device_id", ""),
+                                "timestamp": getattr(sess, "created_at", now),
+                            })
         except Exception:
             pass
 
     webapplet_info = {
         "running": wingman.engine.is_running if (wingman and hasattr(wingman, "engine")) else False,
         "port": wingman.engine.port if (wingman and hasattr(wingman, "engine")) else 8888,
-        "wingman_active": wingman.is_browser_open() if (wingman and hasattr(wingman, "is_browser_open")) else False,
+        "wingman_active": is_active_browser,
         "client_count": wingman.client_count if (wingman and hasattr(wingman, "client_count")) else 0,
         "pending_auth": pending_auth_list,
     }
@@ -1129,6 +1142,12 @@ class SatelliteNode:
 
     def _on_wingman_state_change(self, is_active: bool, count: int) -> None:
         """Notifies Mothership immediately when user opens or closes Wingman on localhost."""
+        if not is_active and self.wingman_applet and hasattr(self.wingman_applet, "security"):
+            try:
+                self.wingman_applet.security.prune_stale_sessions(max_pending_age=0.0)
+            except Exception:
+                pass
+
         if not self._running or not self.sock:
             return
         try:

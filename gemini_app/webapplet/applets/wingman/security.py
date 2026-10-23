@@ -265,7 +265,7 @@ class WingmanSecurity:
         passkey: str,
         trust_device: bool = False,
     ) -> tuple[bool, Optional[str], str]:
-        """Verifies passkey against Mothership/Vault salted PBKDF2 hash or host system password."""
+        """Verifies passkey strictly against Mothership/Vault salted PBKDF2 hash."""
         session = self.get_session(session_id)
         if not session:
             return False, None, "Session not found or expired"
@@ -276,8 +276,41 @@ class WingmanSecurity:
 
         from gemini_app.fleet.wingman_auth import verify_homebase_passkey
         if not verify_homebase_passkey(clean_passkey):
-            return False, None, "Invalid Homebase passkey or system password"
+            return False, None, "Invalid Homebase vault passkey"
 
         # Authorized!
         self.authorize_session(session_id, trust_device=trust_device)
         return True, session.token, "Authenticated successfully"
+
+    def prune_stale_sessions(
+        self,
+        max_pending_age: float = 45.0,
+        max_inactive_age: float = 86400.0,
+    ) -> int:
+        """Prunes orphaned pending sessions and ancient inactive sessions from memory."""
+        now = time.time()
+        pruned_count = 0
+        with self._lock:
+            to_remove = []
+            for sid, sess in self.sessions.items():
+                # Pending sessions where browser stopped polling or hasn't checked in
+                if sess.status == "pending":
+                    age = now - getattr(sess, "last_seen", sess.created_at)
+                    if age > max_pending_age:
+                        to_remove.append(sid)
+                elif sess.status in ("denied", "expired"):
+                    if (now - getattr(sess, "last_seen", sess.created_at)) > 60.0:
+                        to_remove.append(sid)
+                else:
+                    # Authorized sessions inactive for over max_inactive_age (e.g. 24h)
+                    if (now - getattr(sess, "last_seen", sess.created_at)) > max_inactive_age:
+                        to_remove.append(sid)
+
+            for sid in to_remove:
+                s = self.sessions.pop(sid, None)
+                if s and s.token:
+                    self.tokens_to_session.pop(s.token, None)
+                pruned_count += 1
+
+        return pruned_count
+

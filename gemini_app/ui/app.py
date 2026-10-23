@@ -388,6 +388,9 @@ class ChatApp(App):
         req_id = auth_data.get("auth_req_id") or auth_data.get("session_id", "")
         if not req_id:
             return
+        ts = auth_data.get("timestamp", time.time())
+        if (time.time() - ts) > 45.0:
+            return
         handled_set = getattr(self, "_handled_wingman_auth_reqs", set())
         if req_id in handled_set:
             return
@@ -438,6 +441,10 @@ class ChatApp(App):
 
         auth_data = self._wingman_auth_queue.pop(0)
         req_id = auth_data.get("auth_req_id") or auth_data.get("session_id", "")
+        ts = auth_data.get("timestamp", time.time())
+        if (time.time() - ts) > 45.0:
+            self._process_next_wingman_auth()
+            return
         handled_set = getattr(self, "_handled_wingman_auth_reqs", set())
         if req_id in handled_set:
             self._process_next_wingman_auth()

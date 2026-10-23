@@ -41,8 +41,33 @@ class WingmanApplet:
         self._passkey_verifier: Optional[Callable[[str], bool]] = None
         self._chat_history_fetcher: Optional[Callable[[], List[Dict[str, Any]]]] = None
         self.boot_id = secrets.token_hex(8)
+        self.mothership_boot_id: Optional[str] = None
+        self.maintenance_mode: bool = False
 
         self._setup_routes()
+
+    def set_maintenance_mode(self, active: bool, reason: str = "") -> None:
+        """Enables or releases targeted Wingman maintenance lockout during code updates or reboots."""
+        self.maintenance_mode = active
+        msg = reason or (
+            "Wingman maintenance in progress — Mothership updates underway. Reconnection paused until release."
+            if active else ""
+        )
+        self.engine.broadcast_event("wingman_maintenance", {
+            "active": active,
+            "message": msg,
+            "timestamp": time.time(),
+        })
+
+    def on_mothership_reboot(self, new_boot_id: str) -> None:
+        """Handles Mothership restart by invalidating all one-time (unpaired) sessions and resetting epoch."""
+        self.mothership_boot_id = new_boot_id
+        # Purge all unpaired / accepted sessions so they cannot bypass security gate
+        self.security.prune_stale_sessions(max_pending_age=0.0, invalidate_unpaired=True)
+        self.engine.broadcast_event("mothership_rebooted", {
+            "mothership_boot_id": new_boot_id,
+            "timestamp": time.time(),
+        })
 
     def set_passkey_verifier(self, verifier: Callable[[str], bool]) -> None:
         """Sets external passkey verification function (e.g. delegated Mothership check for satellites)."""
@@ -129,6 +154,8 @@ class WingmanApplet:
             "engine": self.engine.name,
             "node_id": self.node_id,
             "boot_id": self.boot_id,
+            "mothership_boot_id": self.mothership_boot_id,
+            "maintenance": self.maintenance_mode,
             "client_count": self.client_count,
         }
 
@@ -161,6 +188,18 @@ class WingmanApplet:
         user_agent = handler.headers.get("User-Agent", "") if hasattr(handler, "headers") else ""
         token, device_id, session_id = self._extract_token_and_device(handler, query)
 
+        if self.maintenance_mode:
+            return {
+                "session_id": session_id or "maint",
+                "authenticated": False,
+                "status": "maintenance",
+                "maintenance": True,
+                "message": "Wingman maintenance in progress — Mothership updates underway. Reconnection paused until release.",
+                "boot_id": self.boot_id,
+                "mothership_boot_id": self.mothership_boot_id,
+                "node_id": self.node_id,
+            }
+
         is_loopback = client_ip in ("127.0.0.1", "::1", "localhost")
         session = self.security.create_or_resume_session(
             client_ip=client_ip,
@@ -185,6 +224,8 @@ class WingmanApplet:
             "node_id": self.node_id,
             "trusted": is_trusted,
             "boot_id": self.boot_id,
+            "mothership_boot_id": self.mothership_boot_id,
+            "maintenance": False,
         }
 
     def _handle_passkey_auth(self, handler: Any, query: Dict[str, List[str]], body: Any) -> Dict[str, Any]:

@@ -11,6 +11,7 @@ import base64
 import json
 import os
 from pathlib import Path
+import secrets
 import socket
 import subprocess
 import sys
@@ -105,6 +106,8 @@ class MothershipServer:
         self._action_results: Dict[str, Dict[str, Any]] = {}
         self.pending_wingman_auth_requests: Dict[str, Dict[str, Any]] = {}
         self._wingman_auth_callbacks: List[Callable[[Dict[str, Any]], None]] = []
+        self.mothership_boot_id = secrets.token_hex(8)
+        self.wingman_maintenance_mode = False
 
     def start(self) -> bool:
         """Binds and starts accepting incoming satellite node connections."""
@@ -338,7 +341,11 @@ class MothershipServer:
                                 greet = FleetMessage(
                                     msg_type=FleetMessage.TYPE_TELEMETRY,
                                     node_id="mothership",
-                                    payload={"mothership_telemetry": init_telem},
+                                    payload={
+                                        "mothership_telemetry": init_telem,
+                                        "mothership_boot_id": self.mothership_boot_id,
+                                        "wingman_maintenance": self.wingman_maintenance_mode,
+                                    },
                                 )
                                 satellite.send(greet)
                             else:
@@ -399,7 +406,12 @@ class MothershipServer:
                                     greet = FleetMessage(
                                         msg_type=FleetMessage.TYPE_TELEMETRY,
                                         node_id="mothership",
-                                        payload={"mothership_telemetry": init_telem, "fleet_key": self.fleet_key},
+                                        payload={
+                                            "mothership_telemetry": init_telem,
+                                            "fleet_key": self.fleet_key,
+                                            "mothership_boot_id": self.mothership_boot_id,
+                                            "wingman_maintenance": self.wingman_maintenance_mode,
+                                        },
                                     )
                                     satellite.send(greet)
 
@@ -438,7 +450,11 @@ class MothershipServer:
                                 greet = FleetMessage(
                                     msg_type=FleetMessage.TYPE_TELEMETRY,
                                     node_id="mothership",
-                                    payload={"mothership_telemetry": init_telem},
+                                    payload={
+                                        "mothership_telemetry": init_telem,
+                                        "mothership_boot_id": self.mothership_boot_id,
+                                        "wingman_maintenance": self.wingman_maintenance_mode,
+                                    },
                                 )
                                 satellite.send(greet)
                             else:
@@ -676,6 +692,17 @@ class MothershipServer:
                                 if not nid and req_id in self.pending_wingman_auth_requests:
                                     nid = self.pending_wingman_auth_requests[req_id].get("node_id", "local")
                                 resp_payload["result"] = self.authorize_wingman(node_id=nid or "local", auth_req_id=req_id, decision=dec, trust=trust_dev)
+                            elif action in ("set_wingman_maintenance", "wingman_maintenance"):
+                                active = bool(msg.payload.get("params", {}).get("active", False))
+                                reason = str(msg.payload.get("params", {}).get("reason", ""))
+                                self.set_wingman_maintenance(active, reason=reason)
+                                resp_payload["status"] = "ok"
+                                resp_payload["active"] = active
+                                resp_payload["boot_id"] = self.mothership_boot_id
+                            elif action == "get_mothership_boot_id":
+                                resp_payload["status"] = "ok"
+                                resp_payload["boot_id"] = self.mothership_boot_id
+                                resp_payload["maintenance"] = self.wingman_maintenance_mode
                             elif action == "verify_wingman_passkey":
                                 cand_pass = msg.payload.get("params", {}).get("passkey", "")
                                 resp_payload["valid"] = self.verify_wingman_passkey(cand_pass)
@@ -870,9 +897,35 @@ class MothershipServer:
         msg = FleetMessage(
             msg_type=FleetMessage.TYPE_TELEMETRY,
             node_id="mothership",
-            payload={"mothership_telemetry": telem, "fleet_key": self.fleet_key},
+            payload={
+                "mothership_telemetry": telem,
+                "fleet_key": self.fleet_key,
+                "mothership_boot_id": self.mothership_boot_id,
+                "wingman_maintenance": self.wingman_maintenance_mode,
+            },
         )
         return self.broadcast(msg)
+
+    def set_wingman_maintenance(self, active: bool, reason: str = "") -> None:
+        """Enables or releases fleet-wide Wingman maintenance mode during updates/reboots."""
+        self.wingman_maintenance_mode = active
+        msg = FleetMessage(
+            msg_type=FleetMessage.TYPE_EVENT,
+            node_id="mothership",
+            payload={
+                "event": "wingman_maintenance_lock" if active else "wingman_maintenance_clear",
+                "active": active,
+                "reason": reason,
+                "timestamp": time.time(),
+            },
+        )
+        self.broadcast(msg)
+        self.broadcast_telemetry()
+        if self.local_wingman and hasattr(self.local_wingman, "set_maintenance_mode"):
+            try:
+                self.local_wingman.set_maintenance_mode(active, reason=reason)
+            except Exception:
+                pass
 
     def push_cognitive_event(self, event_text: str, details: Optional[Dict[str, Any]] = None) -> int:
         """Pushes an event toast/log entry across the fleet."""

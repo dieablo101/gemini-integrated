@@ -718,6 +718,124 @@ class TestWingmanSecurity(unittest.TestCase):
         finally:
             applet.stop()
 
+    def test_ephemeral_accept_session_does_not_resume_on_reload(self) -> None:
+        """Verifies that an ephemeral session (one-time Accept) cannot bypass zero-trust on refresh."""
+        applet = WingmanApplet(port=0, node_id="test-node", require_pairing=True)
+        notifications = []
+        applet.on_auth_request(lambda req: notifications.append(req))
+        try:
+            # 1. Device connects -> pending
+            s1 = applet.security.create_or_resume_session(client_ip="192.168.1.55", device_id="dev-ephemeral-1")
+            self.assertEqual(s1.status, "pending")
+            self.assertEqual(len(notifications), 1)
+
+            # 2. Operator accepts (one-time approval, trust_device=False)
+            applet.authorize_session(s1.session_id, accepted=True, trust_device=False)
+            self.assertEqual(s1.status, "authorized")
+            self.assertFalse(s1.is_paired)
+
+            # 3. User refreshes browser (simulating check with no stored token on reload)
+            s1._last_notified = time.time() - 5.0
+            s2 = applet.security.create_or_resume_session(
+                client_ip="192.168.1.55",
+                device_id="dev-ephemeral-1",
+                existing_token="",
+            )
+            # Must NOT resume as authorized; must require fresh approval!
+            self.assertEqual(s2.status, "pending")
+            self.assertEqual(len(notifications), 2)
+        finally:
+            applet.stop()
+
+    def test_paired_session_resumes_on_reload(self) -> None:
+        """Verifies that a permanently paired device (Pair) smoothly resumes across page refresh."""
+        applet = WingmanApplet(port=0, node_id="test-node", require_pairing=True)
+        try:
+            # 1. Device connects -> pending
+            s1 = applet.security.create_or_resume_session(client_ip="192.168.1.66", device_id="dev-paired-1")
+            self.assertEqual(s1.status, "pending")
+
+            # 2. Operator pairs device (permanent trust, trust_device=True)
+            applet.authorize_session(s1.session_id, accepted=True, trust_device=True)
+            self.assertEqual(s1.status, "authorized")
+            self.assertTrue(s1.is_paired)
+
+            # 3. User refreshes browser with token
+            s2 = applet.security.create_or_resume_session(
+                client_ip="192.168.1.66",
+                device_id="dev-paired-1",
+                existing_token=s1.token,
+            )
+            self.assertEqual(s2.status, "authorized")
+            self.assertEqual(s2.session_id, s1.session_id)
+        finally:
+            applet.security.revoke_device("dev-paired-1")
+            applet.stop()
+
+    def test_mothership_reboot_purges_unpaired_sessions(self) -> None:
+        """Verifies that on_mothership_reboot purges all one-time sessions."""
+        applet = WingmanApplet(port=0, node_id="test-node", require_pairing=True)
+        try:
+            # Create one ephemeral session and one paired session
+            s_eph = applet.security.create_or_resume_session(client_ip="192.168.1.77", device_id="dev-eph-reb")
+            applet.authorize_session(s_eph.session_id, accepted=True, trust_device=False)
+            tok_eph = s_eph.token
+
+            s_pair = applet.security.create_or_resume_session(client_ip="192.168.1.88", device_id="dev-pair-reb")
+            applet.authorize_session(s_pair.session_id, accepted=True, trust_device=True)
+            tok_pair = s_pair.token
+
+            self.assertIsNotNone(applet.security.get_session_by_token(tok_eph))
+            self.assertIsNotNone(applet.security.get_session_by_token(tok_pair))
+
+            # Simulate Mothership console reboot epoch reset
+            applet.on_mothership_reboot("epoch-99999")
+            self.assertEqual(applet.mothership_boot_id, "epoch-99999")
+
+            # Ephemeral session MUST be purged
+            self.assertIsNone(applet.security.get_session_by_token(tok_eph))
+            # Paired session remains trusted in device registry
+            self.assertTrue(applet.security.is_device_trusted("dev-pair-reb"))
+        finally:
+            applet.security.revoke_device("dev-pair-reb")
+            applet.stop()
+
+    def test_wingman_maintenance_lockout(self) -> None:
+        """Verifies that maintenance mode gates Wingman applet responses and suppresses auth prompts."""
+        applet = WingmanApplet(port=0, node_id="test-node", require_pairing=True)
+        try:
+            mock_handler = MagicMock()
+            mock_handler.client_address = ("192.168.1.99", 51234)
+            mock_handler.headers = {}
+
+            # Normal check
+            res1 = applet._handle_session_check(mock_handler, {})
+            self.assertFalse(res1.get("maintenance"))
+            self.assertEqual(res1.get("status"), "pending")
+
+            # Activate maintenance mode
+            applet.set_maintenance_mode(True, reason="Mothership updates underway")
+            self.assertTrue(applet.maintenance_mode)
+
+            # Check during maintenance
+            res_maint = applet._handle_session_check(mock_handler, {})
+            self.assertTrue(res_maint.get("maintenance"))
+            self.assertEqual(res_maint.get("status"), "maintenance")
+            self.assertFalse(res_maint.get("authenticated"))
+
+            # Ping during maintenance
+            ping_res = applet._handle_ping(mock_handler, {})
+            self.assertTrue(ping_res.get("maintenance"))
+
+            # Release maintenance mode
+            applet.set_maintenance_mode(False)
+            self.assertFalse(applet.maintenance_mode)
+
+            res_normal = applet._handle_session_check(mock_handler, {})
+            self.assertFalse(res_normal.get("maintenance"))
+        finally:
+            applet.stop()
+
 
 if __name__ == "__main__":
     unittest.main()

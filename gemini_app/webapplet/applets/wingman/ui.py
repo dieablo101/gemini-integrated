@@ -892,6 +892,8 @@ def get_wingman_html(
     let pingInterval = null;
     let authPollingInterval = null;
     let currentBootId = null;
+    let currentMothershipBootId = null;
+    let isMaintenanceMode = false;
     let isPairedDevice = localStorage.getItem('wingman_paired') === '1';
     let deviceId = localStorage.getItem('wingman_device_id') || ('dev-' + Math.random().toString(36).substring(2, 10));
     localStorage.setItem('wingman_device_id', deviceId);
@@ -901,7 +903,10 @@ def get_wingman_html(
     sessionStorage.setItem('wingman_session_id', sessionId);
 
     // Only permanently paired devices retain credentials across page reload
-    let sessionToken = isPairedDevice ? (localStorage.getItem('wingman_token') || '') : (sessionStorage.getItem('wingman_token') || '');
+    let sessionToken = isPairedDevice ? (localStorage.getItem('wingman_token') || '') : '';
+    if (!isPairedDevice) {{
+      sessionStorage.removeItem('wingman_token');
+    }}
 
     /* First-action session passkey state (resets every session/refresh) */
     let isSessionUnlocked = false;
@@ -1107,6 +1112,28 @@ def get_wingman_html(
     }}
 
     /* Session & Auth Handlers */
+    function setMaintenanceLock(active, message = "") {{
+      isMaintenanceMode = Boolean(active);
+      const gateIcon = document.querySelector('.gate-icon');
+      const gateTitle = document.querySelector('.gate-title');
+      const gateDesc = document.querySelector('.gate-desc');
+      if (active) {{
+        if (authPollingInterval) clearInterval(authPollingInterval);
+        securityGate.style.display = 'flex';
+        if (gateIcon) gateIcon.textContent = '🛠️';
+        if (gateTitle) gateTitle.textContent = 'Wingman Maintenance Lockout';
+        if (gateDesc) gateDesc.textContent = message || 'Mothership updates underway. Reconnection paused until release.';
+        gateStatusText.textContent = 'Maintenance in progress (reconnect paused)...';
+        statusText.textContent = 'MAINTENANCE';
+        statusDot.className = 'status-dot pending';
+      }} else {{
+        if (gateIcon) gateIcon.textContent = '🔒';
+        if (gateTitle) gateTitle.textContent = 'Wingman Security Gate';
+        if (gateDesc) gateDesc.textContent = 'A bilateral interactive session was initiated on node {node_id} ({client_ip}).';
+        checkSession();
+      }}
+    }}
+
     async function checkSession() {{
       try {{
         const headers = {{
@@ -1118,20 +1145,48 @@ def get_wingman_html(
         }}
         const res = await fetch('/applet/wingman/session', {{ headers }});
         const data = await res.json();
+
+        if (data.maintenance) {{
+          setMaintenanceLock(true, data.message);
+          return;
+        }} else if (isMaintenanceMode) {{
+          setMaintenanceLock(false);
+        }}
+
+        if (data.mothership_boot_id) {{
+          if (currentMothershipBootId && currentMothershipBootId !== data.mothership_boot_id) {{
+            // Mothership console rebooted!
+            currentMothershipBootId = data.mothership_boot_id;
+            if (!isPairedDevice) {{
+              sessionToken = '';
+              sessionStorage.removeItem('wingman_token');
+              sessionStorage.removeItem('wingman_session_id');
+              localStorage.removeItem('wingman_token');
+              localStorage.removeItem('wingman_paired');
+              isSessionUnlocked = false;
+              lockUI("Mothership console rebooted — awaiting new authorization...");
+              startAuthPolling();
+              return;
+            }}
+          }}
+          currentMothershipBootId = data.mothership_boot_id;
+        }}
+
         if (data.boot_id) {{
           if (currentBootId && currentBootId !== data.boot_id) {{
             // Server rebooted! Invalidate credentials, lock UI, and re-authenticate
-            sessionToken = '';
-            sessionStorage.removeItem('wingman_token');
-            sessionStorage.removeItem('wingman_session_id');
-            localStorage.removeItem('wingman_token');
-            localStorage.removeItem('wingman_paired');
-            isPairedDevice = false;
-            isSessionUnlocked = false;
-            currentBootId = data.boot_id;
-            lockUI("Mothership console rebooted — awaiting new authorization...");
-            startAuthPolling();
-            return;
+            if (!isPairedDevice) {{
+              sessionToken = '';
+              sessionStorage.removeItem('wingman_token');
+              sessionStorage.removeItem('wingman_session_id');
+              localStorage.removeItem('wingman_token');
+              localStorage.removeItem('wingman_paired');
+              isSessionUnlocked = false;
+              currentBootId = data.boot_id;
+              lockUI("Mothership console rebooted — awaiting new authorization...");
+              startAuthPolling();
+              return;
+            }}
           }}
           currentBootId = data.boot_id;
         }}
@@ -1166,7 +1221,9 @@ def get_wingman_html(
 
     function startAuthPolling() {{
       if (authPollingInterval) clearInterval(authPollingInterval);
+      if (isMaintenanceMode) return;
       authPollingInterval = setInterval(async () => {{
+        if (isMaintenanceMode) return;
         try {{
           const res = await fetch('/applet/wingman/auth_status?req_id=' + encodeURIComponent(sessionId));
           const data = await res.json();
@@ -1259,6 +1316,28 @@ def get_wingman_html(
       sseSource.addEventListener("auth_denied", (e) => {{
         lockUI("Session Denied by Mothership Operator");
         playTone(180, 'sawtooth', 0.2);
+      }});
+
+      sseSource.addEventListener("wingman_maintenance", (e) => {{
+        try {{
+          const payload = JSON.parse(e.data);
+          setMaintenanceLock(Boolean(payload.active), payload.message);
+        }} catch (err) {{}}
+      }});
+
+      sseSource.addEventListener("mothership_rebooted", (e) => {{
+        try {{
+          const payload = JSON.parse(e.data);
+          currentMothershipBootId = payload.mothership_boot_id || payload.boot_id;
+          if (!isPairedDevice) {{
+            sessionToken = '';
+            sessionStorage.removeItem('wingman_token');
+            sessionStorage.removeItem('wingman_session_id');
+            isSessionUnlocked = false;
+            lockUI("Mothership console rebooted — awaiting new authorization...");
+            startAuthPolling();
+          }}
+        }} catch (err) {{}}
       }});
 
       sseSource.addEventListener("card", (e) => {{
@@ -1563,6 +1642,19 @@ def get_wingman_html(
           if (data && typeof data.time === 'number') {{
             const clientNow = Date.now() / 1000;
             serverTimeOffset = data.time - (clientNow - (rtt / 2000));
+          }}
+          if (data && data.maintenance !== undefined) {{
+            if (data.maintenance && !isMaintenanceMode) {{
+              setMaintenanceLock(true, data.message || "Wingman maintenance in progress — Mothership updates underway. Reconnection paused until release.");
+            }} else if (!data.maintenance && isMaintenanceMode) {{
+              setMaintenanceLock(false);
+            }}
+          }}
+          if (data && data.mothership_boot_id) {{
+            if (currentMothershipBootId && currentMothershipBootId !== data.mothership_boot_id) {{
+              checkSession();
+            }}
+            currentMothershipBootId = data.mothership_boot_id;
           }}
           if (data && data.boot_id) {{
             if (currentBootId && currentBootId !== data.boot_id) {{

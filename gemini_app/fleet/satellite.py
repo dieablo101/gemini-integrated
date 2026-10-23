@@ -406,8 +406,9 @@ def collect_telemetry() -> Dict[str, Any]:
             if hasattr(wingman.security, "prune_stale_sessions"):
                 wingman.security.prune_stale_sessions(max_pending_age=30.0)
 
-            # ONLY advertise pending auth requests if a browser is actively connected to Wingman!
-            if is_active_browser:
+            # ONLY advertise pending auth requests if a browser is actively connected to Wingman and NOT in maintenance mode!
+            is_maint = getattr(wingman, "maintenance_mode", False)
+            if is_active_browser and not is_maint:
                 now = time.time()
                 node_lan_ip = route_info.get("local_ip") or get_local_lan_ip() or "127.0.0.1"
                 for sess in list(wingman.security.sessions.values()):
@@ -1065,6 +1066,8 @@ class SatelliteNode:
         self.pending_responses: Dict[str, Any] = {}
         self.response_events: Dict[str, threading.Event] = {}
         self._pending_errors: List[Dict[str, Any]] = []
+        self.mothership_boot_id: Optional[str] = None
+        self.wingman_maintenance: bool = False
 
         self.wingman_applet = None
         try:
@@ -1113,7 +1116,7 @@ class SatelliteNode:
 
     def _on_wingman_pending_session(self, session: Any) -> None:
         """Dispatches an authorization request event to the Mothership."""
-        if not self._running or not self.sock:
+        if not self._running or not self.sock or self.wingman_maintenance:
             return
         device_ip = getattr(session, "client_ip", "127.0.0.1")
         if device_ip in ("127.0.0.1", "::1", "localhost", ""):
@@ -1740,6 +1743,33 @@ class SatelliteNode:
                                     self.hud.set_connection_status(True, ping_ms=round(rtt_ms, 1))
                         elif msg.type == FleetMessage.TYPE_TELEMETRY:
                             telem_data = msg.payload.get("mothership_telemetry", msg.payload)
+                            ms_boot_id = msg.payload.get("mothership_boot_id") or telem_data.get("mothership_boot_id")
+                            ms_maintenance = msg.payload.get("wingman_maintenance")
+                            if ms_maintenance is None:
+                                ms_maintenance = telem_data.get("wingman_maintenance", False)
+                            ms_maintenance = bool(ms_maintenance)
+
+                            # Check for Mothership reboot epoch change
+                            if ms_boot_id:
+                                if self.mothership_boot_id and self.mothership_boot_id != ms_boot_id:
+                                    if self.wingman_applet and hasattr(self.wingman_applet, "on_mothership_reboot"):
+                                        try:
+                                            self.wingman_applet.on_mothership_reboot(ms_boot_id)
+                                        except Exception:
+                                            pass
+                                self.mothership_boot_id = ms_boot_id
+                                if self.wingman_applet:
+                                    self.wingman_applet.mothership_boot_id = ms_boot_id
+
+                            # Sync maintenance state
+                            if self.wingman_maintenance != ms_maintenance:
+                                self.wingman_maintenance = ms_maintenance
+                                if self.wingman_applet and hasattr(self.wingman_applet, "set_maintenance_mode"):
+                                    try:
+                                        self.wingman_applet.set_maintenance_mode(ms_maintenance)
+                                    except Exception:
+                                        pass
+
                             if self.hud:
                                 self.hud.update_telemetry(telem_data)
 
@@ -1793,6 +1823,14 @@ class SatelliteNode:
                                 if self.wingman_applet and hasattr(self.wingman_applet, "clear_chat"):
                                     try:
                                         self.wingman_applet.clear_chat()
+                                    except Exception:
+                                        pass
+                            elif ev in ("wingman_maintenance_lock", "wingman_maintenance_clear"):
+                                active = (ev == "wingman_maintenance_lock") or bool(msg.payload.get("active", False))
+                                self.wingman_maintenance = active
+                                if self.wingman_applet and hasattr(self.wingman_applet, "set_maintenance_mode"):
+                                    try:
+                                        self.wingman_applet.set_maintenance_mode(active, reason=msg.payload.get("reason", ""))
                                     except Exception:
                                         pass
                             if self.hud:

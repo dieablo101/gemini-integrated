@@ -2552,9 +2552,24 @@ class ChatApp(App):
         self.current_chat_title = title
         self.update_feed_title()
 
-        for m in self.history:
-            if "turn_id" not in m or not m["turn_id"]:
-                m["turn_id"] = f"turn_{uuid4().hex[:8]}"
+        passkey = None
+        try:
+            from gemini_app.vault import get_session_passkey
+            passkey = get_session_passkey()
+        except Exception:
+            pass
+
+        try:
+            from gemini_app.security.redaction import redact_secrets_in_text
+            for m in self.history:
+                if "turn_id" not in m or not m["turn_id"]:
+                    m["turn_id"] = f"turn_{uuid4().hex[:8]}"
+                if "text" in m and isinstance(m["text"], str):
+                    m["text"], _ = redact_secrets_in_text(m["text"], passkey=passkey)
+        except Exception:
+            for m in self.history:
+                if "turn_id" not in m or not m["turn_id"]:
+                    m["turn_id"] = f"turn_{uuid4().hex[:8]}"
 
         final_marker = self.current_chat_center_marker
         if final_marker.endswith(":+0") or final_marker.endswith(":-0"):
@@ -3476,6 +3491,23 @@ class ChatApp(App):
         if user_msg.startswith("/") or user_msg.startswith("!/"):
             if self._handle_slash_command(user_msg):
                 return
+
+        # Check for inline secret redaction or vault store intent
+        try:
+            from gemini_app.security.redaction import redact_secrets_in_text
+            from gemini_app.vault import get_session_passkey, store_secret
+
+            passkey = get_session_passkey()
+            def _on_vault_store(name: str, val: str):
+                if passkey:
+                    store_secret(name, val, passkey=passkey)
+
+            redacted_msg, red_count = redact_secrets_in_text(user_msg, passkey=passkey, on_vault_store=_on_vault_store)
+            if red_count > 0:
+                user_msg = redacted_msg
+                self.notify(f"🔐 Classified Redaction: {red_count} secret(s) encrypted inline [ENC:v1].", timeout=3.5)
+        except Exception:
+            pass
 
         await self.append_to_feed(CURRENT_USER, user_msg, jump_to_start=False)
 

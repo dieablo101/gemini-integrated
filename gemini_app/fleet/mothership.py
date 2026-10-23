@@ -85,6 +85,7 @@ class MothershipServer:
         self.require_auth = require_auth
         self.auto_upgrade_nodes = auto_upgrade_nodes
         self.fleet_key = get_or_create_fleet_key()
+        self.previous_fleet_key: Optional[str] = None
         self.fleet_guard = FleetGuard(max_failures=5, ban_duration=600.0)
 
         self.nodes: Dict[str, ConnectedSatellite] = {}
@@ -287,7 +288,14 @@ class MothershipServer:
                         if msg.type == FleetMessage.TYPE_AUTH:
                             sig = msg.payload.get("signature", "")
                             ts = msg.payload.get("timestamp", 0.0)
-                            if (verify_auth_signature(fleet_key, node_id, auth_nonce, ts, sig)
+                            valid_auth = (
+                                verify_auth_signature(fleet_key, node_id, auth_nonce, ts, sig)
+                                or (
+                                    getattr(self, "previous_fleet_key", None)
+                                    and verify_auth_signature(self.previous_fleet_key, node_id, auth_nonce, ts, sig)
+                                )
+                            )
+                            if (valid_auth
                                 and self.fleet_guard.verify_and_consume_nonce(auth_nonce, auth_ts)):
                                 self.fleet_guard.record_auth_success(addr[0])
                                 is_authenticated = True
@@ -511,6 +519,18 @@ class MothershipServer:
                             resp_payload: Dict[str, Any] = {"status": "ok", "action": action}
                             if action == "ping":
                                 resp_payload["pong"] = time.time()
+                            elif action == "rotate_fleet_key":
+                                new_k = msg.payload.get("params", {}).get("new_fleet_key", "").strip()
+                                if new_k:
+                                    self.previous_fleet_key = self.fleet_key
+                                    self.fleet_key = new_k
+                                    from gemini_app.fleet.security import save_fleet_key
+                                    save_fleet_key(new_k)
+                                    resp_payload["status"] = "ok"
+                                    resp_payload["message"] = "Fleet key rotated with legacy grace transition"
+                                else:
+                                    resp_payload["status"] = "error"
+                                    resp_payload["error"] = "No new_fleet_key provided"
                             elif action == "update_cognitive":
                                 cog_data = msg.payload.get("cognitive", {})
                                 if cog_data:

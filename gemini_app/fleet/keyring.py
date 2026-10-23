@@ -56,6 +56,21 @@ class FleetKeyring:
         return None
 
     @classmethod
+    def set_fleet_key(cls, new_key: str, passkey: Optional[str] = None) -> None:
+        """Updates in-memory fleet key and re-encrypts FLEET_KEY_ENC if passkey is available."""
+        global _KEYRING_FLEET_KEY
+        _KEYRING_FLEET_KEY = new_key
+        key = passkey or get_session_passkey()
+        if key and verify_vault_passkey(key):
+            try:
+                FLEET_VAULT_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+                enc = encrypt_bytes(new_key.encode("utf-8"), key)
+                FLEET_KEY_ENC.write_bytes(enc)
+                FLEET_KEY_ENC.chmod(0o600)
+            except Exception:
+                pass
+
+    @classmethod
     def get_ssh_key_data(cls) -> Optional[str]:
         """Returns decrypted cluster SSH private key data from in-memory keyring."""
         global _KEYRING_SSH_KEY_DATA

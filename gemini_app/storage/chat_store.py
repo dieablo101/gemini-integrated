@@ -235,14 +235,29 @@ class ChatStore:
         mind_map: dict[str, Any] | None = None,
         is_legacy: bool = False,
     ) -> None:
-        """Saves chat data into sharded directory or legacy JSON file."""
+        """Saves chat data into sharded directory or legacy JSON file with inline cryptographic redaction."""
         if not chat_id:
             return
 
         mind_map = mind_map or {}
+        passkey = None
+        try:
+            from gemini_app.vault import get_session_passkey
+            passkey = get_session_passkey()
+        except Exception:
+            pass
+
+        from gemini_app.security.redaction import redact_secrets_in_text
+
+        sanitized_history = []
         for m in history:
-            if "turn_id" not in m or not m["turn_id"]:
-                m["turn_id"] = f"turn_{uuid4().hex[:8]}"
+            m_copy = dict(m)
+            if "turn_id" not in m_copy or not m_copy["turn_id"]:
+                m_copy["turn_id"] = f"turn_{uuid4().hex[:8]}"
+            if "text" in m_copy and isinstance(m_copy["text"], str):
+                redacted_text, _ = redact_secrets_in_text(m_copy["text"], passkey=passkey)
+                m_copy["text"] = redacted_text
+            sanitized_history.append(m_copy)
 
         if is_legacy:
             path = self.get_legacy_chat_file(chat_id)
@@ -263,14 +278,14 @@ class ChatStore:
                 "last_turn_index": last_turn_index,
                 "center_marker": center_marker,
                 "notes": notes,
-                "messages": history,
+                "messages": sanitized_history,
             }
             path.write_text(json.dumps(data, indent=2), encoding="utf-8")
         else:
             chat_dir = self.get_chat_dir(chat_id)
             chat_dir.mkdir(parents=True, exist_ok=True)
 
-            total_turns = len(history)
+            total_turns = len(sanitized_history)
             seg_count = max(1, (total_turns + TURNS_PER_SEGMENT - 1) // TURNS_PER_SEGMENT) if total_turns > 0 else 1
             active_seg = max(0, seg_count - 1)
 
@@ -304,7 +319,7 @@ class ChatStore:
             for s_idx in range(seg_count):
                 start = s_idx * TURNS_PER_SEGMENT
                 end = start + TURNS_PER_SEGMENT
-                seg_slice = history[start:end]
+                seg_slice = sanitized_history[start:end]
                 seg_file = chat_dir / f"segment_{s_idx}.json"
                 seg_file.write_text(json.dumps(seg_slice, indent=2), encoding="utf-8")
 

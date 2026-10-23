@@ -71,6 +71,52 @@ class WingmanApplet:
         # WebAuthn response
         self.engine.register_post("/applet/wingman/webauthn_response", self._handle_biometric_response)
 
+        # Satellite Setup Portal & APK Downloads
+        self.engine.register_get("/setup", self._handle_portal)
+        self.engine.register_get("/portal", self._handle_portal)
+        self.engine.register_get("/cmd", self._handle_portal_cmd)
+        self.engine.register_get("/download/termux", self._handle_download_termux)
+        self.engine.register_get("/download/termux-api", self._handle_download_termux_api)
+        self.engine.register_get("/download/termux-boot", self._handle_download_termux_boot)
+
+    def _handle_portal(self, handler: Any, query: Dict[str, List[str]]) -> tuple[int, str, str]:
+        from gemini_app.fleet.portal import HTML_PAGE
+        return (200, HTML_PAGE, "text/html; charset=utf-8")
+
+    def _handle_portal_cmd(self, handler: Any, query: Dict[str, List[str]]) -> tuple[int, str, str]:
+        from gemini_app.fleet.portal import BOOTSTRAP_CMD
+        return (200, BOOTSTRAP_CMD, "text/plain; charset=utf-8")
+
+    def _serve_apk(self, handler: Any, apk_path: str, filename: str) -> None:
+        import os
+        if not os.path.exists(apk_path):
+            handler.send_response(404)
+            handler.send_header("Content-Type", "text/plain")
+            handler.end_headers()
+            handler.wfile.write(b"APK not found")
+            return
+        size = os.path.getsize(apk_path)
+        handler.send_response(200)
+        handler.send_header("Content-Type", "application/vnd.android.package-archive")
+        handler.send_header("Content-Length", str(size))
+        handler.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        handler.end_headers()
+        with open(apk_path, "rb") as f:
+            while chunk := f.read(65536):
+                handler.wfile.write(chunk)
+
+    def _handle_download_termux(self, handler: Any, query: Dict[str, List[str]]) -> None:
+        from gemini_app.fleet.portal import TERMUX_APK
+        self._serve_apk(handler, TERMUX_APK, "Termux_v0.118.3_arm64.apk")
+
+    def _handle_download_termux_api(self, handler: Any, query: Dict[str, List[str]]) -> None:
+        from gemini_app.fleet.portal import API_APK
+        self._serve_apk(handler, API_APK, "Termux_API_v0.53.0.apk")
+
+    def _handle_download_termux_boot(self, handler: Any, query: Dict[str, List[str]]) -> None:
+        from gemini_app.fleet.portal import BOOT_APK
+        self._serve_apk(handler, BOOT_APK, "Termux_Boot_v0.8.1.apk")
+
     def _handle_index(self, handler: Any, query: Dict[str, List[str]]) -> str:
         return get_wingman_html(port=self.engine.port, node_id=self.node_id)
 

@@ -3106,11 +3106,21 @@ class ChatApp(App):
     async def append_to_feed(self, sender: str, text: str, jump_to_start: bool = False) -> None:
         feed = self.query_one("#feed", FeedArea)
         await feed.append_message(sender, text, jump_to_start=jump_to_start)
+        is_user = (sender.lower() not in ("gemini", "gemini core", "system"))
         if getattr(self, "wingman_applet", None) and self.wingman_applet.engine.is_running:
             try:
-                self.wingman_applet.push_chat_message(sender=sender, text=text, is_user=(sender == "user"))
+                self.wingman_applet.push_chat_message(sender=sender, text=text, is_user=is_user)
             except Exception:
                 pass
+        try:
+            from gemini_app.fleet.nodes import send_mothership_command
+            send_mothership_command("broadcast_wingman_chat", {
+                "sender": sender,
+                "text": text,
+                "is_user": is_user,
+            }, timeout=2.0)
+        except Exception:
+            pass
 
     def _handle_slash_command(self, raw_cmd: str) -> bool:
         """Handles client-side slash commands instantly without sending to API."""

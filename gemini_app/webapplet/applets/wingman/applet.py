@@ -267,8 +267,13 @@ class WingmanApplet:
             with self._lock:
                 if not any(m.get("id") == msg_id_val for m in self._chat_history):
                     self._chat_history.append(msg_obj)
+                    self._chat_history.sort(key=lambda x: x.get("timestamp", 0.0))
                     if len(self._chat_history) > 100:
                         self._chat_history.pop(0)
+
+        # Broadcast chat message to other connected Wingman clients via SSE
+        if text.lower() != "/clear":
+            self.engine.broadcast_event("chat_message", msg_obj)
 
         # Notify chat callbacks (e.g. node -> mothership link)
         with self._lock:
@@ -304,6 +309,7 @@ class WingmanApplet:
                         self._chat_history = merged
                 except Exception:
                     pass
+            self._chat_history.sort(key=lambda x: x.get("timestamp", 0.0))
             return {"status": "ok", "history": list(self._chat_history)}
 
     def _handle_biometric_response(self, handler: Any, query: Dict[str, List[str]], body: Any) -> Dict[str, Any]:
@@ -512,6 +518,7 @@ class WingmanApplet:
         with self._lock:
             if not any(m.get("id") == msg_id_val for m in self._chat_history):
                 self._chat_history.append(msg_obj)
+                self._chat_history.sort(key=lambda x: x.get("timestamp", 0.0))
                 if len(self._chat_history) > 100:
                     self._chat_history.pop(0)
 

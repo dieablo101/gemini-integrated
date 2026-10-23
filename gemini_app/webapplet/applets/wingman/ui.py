@@ -811,24 +811,27 @@ def get_wingman_html(
           <div>Bilateral chat stream connected. Messages sent here are validated through the node security gate and received directly by the Mothership.</div>
         </div>
       </div>
-      <form class="chat-input-container" id="chatForm" autocomplete="off" onsubmit="event.preventDefault(); submitChatMessage();">
+      <div class="chat-input-container" id="chatContainer">
         <input type="text"
                id="chatInput"
-               name="gemini_bilateral_chat_prompt"
+               name="wingman_chat_prompt_field"
                class="chat-input"
                placeholder="Message Gemini on Mothership..."
                autocomplete="off"
                autocorrect="on"
                autocapitalize="sentences"
                spellcheck="true"
+               inputmode="text"
                enterkeyhint="send"
                data-form-type="other"
                data-lpignore="true"
                data-1p-ignore="true"
+               data-bwignore="true"
+               data-protonpass-ignore="true"
                aria-autocomplete="none"
                onkeydown="handleChatKeyDown(event)">
-        <button type="submit" class="btn btn-primary" id="chatSendBtn">Send ↵</button>
-      </form>
+        <button type="button" class="btn btn-primary" id="chatSendBtn" onclick="submitChatMessage()">Send ↵</button>
+      </div>
     </div>
 
   </div>
@@ -844,16 +847,16 @@ def get_wingman_html(
         </div>
       </div>
       <div class="gate-error" id="modalPasskeyError" style="display: none; margin-bottom: 12px;">Invalid vault passkey. Verification denied.</div>
-      <form id="passkeyModalForm" autocomplete="off" onsubmit="handleSessionPasskeySubmit(event)">
+      <div id="passkeyModalForm">
         <div class="input-wrapper">
-          <input type="password" id="modalPasskeyInput" name="vault_session_passkey" class="gate-input" placeholder="Enter Homebase vault passkey..." autocomplete="current-password" required>
+          <input type="password" id="modalPasskeyInput" name="vault_session_input" class="gate-input" placeholder="Enter Homebase vault passkey..." autocomplete="off" data-form-type="other" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" onkeydown="if(event.key==='Enter')handleSessionPasskeySubmit(event)">
           <button type="button" class="btn-toggle-eye" onclick="togglePasskeyVisibility()" title="Show/Hide passkey">👁</button>
         </div>
         <div class="modal-actions">
           <button type="button" class="btn btn-secondary" onclick="closePasskeyModal()">Cancel</button>
-          <button type="submit" class="btn btn-primary" id="modalUnlockBtn">Unlock Session ↵</button>
+          <button type="button" class="btn btn-primary" id="modalUnlockBtn" onclick="handleSessionPasskeySubmit(event)">Unlock Session ↵</button>
         </div>
-      </form>
+      </div>
     </div>
   </div>
 
@@ -939,7 +942,7 @@ def get_wingman_html(
     }}
 
     async function handleSessionPasskeySubmit(e) {{
-      e.preventDefault();
+      if (e && e.preventDefault) e.preventDefault();
       const input = document.getElementById('modalPasskeyInput');
       const errEl = document.getElementById('modalPasskeyError');
       const unlockBtn = document.getElementById('modalUnlockBtn');
@@ -1078,7 +1081,12 @@ def get_wingman_html(
         const data = await res.json();
         if (data && data.history && Array.isArray(data.history)) {{
           const serverIds = new Set(data.history.map(m => m.id).filter(Boolean));
-          const pendingLocal = chatMessages.filter(m => m.pending && !serverIds.has(m.id));
+          const pendingLocal = chatMessages.filter(m => {{
+            if (!m.pending) return false;
+            if (serverIds.has(m.id)) return false;
+            const alreadyInServer = data.history.some(sm => sm.is_user && sm.text === m.text);
+            return !alreadyInServer;
+          }});
 
           const canonical = data.history.map(m => ({{
             id: m.id || ('msg-' + (m.timestamp || Math.random())),
@@ -1089,8 +1097,10 @@ def get_wingman_html(
             pending: false
           }}));
 
-          // Canonical server history preserves true conversational order regardless of client clock skew
-          chatMessages = canonical.concat(pendingLocal);
+          // Strict chronological sort so switching tabs never scrambles message order
+          const merged = canonical.concat(pendingLocal);
+          merged.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+          chatMessages = merged;
           renderChatFeed();
         }}
       }} catch (err) {{}}
@@ -1460,8 +1470,6 @@ def get_wingman_html(
             chatMessages[idx].timestamp = reply.timestamp;
             chatMessages[idx].pending = false;
           }}
-        }}
-          addChatMessage('System', '✗ ' + (reply.message || 'Message dispatch failed.'), false);
         }}
       }} catch (err) {{
         console.error("Chat send failed:", err);

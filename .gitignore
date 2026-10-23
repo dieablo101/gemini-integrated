@@ -7,6 +7,10 @@ __pycache__/
 build/
 dist/
 
+# Sandbox Digital Twin Data (Isolated Brain Bench)
+sandbox/data/
+sandbox/mind_twin/data/
+
 # Gemini Chat and Session State
 chats/
 emergency_state.json

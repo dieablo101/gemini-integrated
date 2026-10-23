@@ -255,6 +255,9 @@ class TestWingmanSecurity(unittest.TestCase):
             self.assertIn("securityGate", html)
             self.assertIn("modalPasskeyInput", html)
             self.assertIn("passkeyModal", html)
+            self.assertIn("passkey-secure-input", html)
+            self.assertNotIn('type="password"', html)
+            self.assertIn('inputmode="text"', html)
         finally:
             applet.stop()
 
@@ -916,6 +919,40 @@ class TestWingmanSecurity(unittest.TestCase):
             self.assertTrue(res.get("session_locked"))
             self.assertTrue(res.get("reauth_required"))
             self.assertIn("Session expired or Mothership rebooted", res.get("message", ""))
+        finally:
+            applet.stop()
+
+    def test_passkey_unlock_and_session_lock_distinction(self) -> None:
+        """Verifies distinction between session_locked and reauth_required, and passkey verification unlocks pending session."""
+        applet = WingmanApplet(port=0, node_id="test-node", require_pairing=True)
+        try:
+            applet._passkey_verifier = lambda p: p == "secret123"
+            sess = applet.security.create_or_resume_session(client_ip="192.168.1.180", device_id="dev-android", is_loopback=False)
+            applet.authorize_session(sess.session_id, accepted=True, trust_device=False)
+            sess.is_unlocked = False  # Authorized but passkey locked!
+
+            mock_handler = MagicMock()
+            mock_handler.headers = {"X-Wingman-Token": sess.token, "X-Wingman-Device": "dev-android"}
+            res = applet._handle_chat(mock_handler, {}, {"text": "hello", "sender": "Operator"})
+            self.assertEqual(res.get("status"), "error")
+            self.assertTrue(res.get("session_locked"))
+            # Must NOT require reauth when node is authorized and only passkey is locked!
+            self.assertFalse(res.get("reauth_required", False))
+            self.assertIn("Passkey unlock required", res.get("message", ""))
+
+            # Now verify passkey unlock
+            unlock_res = applet._handle_verify_passkey(mock_handler, {}, {
+                "passkey": "secret123",
+                "session_id": sess.session_id,
+                "session_token": sess.token,
+            })
+            self.assertEqual(unlock_res.get("status"), "ok")
+            self.assertTrue(unlock_res.get("valid"))
+            self.assertTrue(sess.is_unlocked)
+
+            # Re-attempt chat now that session is unlocked
+            res_after = applet._handle_chat(mock_handler, {}, {"text": "hello again", "sender": "Operator"})
+            self.assertEqual(res_after.get("status"), "ok")
         finally:
             applet.stop()
 

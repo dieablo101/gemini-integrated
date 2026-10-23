@@ -230,22 +230,35 @@ class WingmanApplet:
 
     def _handle_passkey_auth(self, handler: Any, query: Dict[str, List[str]], body: Any) -> Dict[str, Any]:
         sess_id = body.get("session_id", "")
+        token, dev_id, _ = self._extract_token_and_device(handler, query)
+        if not sess_id and token:
+            s = self.security.get_session_by_token(token)
+            if s:
+                sess_id = s.session_id
+        if not sess_id:
+            client_ip = handler.client_address[0] if hasattr(handler, "client_address") else "127.0.0.1"
+            s = self.security.create_or_resume_session(client_ip=client_ip, device_id=dev_id)
+            sess_id = s.session_id
+
         passkey = body.get("passkey", "")
         trust_device = bool(body.get("trust_device", False))
 
-        ok, token, msg = self.security.verify_passkey_and_authorize(
+        ok, token_out, msg = self.security.verify_passkey_and_authorize(
             session_id=sess_id,
             passkey=passkey,
             trust_device=trust_device,
         )
         if ok:
+            sess = self.security.get_session(sess_id)
+            if sess:
+                sess.is_unlocked = True
             # Broadcast auth approved to SSE clients
             self.engine.broadcast_event("session_authorized", {
                 "session_id": sess_id,
-                "token": token,
+                "token": token_out,
                 "status": "authorized",
             })
-            return {"status": "ok", "token": token, "message": msg}
+            return {"status": "ok", "token": token_out, "message": msg}
         return {"status": "error", "message": msg}
 
     def _handle_action(self, handler: Any, query: Dict[str, List[str]], body: Any) -> Dict[str, Any]:
@@ -430,9 +443,12 @@ class WingmanApplet:
                 sess = self.security.get_session_by_token(token)
             if sess:
                 sess.is_unlocked = True
+                if sess.status == "pending":
+                    self.security.authorize_session(sess.session_id)
         return {
             "status": "ok" if valid else "invalid",
             "valid": valid,
+            "token": sess.token if (valid and sess) else token,
             "message": "Authenticated successfully" if valid else "Invalid Homebase vault passkey.",
         }
 

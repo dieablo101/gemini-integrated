@@ -714,6 +714,14 @@ def get_wingman_html(
       width: 100%;
       padding-right: 40px;
     }}
+    .passkey-secure-input {{
+      -webkit-text-security: disc !important;
+      text-security: disc !important;
+    }}
+    .passkey-secure-input.plain-text {{
+      -webkit-text-security: none !important;
+      text-security: none !important;
+    }}
     .btn-toggle-eye {{
       position: absolute;
       right: 8px;
@@ -789,6 +797,42 @@ def get_wingman_html(
           <div class="radar-pulse"></div>
           <span id="gateStatusText">Awaiting mothership console authorization...</span>
         </div>
+
+        <div class="gate-divider">
+          <span>ENTER VAULT PASSKEY DIRECTLY</span>
+        </div>
+
+        <div class="gate-error" id="gatePasskeyError" style="display: none; margin-bottom: 12px;"></div>
+
+        <form class="gate-form" id="gatePasskeyForm" onsubmit="handleGatePasskeySubmit(event); return false;" autocomplete="off">
+          <div class="input-wrapper" style="margin-bottom: 10px;">
+            <input type="text"
+                   id="gatePasskeyInput"
+                   name="vault_gate_key"
+                   class="gate-input passkey-secure-input"
+                   placeholder="Enter Homebase vault passkey..."
+                   autocomplete="off"
+                   autocorrect="off"
+                   autocapitalize="off"
+                   spellcheck="false"
+                   inputmode="text"
+                   enterkeyhint="go"
+                   data-form-type="other"
+                   data-lpignore="true"
+                   data-1p-ignore="true"
+                   data-bwignore="true"
+                   data-protonpass-ignore="true"
+                   onkeydown="if(event.key==='Enter')handleGatePasskeySubmit(event)">
+            <button type="button" class="btn-toggle-eye" onclick="toggleGatePasskeyVisibility()" title="Show/Hide passkey">👁</button>
+          </div>
+          <div class="gate-checkbox-row">
+            <input type="checkbox" id="gateTrustCheckbox" name="trust_device">
+            <label for="gateTrustCheckbox" style="cursor: pointer;">Remember device pairing</label>
+          </div>
+          <button type="submit" class="btn btn-primary btn-block" id="gateUnlockBtn">
+            Authorize & Unlock Session ↵
+          </button>
+        </form>
       </div>
     </div>
 
@@ -816,15 +860,17 @@ def get_wingman_html(
       </div>
       <div class="chat-input-container" id="chatContainer">
         <textarea id="chatInput"
-                  name="wingman_chat_prompt_field"
+                  name="chat_message"
                   class="chat-input"
                   rows="1"
+                  role="textbox"
                   placeholder="Message Gemini on Mothership..."
                   autocomplete="off"
                   autocorrect="on"
                   autocapitalize="sentences"
                   spellcheck="true"
                   enterkeyhint="send"
+                  inputmode="text"
                   data-form-type="other"
                   data-lpignore="true"
                   data-1p-ignore="true"
@@ -849,16 +895,32 @@ def get_wingman_html(
         </div>
       </div>
       <div class="gate-error" id="modalPasskeyError" style="display: none; margin-bottom: 12px;">Invalid vault passkey. Verification denied.</div>
-      <div id="passkeyModalForm">
+      <form id="passkeyModalForm" onsubmit="handleSessionPasskeySubmit(event); return false;" autocomplete="off">
         <div class="input-wrapper">
-          <input type="password" id="modalPasskeyInput" name="vault_session_input" class="gate-input" placeholder="Enter Homebase vault passkey..." autocomplete="off" data-form-type="other" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" onkeydown="if(event.key==='Enter')handleSessionPasskeySubmit(event)">
+          <input type="text"
+                 id="modalPasskeyInput"
+                 name="vault_session_input"
+                 class="gate-input passkey-secure-input"
+                 placeholder="Enter Homebase vault passkey..."
+                 autocomplete="off"
+                 autocorrect="off"
+                 autocapitalize="off"
+                 spellcheck="false"
+                 inputmode="text"
+                 enterkeyhint="go"
+                 data-form-type="other"
+                 data-lpignore="true"
+                 data-1p-ignore="true"
+                 data-bwignore="true"
+                 data-protonpass-ignore="true"
+                 onkeydown="if(event.key==='Enter')handleSessionPasskeySubmit(event)">
           <button type="button" class="btn-toggle-eye" onclick="togglePasskeyVisibility()" title="Show/Hide passkey">👁</button>
         </div>
         <div class="modal-actions">
           <button type="button" class="btn btn-secondary" onclick="closePasskeyModal()">Cancel</button>
-          <button type="button" class="btn btn-primary" id="modalUnlockBtn" onclick="handleSessionPasskeySubmit(event)">Unlock Session ↵</button>
+          <button type="submit" class="btn btn-primary" id="modalUnlockBtn">Unlock Session ↵</button>
         </div>
-      </div>
+      </form>
     </div>
   </div>
 
@@ -956,6 +1018,7 @@ def get_wingman_html(
       const input = document.getElementById('modalPasskeyInput');
       if (input) {{
         input.value = '';
+        input.classList.remove('plain-text');
         input.focus();
       }}
     }}
@@ -969,7 +1032,74 @@ def get_wingman_html(
     function togglePasskeyVisibility() {{
       const input = document.getElementById('modalPasskeyInput');
       if (input) {{
-        input.type = input.type === 'password' ? 'text' : 'password';
+        input.classList.toggle('plain-text');
+      }}
+    }}
+
+    function toggleGatePasskeyVisibility() {{
+      const input = document.getElementById('gatePasskeyInput');
+      if (input) {{
+        input.classList.toggle('plain-text');
+      }}
+    }}
+
+    async function handleGatePasskeySubmit(e) {{
+      if (e && e.preventDefault) e.preventDefault();
+      const input = document.getElementById('gatePasskeyInput');
+      const errEl = document.getElementById('gatePasskeyError');
+      const btn = document.getElementById('gateUnlockBtn');
+      const trustBox = document.getElementById('gateTrustCheckbox');
+      const pass = input ? input.value.trim() : '';
+      if (!pass) return;
+
+      if (btn) {{
+        btn.disabled = true;
+        btn.textContent = 'Verifying with Homebase...';
+      }}
+      if (errEl) errEl.style.display = 'none';
+
+      try {{
+        const trustVal = trustBox ? Boolean(trustBox.checked) : false;
+        const res = await fetch('/applet/wingman/auth', {{
+          method: 'POST',
+          headers: {{
+            'Content-Type': 'application/json',
+            'X-Wingman-Device': deviceId,
+            'X-Wingman-Session': sessionId
+          }},
+          body: JSON.stringify({{
+            session_id: sessionId,
+            passkey: pass,
+            trust_device: trustVal
+          }})
+        }});
+        const data = await res.json();
+        if (data.status === 'ok' && data.token) {{
+          isSessionUnlocked = true;
+          unlockUI(data.token, trustVal);
+          if (input) input.value = '';
+          playTone(880, 'sine', 0.1);
+        }} else {{
+          if (errEl) {{
+            errEl.textContent = data.message || "Invalid Homebase vault passkey. Verification denied.";
+            errEl.style.display = 'block';
+          }}
+          if (input) {{
+            input.focus();
+            input.select();
+          }}
+          playTone(220, 'sawtooth', 0.15);
+        }}
+      }} catch (err) {{
+        if (errEl) {{
+          errEl.textContent = "Passkey check failed: " + err.message;
+          errEl.style.display = 'block';
+        }}
+      }} finally {{
+        if (btn) {{
+          btn.disabled = false;
+          btn.textContent = 'Authorize & Unlock Session ↵';
+        }}
       }}
     }}
 
@@ -1005,6 +1135,9 @@ def get_wingman_html(
         const data = await res.json();
         if (data.valid || data.status === 'ok') {{
           isSessionUnlocked = true;
+          if (data.token) {{
+            unlockUI(data.token, Boolean(data.is_paired));
+          }}
           closePasskeyModal();
           playTone(880, 'sine', 0.1);
           if (pendingActionCallback) {{
@@ -1194,12 +1327,12 @@ def get_wingman_html(
           if (currentMothershipBootId && currentMothershipBootId !== data.mothership_boot_id) {{
             // Mothership console rebooted!
             currentMothershipBootId = data.mothership_boot_id;
+            isSessionUnlocked = false;
             if (!isPairedDevice) {{
               sessionToken = '';
               sessionStorage.removeItem('wingman_token');
               localStorage.removeItem('wingman_token');
               localStorage.removeItem('wingman_paired');
-              isSessionUnlocked = false;
               lockUI("Mothership console rebooted — awaiting new authorization...");
               startAuthPolling();
               return;
@@ -1211,12 +1344,12 @@ def get_wingman_html(
         if (data.boot_id) {{
           if (currentBootId && currentBootId !== data.boot_id) {{
             // Server rebooted! Invalidate credentials, lock UI, and re-authenticate
+            isSessionUnlocked = false;
             if (!isPairedDevice) {{
               sessionToken = '';
               sessionStorage.removeItem('wingman_token');
               localStorage.removeItem('wingman_token');
               localStorage.removeItem('wingman_paired');
-              isSessionUnlocked = false;
               currentBootId = data.boot_id;
               lockUI("Mothership console rebooted — awaiting new authorization...");
               startAuthPolling();
@@ -1230,6 +1363,9 @@ def get_wingman_html(
             localStorage.removeItem('wingman_token');
             localStorage.removeItem('wingman_paired');
             isPairedDevice = false;
+          }}
+          if (data.is_unlocked !== undefined) {{
+            isSessionUnlocked = Boolean(data.is_unlocked);
           }}
           unlockUI(data.token, Boolean(data.is_paired));
         }} else {{
@@ -1321,6 +1457,13 @@ def get_wingman_html(
       gateStatusText.textContent = reason;
       statusText.textContent = "PENDING AUTH";
       statusDot.className = "status-dot pending";
+      const gateErr = document.getElementById('gatePasskeyError');
+      if (gateErr) gateErr.style.display = 'none';
+      const gateInput = document.getElementById('gatePasskeyInput');
+      if (gateInput) {{
+        gateInput.value = '';
+        gateInput.classList.remove('plain-text');
+      }}
     }}
 
     /* SSE Stream Connection */
@@ -1479,7 +1622,14 @@ def get_wingman_html(
           body: JSON.stringify({{ card_id: cardId, action: action, timestamp: Date.now() }})
         }});
         const reply = await res.json();
-        if (reply.session_locked || reply.reauth_required || (reply.status === 'error' && reply.message && reply.message.toLowerCase().includes('session'))) {{
+        if (reply.session_locked && !reply.reauth_required) {{
+          isSessionUnlocked = false;
+          requireSessionUnlock(reply.message || "Homebase passkey required to execute action", () => {{
+            executeCardAction(cardId, action);
+          }});
+          return;
+        }}
+        if (reply.reauth_required || (reply.status === 'error' && reply.message && reply.message.toLowerCase().includes('session'))) {{
           await handleSessionExpired(reply.message || "Session expired — awaiting mothership authorization...");
           return;
         }}
@@ -1633,7 +1783,19 @@ def get_wingman_html(
           }})
         }});
         const reply = await res.json();
-        if (reply.session_locked || reply.reauth_required || (reply.status === 'error' && reply.message && reply.message.toLowerCase().includes('session'))) {{
+        if (reply.session_locked && !reply.reauth_required) {{
+          isSessionUnlocked = false;
+          const pIdx = chatMessages.findIndex(m => m.id === msgId);
+          if (pIdx !== -1) {{
+            chatMessages.splice(pIdx, 1);
+            renderChatFeed();
+          }}
+          requireSessionUnlock(reply.message || "Homebase passkey required to send chat message", () => {{
+            executeSubmitChatMessage(text);
+          }});
+          return;
+        }}
+        if (reply.reauth_required || (reply.status === 'error' && reply.message && reply.message.toLowerCase().includes('session'))) {{
           await handleSessionExpired(reply.message || "Session expired — awaiting mothership authorization...");
           return;
         }}

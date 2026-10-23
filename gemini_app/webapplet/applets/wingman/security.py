@@ -315,6 +315,7 @@ class WingmanSecurity:
 
         # Authorized!
         self.authorize_session(session_id, trust_device=trust_device)
+        session.is_unlocked = True
         return True, session.token, "Authenticated successfully"
 
     def prune_stale_sessions(

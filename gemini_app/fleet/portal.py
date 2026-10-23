@@ -6,7 +6,7 @@ import sys
 
 from gemini_app.fleet.protocol import get_local_lan_ip
 
-PORT = 8888
+PORT = int(os.environ.get("PORTAL_PORT", 8890))
 APK_DIR = os.path.expanduser("~/.gemini/apks")
 TERMUX_APK = os.path.join(APK_DIR, "termux-app_v0.118.3_arm64.apk")
 API_APK = os.path.join(APK_DIR, "termux-api-app_v0.53.0.apk")

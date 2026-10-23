@@ -869,6 +869,7 @@ def get_wingman_html(
     const itemChat = document.getElementById('itemChat');
 
     let currentMode = 'work';
+    let chatMessages = [];
     let sseSource = null;
     let pingInterval = null;
     let authPollingInterval = null;
@@ -1061,13 +1062,25 @@ def get_wingman_html(
         const res = await fetch('/applet/wingman/chat_history', {{ headers }});
         const data = await res.json();
         if (data && data.history && Array.isArray(data.history)) {{
-          if (data.history.length > 0 && chatFeed.querySelectorAll('.chat-bubble[data-msg-id]').length === 0) {{
-            chatFeed.innerHTML = '';
-          }}
+          let updated = false;
           data.history.forEach(m => {{
             const mId = m.id || ('msg-' + (m.timestamp || Math.random()));
-            renderChatMessage(m.sender || 'Gemini', m.text, Boolean(m.is_user), mId, m.timestamp);
+            const ts = (typeof m.timestamp === 'number' && m.timestamp > 0) ? m.timestamp : (Date.now() / 1000);
+            if (!chatMessages.some(existing => existing.id === mId)) {{
+              chatMessages.push({{
+                id: mId,
+                sender: m.sender || 'Gemini',
+                text: m.text || '',
+                is_user: Boolean(m.is_user),
+                timestamp: ts,
+              }});
+              updated = true;
+            }}
           }});
+          if (updated || chatMessages.length === 0) {{
+            chatMessages.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+            renderChatFeed();
+          }}
         }}
       }} catch (err) {{}}
     }}
@@ -1239,14 +1252,15 @@ def get_wingman_html(
         try {{
           const msg = JSON.parse(e.data);
           const mId = msg.id || ('msg-' + (msg.timestamp || ''));
-          renderChatMessage(msg.sender || 'Gemini', msg.text, msg.is_user, mId, msg.timestamp);
+          addChatMessage(msg.sender || 'Gemini', msg.text, Boolean(msg.is_user), mId, msg.timestamp);
           playTone(660, 'sine', 0.08);
         }} catch (err) {{}}
       }});
 
       sseSource.addEventListener("chat_clear", (e) => {{
-        chatFeed.innerHTML = '';
-        renderChatMessage('Gemini Core', 'Bilateral chat cleared. Starting fresh chat session.', false);
+        chatMessages = [];
+        renderChatFeed();
+        addChatMessage('Gemini Core', 'Bilateral chat cleared. Starting fresh chat session.', false);
         playTone(440, 'triangle', 0.1);
       }});
 
@@ -1339,15 +1353,66 @@ def get_wingman_html(
       }});
     }}
 
+    function renderChatFeed() {{
+      chatFeed.innerHTML = '';
+      if (chatMessages.length === 0) {{
+        chatFeed.innerHTML = `
+          <div class="chat-bubble bot">
+            <div class="chat-meta">
+              <span>GEMINI CORE</span>
+              <span>ONLINE</span>
+            </div>
+            <div>Bilateral chat stream connected. Messages sent here are validated through the node security gate and received directly by the Mothership.</div>
+          </div>
+        `;
+        return;
+      }}
+      chatMessages.forEach(m => {{
+        const bubble = document.createElement('div');
+        bubble.className = 'chat-bubble ' + (m.is_user ? 'user' : 'bot');
+        if (m.id) bubble.setAttribute('data-msg-id', m.id);
+        const timeStr = m.timestamp ? new Date(m.timestamp * 1000).toLocaleTimeString() : new Date().toLocaleTimeString();
+
+        bubble.innerHTML = `
+          <div class="chat-meta">
+            <span>${{escapeHtml((m.sender || 'Gemini').toUpperCase())}}</span>
+            <span>${{timeStr}}</span>
+          </div>
+          <div style="white-space: pre-wrap;">${{escapeHtml(m.text || '')}}</div>
+        `;
+        chatFeed.appendChild(bubble);
+      }});
+      chatFeed.scrollTop = chatFeed.scrollHeight;
+    }}
+
+    function addChatMessage(sender, text, isUser = false, msgId = '', timestamp = null) {{
+      const mId = msgId || ('msg-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6));
+      const ts = (typeof timestamp === 'number' && timestamp > 0) ? timestamp : (Date.now() / 1000);
+      const existingIdx = chatMessages.findIndex(m => m.id === mId);
+      if (existingIdx !== -1) {{
+        chatMessages[existingIdx] = {{ id: mId, sender, text, is_user: isUser, timestamp: ts }};
+      }} else {{
+        chatMessages.push({{ id: mId, sender, text, is_user: isUser, timestamp: ts }});
+      }}
+      chatMessages.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+      renderChatFeed();
+    }}
+
+    function renderChatMessage(sender, text, isUser = false, msgId = '', timestamp = null) {{
+      addChatMessage(sender, text, isUser, msgId, timestamp);
+    }}
+
     async function executeSubmitChatMessage(text) {{
       const msgId = 'msg-' + Date.now() + '-' + Math.random().toString(36).substring(2, 7);
+      const nowSec = Date.now() / 1000;
       chatInput.value = '';
 
       if (text.trim().toLowerCase() === '/clear') {{
-        chatFeed.innerHTML = '';
-        renderChatMessage('Gemini Core', 'Clearing bilateral chat across all devices...', false);
+        chatMessages = [];
+        renderChatFeed();
+        addChatMessage('Gemini Core', 'Clearing bilateral chat across all devices...', false);
       }} else {{
-        renderChatMessage('Operator', text, true, msgId, Date.now() / 1000);
+        addChatMessage('Operator', text, true, msgId, nowSec);
       }}
 
       try {{
@@ -1361,7 +1426,7 @@ def get_wingman_html(
             id: msgId,
             text: text,
             sender: 'operator',
-            timestamp: Date.now() / 1000
+            timestamp: nowSec
           }})
         }});
         const reply = await res.json();
@@ -1371,40 +1436,18 @@ def get_wingman_html(
           return;
         }}
         if (text.trim().toLowerCase() === '/clear') {{
-          chatFeed.innerHTML = '';
-          renderChatMessage('Gemini Core', 'Bilateral chat cleared. Starting fresh chat session.', false);
+          chatMessages = [];
+          renderChatFeed();
+          addChatMessage('Gemini Core', 'Bilateral chat cleared. Starting fresh chat session.', false);
           return;
         }}
-        if (reply.reply) {{
-          renderChatMessage('Gemini Core', reply.reply, false);
-        }} else if (reply.status === 'error') {{
-          renderChatMessage('System', '✗ ' + (reply.message || 'Message dispatch failed.'), false);
+        if (reply.status === 'error') {{
+          addChatMessage('System', '✗ ' + (reply.message || 'Message dispatch failed.'), false);
         }}
       }} catch (err) {{
         console.error("Chat send failed:", err);
-        renderChatMessage('System', '✗ Network error sending message to Mothership.', false);
+        addChatMessage('System', '✗ Network error sending message to Mothership.', false);
       }}
-    }}
-
-    function renderChatMessage(sender, text, isUser = false, msgId = '', timestamp = null) {{
-      if (msgId && document.querySelector(`.chat-bubble[data-msg-id="${{msgId}}"]`)) {{
-        return;
-      }}
-      const bubble = document.createElement('div');
-      bubble.className = 'chat-bubble ' + (isUser ? 'user' : 'bot');
-      if (msgId) bubble.setAttribute('data-msg-id', msgId);
-      const timeStr = timestamp ? new Date(timestamp * 1000).toLocaleTimeString() : new Date().toLocaleTimeString();
-
-      bubble.innerHTML = `
-        <div class="chat-meta">
-          <span>${{escapeHtml(sender.toUpperCase())}}</span>
-          <span>${{timeStr}}</span>
-        </div>
-        <div style="white-space: pre-wrap;">${{escapeHtml(text)}}</div>
-      `;
-
-      chatFeed.appendChild(bubble);
-      chatFeed.scrollTop = chatFeed.scrollHeight;
     }}
 
     /* Biometric WebAuthn */

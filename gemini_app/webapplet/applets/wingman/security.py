@@ -169,23 +169,35 @@ class WingmanSecurity:
 
             # 3. If there is already an existing pending session for this session_id or device/IP, reuse it!
             if status == "pending":
+                matched_existing = None
                 if existing_session_id and existing_session_id in self.sessions:
-                    existing_sess = self.sessions[existing_session_id]
-                    if existing_sess.status == "pending":
-                        existing_sess.last_seen = now
-                        if user_agent:
-                            existing_sess.user_agent = user_agent
-                        return existing_sess
+                    cand = self.sessions[existing_session_id]
+                    if cand.status == "pending":
+                        matched_existing = cand
 
-                for existing_sess in self.sessions.values():
-                    if existing_sess.status == "pending":
-                        match_dev = bool(effective_device_id and existing_sess.device_id == effective_device_id)
-                        match_ip = bool(client_ip and existing_sess.client_ip == client_ip)
-                        if match_dev or match_ip:
-                            existing_sess.last_seen = now
-                            if user_agent:
-                                existing_sess.user_agent = user_agent
-                            return existing_sess
+                if not matched_existing:
+                    for cand in self.sessions.values():
+                        if cand.status == "pending":
+                            match_dev = bool(effective_device_id and cand.device_id == effective_device_id)
+                            match_ip = bool(client_ip and cand.client_ip == client_ip)
+                            if match_dev or match_ip:
+                                matched_existing = cand
+                                break
+
+                if matched_existing:
+                    matched_existing.last_seen = now
+                    if user_agent:
+                        matched_existing.user_agent = user_agent
+                    should_notify = (now - getattr(matched_existing, "_last_notified", 0.0)) > 3.0
+                    if should_notify:
+                        matched_existing._last_notified = now
+                    if should_notify:
+                        for cb in list(self._on_pending_session_callbacks):
+                            try:
+                                cb(matched_existing)
+                            except Exception:
+                                pass
+                    return matched_existing
 
             sess_id = existing_session_id or f"sess-{secrets.token_hex(8)}"
             tok = f"wmt-{secrets.token_urlsafe(32)}"
@@ -201,6 +213,7 @@ class WingmanSecurity:
                 created_at=now,
                 last_seen=now,
             )
+            session._last_notified = now
 
             self.sessions[sess_id] = session
             if status == "authorized":

@@ -377,11 +377,12 @@ class ChatApp(App):
             def _fetch_canonical_wingman_history() -> List[Dict[str, Any]]:
                 items: List[Dict[str, Any]] = []
                 hist = getattr(self, "history", [])
-                base_time = time.time() - (len(hist) * 2)
+                base_time = getattr(self, "_chat_start_time", 0.0) or (time.time() - max(120.0, len(hist) * 10))
                 for idx, turn in enumerate(hist):
                     role = turn.get("role", "")
                     text = turn.get("text", "")
                     turn_id = turn.get("turn_id", "")
+                    ts = turn.get("timestamp") or (base_time + (idx * 2))
                     is_u = (role == "user")
                     sender_name = "Operator" if is_u else "Gemini Core"
                     clean_text = text
@@ -394,7 +395,7 @@ class ChatApp(App):
                         "sender": sender_name,
                         "text": clean_text,
                         "is_user": is_u,
-                        "timestamp": base_time + (idx * 2),
+                        "timestamp": float(ts),
                     })
                 return items
 
@@ -417,9 +418,11 @@ class ChatApp(App):
         ts = auth_data.get("timestamp", time.time())
         if (time.time() - ts) > 45.0:
             return
-        handled_set = getattr(self, "_handled_wingman_auth_reqs", set())
-        if req_id in handled_set:
-            return
+        handled_times = getattr(self, "_handled_wingman_auth_times", {})
+        if req_id in handled_times:
+            if (time.time() - handled_times[req_id]) < 45.0:
+                return
+            handled_times.pop(req_id, None)
 
         if not hasattr(self, "_wingman_auth_queue"):
             self._wingman_auth_queue = []
@@ -441,14 +444,18 @@ class ChatApp(App):
                 return
 
         if getattr(self, "_wingman_modal_open", False):
-            curr_data = getattr(self, "_active_wingman_auth_data", None)
-            if curr_data:
-                if node_id and node_id not in ("local", "mothership") and curr_data.get("node_id") == node_id:
-                    return
-                if dev_id and curr_data.get("device_id") == dev_id:
-                    return
-                if client_ip and client_ip not in ("127.0.0.1", "::1", "localhost") and curr_data.get("client_ip") == client_ip:
-                    return
+            has_auth_modal = any(s.__class__.__name__ == "WingmanAuthModal" for s in getattr(self, "screen_stack", []))
+            if not has_auth_modal and getattr(self, "screen_stack", None):
+                self._wingman_modal_open = False
+            else:
+                curr_data = getattr(self, "_active_wingman_auth_data", None)
+                if curr_data:
+                    if node_id and node_id not in ("local", "mothership") and curr_data.get("node_id") == node_id:
+                        return
+                    if dev_id and curr_data.get("device_id") == dev_id:
+                        return
+                    if client_ip and client_ip not in ("127.0.0.1", "::1", "localhost") and curr_data.get("client_ip") == client_ip:
+                        return
 
         self._wingman_auth_queue.append(dict(auth_data))
         self._process_next_wingman_auth()
@@ -459,11 +466,17 @@ class ChatApp(App):
             return
 
         if getattr(self, "_wingman_modal_open", False):
-            return
+            has_auth_modal = any(s.__class__.__name__ == "WingmanAuthModal" for s in getattr(self, "screen_stack", []))
+            has_boot_screen = any(s.__class__.__name__ == "BootScreen" for s in getattr(self, "screen_stack", []))
+            if has_auth_modal or has_boot_screen:
+                return
+            if getattr(self, "screen_stack", None):
+                self._wingman_modal_open = False
+            else:
+                return
 
         try:
-            if any(s.__class__.__name__ in ("BootScreen", "WingmanAuthModal") for s in self.screen_stack):
-                self._wingman_modal_open = True
+            if any(s.__class__.__name__ in ("BootScreen", "WingmanAuthModal") for s in getattr(self, "screen_stack", [])):
                 return
         except Exception:
             pass
@@ -477,8 +490,8 @@ class ChatApp(App):
         if (time.time() - ts) > 45.0:
             self._process_next_wingman_auth()
             return
-        handled_set = getattr(self, "_handled_wingman_auth_reqs", set())
-        if req_id in handled_set:
+        handled_times = getattr(self, "_handled_wingman_auth_times", {})
+        if req_id in handled_times and (time.time() - handled_times[req_id]) < 45.0:
             self._process_next_wingman_auth()
             return
 
@@ -490,6 +503,10 @@ class ChatApp(App):
         def _on_decision(decision: str) -> None:
             self._wingman_modal_open = False
             self._active_wingman_auth_data = None
+            if not hasattr(self, "_handled_wingman_auth_times"):
+                self._handled_wingman_auth_times = {}
+            self._handled_wingman_auth_times[req_id] = time.time()
+            handled_set = getattr(self, "_handled_wingman_auth_reqs", set())
             handled_set.add(req_id)
             self._handled_wingman_auth_reqs = handled_set
 
@@ -545,7 +562,7 @@ class ChatApp(App):
     @work(exclusive=True, thread=True)
     def _check_pending_wingman_auth(self) -> None:
         """Polls MothershipServer and local applet for pending Wingman access requests."""
-        handled = getattr(self, "_handled_wingman_auth_reqs", set())
+        handled_times = getattr(self, "_handled_wingman_auth_times", {})
 
         # Check MothershipServer for requests from satellites
         try:
@@ -554,7 +571,7 @@ class ChatApp(App):
             if isinstance(res, dict) and "requests" in res:
                 for req in res.get("requests", []):
                     rid = req.get("auth_req_id") or req.get("session_id")
-                    if rid and rid not in handled:
+                    if rid and (rid not in handled_times or (time.time() - handled_times[rid]) >= 45.0):
                         self.call_from_thread(self._handle_wingman_auth_prompt, req)
         except Exception:
             pass
@@ -563,7 +580,7 @@ class ChatApp(App):
         try:
             if getattr(self, "wingman_applet", None) and hasattr(self.wingman_applet, "security"):
                 for sess in list(self.wingman_applet.security.sessions.values()):
-                    if sess.status == "pending" and sess.session_id not in handled:
+                    if sess.status == "pending" and (sess.session_id not in handled_times or (time.time() - handled_times[sess.session_id]) >= 45.0):
                         self.call_from_thread(self._handle_wingman_auth_prompt, {
                             "auth_req_id": sess.session_id,
                             "session_id": sess.session_id,
@@ -571,7 +588,7 @@ class ChatApp(App):
                             "client_ip": sess.client_ip,
                             "user_agent": sess.user_agent,
                             "device_id": sess.device_id,
-                            "timestamp": sess.created_at,
+                            "timestamp": getattr(sess, "last_seen", sess.created_at),
                         })
         except Exception:
             pass
@@ -600,7 +617,7 @@ class ChatApp(App):
         try:
             feed = self.query_one("#feed", FeedArea)
             new_turn_id = f"turn_{uuid4().hex[:8]}"
-            self.history.append({"turn_id": new_turn_id, "role": "user", "text": msg_body})
+            self.history.append({"turn_id": new_turn_id, "role": "user", "text": msg_body, "timestamp": time.time()})
             self.current_chat_last_index = max(0, len(self.history) - 1)
             self.current_chat_center_marker = new_turn_id
             self.run_worker(feed.append_message(CURRENT_USER, msg_body, jump_to_start=False))
@@ -1846,7 +1863,7 @@ class ChatApp(App):
         await feed.append_message("gemini", full_text, jump_to_start=True)
 
         new_turn_id = f"turn_{uuid4().hex[:8]}"
-        self.history.append({"turn_id": new_turn_id, "role": "model", "text": full_text})
+        self.history.append({"turn_id": new_turn_id, "role": "model", "text": full_text, "timestamp": time.time()})
         self.current_chat_last_index = max(0, len(self.history) - 1)
         self.current_chat_center_marker = new_turn_id
         self.save_current_chat()
@@ -3559,7 +3576,7 @@ class ChatApp(App):
             pass
 
         new_turn_id = f"turn_{uuid4().hex[:8]}"
-        self.history.append({"turn_id": new_turn_id, "role": "user", "text": user_msg})
+        self.history.append({"turn_id": new_turn_id, "role": "user", "text": user_msg, "timestamp": time.time()})
         self.current_chat_last_index = max(0, len(self.history) - 1)
         self.current_chat_center_marker = new_turn_id
 

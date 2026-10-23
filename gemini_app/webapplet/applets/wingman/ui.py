@@ -1399,7 +1399,7 @@ def get_wingman_html(
             <span>${{escapeHtml((m.sender || 'Gemini').toUpperCase())}}</span>
             <span>${{timeStr}}</span>
           </div>
-          <div style="white-space: pre-wrap;">${{escapeHtml(m.text || '')}}</div>
+          <div style="white-space: pre-wrap; word-break: break-word;">${{formatMarkdown(m.text || '')}}</div>
         `;
         chatFeed.appendChild(bubble);
       }});
@@ -1574,6 +1574,17 @@ def get_wingman_html(
         .catch(() => {{
           footerPing.textContent = 'PING: ERR';
         }});
+    }}
+
+    function formatMarkdown(text) {{
+      if (!text) return '';
+      let safe = escapeHtml(text);
+      safe = safe.replace(/\\*\\*(.+?)\\*\\*/g, '<strong>$1</strong>');
+      safe = safe.replace(/`([^`]+)`/g, '<code style="background:rgba(255,255,255,0.12);padding:2px 5px;border-radius:4px;font-family:monospace;font-size:0.9em;">$1</code>');
+      safe = safe.replace(/^(?:[\\*\\-])\\s+(.+)$/gm, '<li style="margin-left:14px;list-style-type:disc;">$1</li>');
+      safe = safe.replace(/(<li[\\s\\S]+?<\\/li>)/g, '<ul style="margin:4px 0;padding-left:10px;">$1</ul>');
+      safe = safe.replace(/<\\/ul>\\s*<ul style="margin:4px 0;padding-left:10px;">/g, '');
+      return safe;
     }}
 
     function escapeHtml(text) {{

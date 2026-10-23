@@ -696,6 +696,28 @@ class TestWingmanSecurity(unittest.TestCase):
         finally:
             applet.stop()
 
+    def test_pending_session_reconnect_reinvokes_pending_callbacks(self) -> None:
+        """Verifies that when a pending device refreshes or re-polls, on_pending_session is re-invoked."""
+        applet = WingmanApplet(port=0, node_id="test-node", require_pairing=True)
+        notifications = []
+        applet.on_auth_request(lambda req: notifications.append(req))
+        try:
+            # 1. First connection
+            s1 = applet.security.create_or_resume_session(client_ip="192.168.1.179", device_id="dev-phone-x")
+            self.assertEqual(len(notifications), 1)
+
+            # 2. Immediately reconnect (< 3s)
+            s2 = applet.security.create_or_resume_session(client_ip="192.168.1.179", device_id="dev-phone-x")
+            self.assertEqual(len(notifications), 1)
+
+            # 3. Reconnect after notification cooldown (> 3s simulated)
+            s1._last_notified = time.time() - 4.0
+            s3 = applet.security.create_or_resume_session(client_ip="192.168.1.179", device_id="dev-phone-x")
+            self.assertEqual(len(notifications), 2)
+            self.assertEqual(notifications[1]["session_id"], s1.session_id)
+        finally:
+            applet.stop()
+
 
 if __name__ == "__main__":
     unittest.main()

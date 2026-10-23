@@ -423,7 +423,7 @@ def collect_telemetry() -> Dict[str, Any]:
                                 "client_ip": cip,
                                 "user_agent": getattr(sess, "user_agent", ""),
                                 "device_id": getattr(sess, "device_id", ""),
-                                "timestamp": getattr(sess, "created_at", now),
+                                "timestamp": getattr(sess, "last_seen", now),
                             })
         except Exception:
             pass

@@ -151,7 +151,9 @@ class Hypergraph:
     Maintains fast dual indices for topological traversal and spreading activation.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, decay_alpha: float = 0.005, decay_beta: float = 0.3) -> None:
+        self.decay_alpha = decay_alpha
+        self.decay_beta = decay_beta
         self.vertices: Dict[str, Vertex] = {}
         self.edges: Dict[str, Hyperedge] = {}
 
@@ -159,6 +161,27 @@ class Hypergraph:
         self._source_index: Dict[str, Set[str]] = {}
         self._target_index: Dict[str, Set[str]] = {}
         self._incident_index: Dict[str, Set[str]] = {}
+
+    def apply_hebbian_reinforcement(
+        self,
+        sources: Iterable[str],
+        targets: Iterable[str],
+        eta: float = 0.15,
+        t_now: Optional[float] = None,
+    ) -> Optional[Hyperedge]:
+        """
+        Finds or instantiates hyperedge between sources and targets, then applies Hebbian reinforcement.
+        """
+        src_set = set(sources)
+        tgt_set = set(targets)
+        # Check if matching edge already exists
+        for eid in self.edges:
+            edge = self.edges[eid]
+            if edge.sources == src_set and edge.targets == tgt_set:
+                edge.reinforce(eta=eta, t_now=t_now)
+                return edge
+        # If not, add new edge with initial weight
+        return self.add_hyperedge(sources=src_set, targets=tgt_set, relation="co_occurs_with", weight=1.0 + eta)
 
     def add_vertex(
         self,

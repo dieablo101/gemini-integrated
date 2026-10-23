@@ -427,3 +427,18 @@ def send_mothership_command(
                 return r_msg.payload
     except Exception as exc:
         return {"status": "error", "error": str(exc)}
+
+
+def fetch_node_screenshot(node_id: str = "android-termux-localhost", custom_path: Optional[str] = None) -> Dict[str, Any]:
+    """Fetches the latest screenshot from a connected satellite node and saves it to local screenshots."""
+    params = {"node_id": node_id}
+    if custom_path:
+        params["path"] = custom_path
+    return send_mothership_command("fetch_node_screenshot", params, timeout=25.0)
+
+
+def list_node_screenshots(node_id: str = "android-termux-localhost", limit: int = 10) -> Dict[str, Any]:
+    """Lists available screenshots on a remote satellite node."""
+    params = {"node_id": node_id, "limit": limit}
+    return send_mothership_command("list_node_screenshots", params, timeout=12.0)
+

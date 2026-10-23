@@ -1,9 +1,6 @@
 # gemini-integrated : Autonomous Bilateral Terminal Console & LLM Programmer's Tool
 
-![gemini-integrated screenshot 1](./screenshots/screen1.svg)
-![gemini-integrated screenshot 2](./screenshots/screen2.svg)
-![gemini-integrated screenshot 3](./screenshots/screen3.svg)
-![gemini-integrated screenshot 4](./screenshots/screen4.svg)
+![gemini-integrated screenshot 1](./screenshots/bootscreen.svg)
 
 **gemini-integrated** is a high-performance terminal console and bilateral AI development environment built on **Textual** and the **Google GenAI SDK** (`gemini-3.8-flash`). Designed specifically for autonomous software engineering, conversational branching, persistent relational memory, and deep workflow integration.
 

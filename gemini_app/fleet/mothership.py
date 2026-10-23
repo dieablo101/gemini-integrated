@@ -576,6 +576,47 @@ class MothershipServer:
                                 else:
                                     resp_payload["status"] = "error"
                                     resp_payload["error"] = "Missing node_id or command"
+                            elif action in ("fetch_node_screenshot", "fetch_screenshot"):
+                                target_nid = msg.payload.get("params", {}).get("node_id", "")
+                                if not target_nid:
+                                    resp_payload["status"] = "error"
+                                    resp_payload["error"] = "Missing node_id"
+                                else:
+                                    sub_resp = self.send_command(
+                                        target_nid,
+                                        "fetch_latest_screenshot",
+                                        msg.payload.get("params", {}),
+                                        timeout=20.0,
+                                    )
+                                    if sub_resp.get("status") == "ok" and sub_resp.get("data_b64"):
+                                        import base64
+                                        from pathlib import Path
+                                        from gemini_app.config import GEMINI_HOME
+                                        dest_dir = GEMINI_HOME / "screenshots"
+                                        dest_dir.mkdir(parents=True, exist_ok=True)
+                                        fname = sub_resp.get("filename", "screenshot.png")
+                                        dest_file = dest_dir / f"node_{target_nid}_{fname}"
+                                        dest_file.write_bytes(base64.b64decode(sub_resp["data_b64"]))
+                                        resp_payload["status"] = "ok"
+                                        resp_payload["local_path"] = str(dest_file)
+                                        resp_payload["filename"] = fname
+                                        resp_payload["node_id"] = target_nid
+                                        resp_payload["size_bytes"] = sub_resp.get("size_bytes", 0)
+                                        resp_payload["mtime"] = sub_resp.get("mtime", 0)
+                                    else:
+                                        resp_payload.update(sub_resp)
+                            elif action in ("list_node_screenshots", "list_screenshots"):
+                                target_nid = msg.payload.get("params", {}).get("node_id", "")
+                                if not target_nid:
+                                    resp_payload["status"] = "error"
+                                    resp_payload["error"] = "Missing node_id"
+                                else:
+                                    resp_payload["screenshots"] = self.send_command(
+                                        target_nid,
+                                        "list_screenshots",
+                                        msg.payload.get("params", {}),
+                                        timeout=10.0,
+                                    ).get("screenshots", [])
                             elif action == "mothership_telemetry":
                                 resp_payload["mothership_telemetry"] = collect_mothership_telemetry(
                                     cognitive_override=self._cognitive_override,

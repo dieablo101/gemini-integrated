@@ -261,7 +261,7 @@ class ToolRegistry:
             host: str = "",
             command: str = "",
         ) -> Dict[str, Any]:
-            """Manages distributed satellite nodes: lists active/registered nodes, inspects vitals, or performs remote SSH rescue/reboot via the configured cluster key."""
+            """Manages distributed satellite nodes: lists active/registered nodes, inspects vitals, fetches/lists node screenshots, or performs remote SSH rescue/reboot via the configured cluster key."""
             self._notify_phase("fleet", f"fleet node management ({action} {node_id})")
             from gemini_app.fleet.nodes import (
                 execute_ssh_rescue,
@@ -286,6 +286,14 @@ class ToolRegistry:
                 })
             elif act in ("actions", "wingman_actions", "get_actions", "poll_actions"):
                 return send_mothership_command("get_wingman_actions", {})
+            elif act in ("screenshot", "fetch_screenshot", "get_screenshot"):
+                target = node_id or "android-termux-localhost"
+                from gemini_app.fleet.nodes import fetch_node_screenshot
+                return fetch_node_screenshot(node_id=target, custom_path=command or None)
+            elif act in ("list_screenshots", "find_screenshots"):
+                target = node_id or "android-termux-localhost"
+                from gemini_app.fleet.nodes import list_node_screenshots
+                return list_node_screenshots(node_id=target)
             elif act in ("biometric", "biometric_auth", "webauthn"):
                 target = node_id or "ipad-ish-localhost"
                 return send_mothership_command("biometric_auth", {

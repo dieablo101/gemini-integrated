@@ -373,6 +373,32 @@ class ChatApp(App):
 
             self.wingman_applet = WingmanApplet(port=port, node_id="mothership")
             set_active_wingman(self.wingman_applet)
+
+            def _fetch_canonical_wingman_history() -> List[Dict[str, Any]]:
+                items: List[Dict[str, Any]] = []
+                hist = getattr(self, "history", [])
+                base_time = time.time() - (len(hist) * 2)
+                for idx, turn in enumerate(hist):
+                    role = turn.get("role", "")
+                    text = turn.get("text", "")
+                    turn_id = turn.get("turn_id", "")
+                    is_u = (role == "user")
+                    sender_name = "Operator" if is_u else "Gemini Core"
+                    clean_text = text
+                    if clean_text.startswith("📱 **[Wingman -"):
+                        parts = clean_text.split("\n", 1)
+                        if len(parts) > 1:
+                            clean_text = parts[1]
+                    items.append({
+                        "id": f"msg-turn-{turn_id}" if turn_id else f"msg-hist-{idx}",
+                        "sender": sender_name,
+                        "text": clean_text,
+                        "is_user": is_u,
+                        "timestamp": base_time + (idx * 2),
+                    })
+                return items
+
+            self.wingman_applet._chat_history_fetcher = _fetch_canonical_wingman_history
             self.wingman_applet.on_auth_request(self._on_wingman_auth_request)
             self.wingman_applet.on_chat_message(self._on_wingman_remote_chat)
             self.wingman_applet.start()
@@ -3933,7 +3959,7 @@ class ChatApp(App):
             f"13. `manage_system_dependencies(action='check'|'install'|'ensure'|'detect', packages=[...]): Inspects and manages system packages.\n"
             f"14. `introspect_console(tier='all'|'visual'|'runtime'|'workflow'): Inspects live console state across visual layout, runtime environment, and workflow anchors.\n"
             f"15. `interact_ui(action='set_theme'|'accent_talk'|'pulse_nav'|'animate_mind'|'mood'|'inspect', target='feed'|'mind'|'notes'|'input'|'footer'|'navbar'|'edge'|'cards'|'snippets'|'fork'|'all'|'input,navbar', palette='...', effect='sparkle'|'pulse'|'wave'|'synapse'|'glow', duration=3.0, message='...'): Express personality through accent talk on widgets, multi-widget pulses, navbar actions, ambient moods, or Mind screen animations.\n"
-            f"16. `manage_fleet_nodes(action='list'|'rescue'|'reboot'|'check'|'register', node_id='...', host='...', command='...'): Inspects connected satellite nodes or executes remote SSH rescue/reboot via the configured cluster key.\n\n"
+            f"16. `manage_fleet_nodes(action='list'|'rescue'|'reboot'|'check'|'register'|'screenshot'|'list_screenshots', node_id='...', host='...', command='...'): Inspects connected satellite nodes, fetches screenshots, or executes remote SSH rescue/reboot via the configured cluster key.\n\n"
             f"### UI SNAPSHOT RETENTION & VALIDATION PROTOCOL\n"
             f"• Snapshot Retention Rules:\n"
             f"  - Snapshots captured via command with a name (`/snapshot <name>`) are saved permanently to disk without deleting them.\n"

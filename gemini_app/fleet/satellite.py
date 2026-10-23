@@ -130,6 +130,46 @@ def find_repo_root(start: Optional[Path] = None) -> Path:
     return curr
 
 
+def find_node_screenshots(limit: int = 10) -> List[Dict[str, Any]]:
+    """Discovers screenshots across Android, iOS (iSH), and local node directories."""
+    candidates = [
+        Path("/sdcard/DCIM/Screenshots"),
+        Path("/sdcard/Pictures/Screenshots"),
+        Path.home() / "storage" / "dcim" / "Screenshots",
+        Path.home() / "storage" / "pictures" / "Screenshots",
+        Path.home() / "storage" / "shared" / "DCIM" / "Screenshots",
+        Path.home() / "storage" / "shared" / "Pictures" / "Screenshots",
+        Path("/mnt/ipad"),
+        Path.home() / ".gemini" / "screenshots",
+        Path("/storage/emulated/0/DCIM/Screenshots"),
+        Path("/storage/emulated/0/Pictures/Screenshots"),
+    ]
+    valid_exts = {".png", ".jpg", ".jpeg", ".webp"}
+    found_files: List[Dict[str, Any]] = []
+    for cand in candidates:
+        try:
+            if not cand.exists() or not cand.is_dir():
+                continue
+            for item in cand.iterdir():
+                if item.is_file() and item.suffix.lower() in valid_exts:
+                    try:
+                        st = item.stat()
+                        found_files.append({
+                            "path": str(item),
+                            "filename": item.name,
+                            "mtime": st.st_mtime,
+                            "size_bytes": st.st_size,
+                            "source_dir": str(cand),
+                        })
+                    except Exception:
+                        pass
+        except (PermissionError, OSError):
+            continue
+
+    found_files.sort(key=lambda x: x["mtime"], reverse=True)
+    return found_files[:limit]
+
+
 def get_effective_python(start: Optional[Path] = None) -> str:
     """Finds the best python binary, preferring local virtualenv if present."""
     base = find_repo_root(start)
@@ -1506,6 +1546,36 @@ class SatelliteNode:
         elif action == "shutdown":
             result_payload["message"] = "Node shutting down cleanly"
             self._running = False
+
+        elif action in ("list_screenshots", "find_screenshots"):
+            limit = int(params.get("limit", 10))
+            result_payload["screenshots"] = find_node_screenshots(limit=limit)
+
+        elif action in ("fetch_latest_screenshot", "get_screenshot", "fetch_screenshot"):
+            import base64
+            target_file = params.get("path") or params.get("filename")
+            if target_file:
+                target_p = Path(target_file)
+            else:
+                found = find_node_screenshots(limit=1)
+                target_p = Path(found[0]["path"]) if found else None
+
+            if not target_p or not target_p.exists() or not target_p.is_file():
+                result_payload["status"] = "not_found"
+                result_payload["error"] = "No screenshots found on node"
+            else:
+                try:
+                    data = target_p.read_bytes()
+                    st = target_p.stat()
+                    result_payload["status"] = "ok"
+                    result_payload["filename"] = target_p.name
+                    result_payload["path"] = str(target_p)
+                    result_payload["mtime"] = st.st_mtime
+                    result_payload["size_bytes"] = len(data)
+                    result_payload["data_b64"] = base64.b64encode(data).decode("ascii")
+                except Exception as exc:
+                    result_payload["status"] = "error"
+                    result_payload["error"] = f"Failed to read screenshot: {exc}"
 
         else:
             result_payload["status"] = "unsupported"

@@ -96,7 +96,7 @@ class TestWingmanAndInspectorApplets(unittest.TestCase):
     """Tests Wingman portal and Inspector applets."""
 
     def setUp(self) -> None:
-        self.wingman = WingmanApplet(port=0)
+        self.wingman = WingmanApplet(port=0, require_pairing=False)
         self.inspector = InspectorApplet(port=0)
         self.assertTrue(self.wingman.start())
         self.assertTrue(self.inspector.start())

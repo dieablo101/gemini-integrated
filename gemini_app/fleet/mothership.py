@@ -611,6 +611,13 @@ class MothershipServer:
                                 cand_pass = msg.payload.get("params", {}).get("passkey", "")
                                 resp_payload["valid"] = self.verify_wingman_passkey(cand_pass)
                                 resp_payload["status"] = "ok"
+                            elif action == "broadcast_wingman_chat":
+                                b_sender = msg.payload.get("params", {}).get("sender", "Gemini Core")
+                                b_text = msg.payload.get("params", {}).get("text", "")
+                                b_is_user = bool(msg.payload.get("params", {}).get("is_user", False))
+                                count = self.broadcast_wingman_chat(sender=b_sender, text=b_text, is_user=b_is_user)
+                                resp_payload["sent_count"] = count
+                                resp_payload["status"] = "ok"
                             reply = FleetMessage(
                                 msg_type=FleetMessage.TYPE_RESPONSE,
                                 node_id="mothership",
@@ -815,6 +822,31 @@ class MothershipServer:
             },
             timeout=timeout,
         )
+
+    def broadcast_wingman_chat(
+        self,
+        sender: str,
+        text: str,
+        is_user: bool = False,
+    ) -> int:
+        """Broadcasts a Wingman chat bubble across all connected satellites and local Wingman."""
+        if self.local_wingman and hasattr(self.local_wingman, "push_chat_message"):
+            try:
+                self.local_wingman.push_chat_message(sender=sender, text=text, is_user=is_user)
+            except Exception:
+                pass
+        msg = FleetMessage(
+            msg_type=FleetMessage.TYPE_EVENT,
+            node_id="mothership",
+            payload={
+                "event": "wingman_chat_message",
+                "sender": sender,
+                "text": text,
+                "is_user": is_user,
+                "timestamp": time.time(),
+            },
+        )
+        return self.broadcast(msg)
 
     def request_node_biometric(
         self,

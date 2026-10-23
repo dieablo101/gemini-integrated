@@ -859,6 +859,7 @@ def get_wingman_html(
     let sseSource = null;
     let pingInterval = null;
     let authPollingInterval = null;
+    let currentBootId = null;
     let isPairedDevice = localStorage.getItem('wingman_paired') === '1';
     let deviceId = localStorage.getItem('wingman_device_id') || ('dev-' + Math.random().toString(36).substring(2, 10));
     localStorage.setItem('wingman_device_id', deviceId);
@@ -1033,7 +1034,26 @@ def get_wingman_html(
         workView.style.display = 'none';
         chatView.style.display = 'flex';
         chatInput.focus();
+        loadChatHistory();
       }}
+    }}
+
+    async function loadChatHistory() {{
+      try {{
+        const headers = {{
+          'X-Wingman-Device': deviceId,
+          'X-Wingman-Session': sessionId
+        }};
+        if (sessionToken) headers['X-Wingman-Token'] = sessionToken;
+        const res = await fetch('/applet/wingman/chat_history', {{ headers }});
+        const data = await res.json();
+        if (data && data.history && Array.isArray(data.history)) {{
+          data.history.forEach(m => {{
+            const mId = m.id || ('msg-' + (m.timestamp || Math.random()));
+            renderChatMessage(m.sender || 'Gemini', m.text, Boolean(m.is_user), mId, m.timestamp);
+          }});
+        }}
+      }} catch (err) {{}}
     }}
 
     /* Session & Auth Handlers */
@@ -1048,6 +1068,23 @@ def get_wingman_html(
         }}
         const res = await fetch('/applet/wingman/session', {{ headers }});
         const data = await res.json();
+        if (data.boot_id) {{
+          if (currentBootId && currentBootId !== data.boot_id) {{
+            // Server rebooted! Invalidate credentials, lock UI, and re-authenticate
+            sessionToken = '';
+            sessionStorage.removeItem('wingman_token');
+            sessionStorage.removeItem('wingman_session_id');
+            localStorage.removeItem('wingman_token');
+            localStorage.removeItem('wingman_paired');
+            isPairedDevice = false;
+            isSessionUnlocked = false;
+            currentBootId = data.boot_id;
+            lockUI("Mothership console rebooted — awaiting new authorization...");
+            startAuthPolling();
+            return;
+          }}
+          currentBootId = data.boot_id;
+        }}
         if (data.session_id) {{
           sessionId = data.session_id;
           sessionStorage.setItem('wingman_session_id', sessionId);
@@ -1056,16 +1093,19 @@ def get_wingman_html(
           }}
         }}
         if (data.authenticated) {{
-          unlockUI(data.token, Boolean(data.is_paired || data.trusted));
-        }} else {{
-          sessionToken = '';
-          sessionStorage.removeItem('wingman_token');
-          sessionStorage.removeItem('wingman_session_id');
-          if (!data.trusted && !data.is_paired) {{
+          if (!data.is_paired) {{
             localStorage.removeItem('wingman_token');
             localStorage.removeItem('wingman_paired');
             isPairedDevice = false;
           }}
+          unlockUI(data.token, Boolean(data.is_paired));
+        }} else {{
+          sessionToken = '';
+          sessionStorage.removeItem('wingman_token');
+          sessionStorage.removeItem('wingman_session_id');
+          localStorage.removeItem('wingman_token');
+          localStorage.removeItem('wingman_paired');
+          isPairedDevice = false;
           lockUI();
           startAuthPolling();
         }}
@@ -1082,9 +1122,20 @@ def get_wingman_html(
           const data = await res.json();
           if (data.status === 'approved' && data.token) {{
             clearInterval(authPollingInterval);
-            unlockUI(data.token, Boolean(data.is_paired || data.trusted));
+            if (!data.is_paired) {{
+              localStorage.removeItem('wingman_token');
+              localStorage.removeItem('wingman_paired');
+              isPairedDevice = false;
+            }}
+            unlockUI(data.token, Boolean(data.is_paired));
           }} else if (data.status === 'denied') {{
             clearInterval(authPollingInterval);
+            sessionToken = '';
+            sessionStorage.removeItem('wingman_token');
+            sessionStorage.removeItem('wingman_session_id');
+            localStorage.removeItem('wingman_token');
+            localStorage.removeItem('wingman_paired');
+            isPairedDevice = false;
             lockUI("Access Denied by Mothership Operator");
           }}
         }} catch (e) {{}}
@@ -1093,9 +1144,9 @@ def get_wingman_html(
 
     function unlockUI(token, isPaired = false) {{
       if (authPollingInterval) clearInterval(authPollingInterval);
+      isPairedDevice = Boolean(isPaired);
       if (token) {{
         sessionToken = token;
-        isPairedDevice = Boolean(isPaired);
         if (isPairedDevice) {{
           localStorage.setItem('wingman_token', token);
           localStorage.setItem('wingman_paired', '1');
@@ -1106,7 +1157,7 @@ def get_wingman_html(
         }}
       }}
       securityGate.style.display = 'none';
-      statusText.textContent = isPaired ? "PAIRED" : "ONLINE (SESSION)";
+      statusText.textContent = isPairedDevice ? "PAIRED" : "ONLINE (SESSION)";
       statusDot.className = "status-dot";
       playTone(587.33, 'triangle', 0.1);
     }}
@@ -1126,8 +1177,15 @@ def get_wingman_html(
       sseSource = new EventSource(sseUrl);
 
       sseSource.addEventListener("connected", (e) => {{
-        // Connected to SSE stream
+        // Connected or reconnected to SSE stream — re-validate session
+        checkSession();
+        loadChatHistory();
       }});
+
+      sseSource.onerror = () => {{
+        // Disconnected or backend rebooted — poll session check
+        setTimeout(checkSession, 1500);
+      }};
 
       sseSource.addEventListener("session_authorized", (e) => {{
         try {{
@@ -1164,7 +1222,8 @@ def get_wingman_html(
       sseSource.addEventListener("chat_message", (e) => {{
         try {{
           const msg = JSON.parse(e.data);
-          renderChatMessage(msg.sender || 'Gemini', msg.text, msg.is_user);
+          const mId = msg.id || ('msg-' + (msg.timestamp || ''));
+          renderChatMessage(msg.sender || 'Gemini', msg.text, msg.is_user, mId, msg.timestamp);
           playTone(660, 'sine', 0.08);
         }} catch (err) {{}}
       }});
@@ -1277,18 +1336,30 @@ def get_wingman_html(
           }})
         }});
         const reply = await res.json();
+        if (reply.session_locked || (reply.status === 'error' && reply.message && reply.message.toLowerCase().includes('session'))) {{
+          lockUI(reply.message || "Session locked — awaiting mothership authorization...");
+          startAuthPolling();
+          return;
+        }}
         if (reply.reply) {{
           renderChatMessage('Gemini Core', reply.reply, false);
+        }} else if (reply.status === 'error') {{
+          renderChatMessage('System', '✗ ' + (reply.message || 'Message dispatch failed.'), false);
         }}
       }} catch (err) {{
         console.error("Chat send failed:", err);
+        renderChatMessage('System', '✗ Network error sending message to Mothership.', false);
       }}
     }}
 
-    function renderChatMessage(sender, text, isUser = false) {{
+    function renderChatMessage(sender, text, isUser = false, msgId = '', timestamp = null) {{
+      if (msgId && document.querySelector(`.chat-bubble[data-msg-id="${{msgId}}"]`)) {{
+        return;
+      }}
       const bubble = document.createElement('div');
       bubble.className = 'chat-bubble ' + (isUser ? 'user' : 'bot');
-      const timeStr = new Date().toLocaleTimeString();
+      if (msgId) bubble.setAttribute('data-msg-id', msgId);
+      const timeStr = timestamp ? new Date(timestamp * 1000).toLocaleTimeString() : new Date().toLocaleTimeString();
 
       bubble.innerHTML = `
         <div class="chat-meta">
@@ -1381,9 +1452,16 @@ def get_wingman_html(
     function measurePing() {{
       const t0 = performance.now();
       fetch('/applet/wingman/ping')
-        .then(() => {{
+        .then(res => res.json())
+        .then(data => {{
           const rtt = Math.round(performance.now() - t0);
           footerPing.textContent = 'PING: ' + rtt + 'ms';
+          if (data && data.boot_id) {{
+            if (currentBootId && currentBootId !== data.boot_id) {{
+              checkSession();
+            }}
+            currentBootId = data.boot_id;
+          }}
         }})
         .catch(() => {{
           footerPing.textContent = 'PING: ERR';
@@ -1397,6 +1475,9 @@ def get_wingman_html(
     }}
 
     /* Startup */
+    window.addEventListener('focus', () => {{
+      checkSession();
+    }});
     checkSession();
     connectSSE();
     pingInterval = setInterval(measurePing, 5000);

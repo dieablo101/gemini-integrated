@@ -1144,7 +1144,7 @@ class SatelliteNode:
         """Notifies Mothership immediately when user opens or closes Wingman on localhost."""
         if not is_active and self.wingman_applet and hasattr(self.wingman_applet, "security"):
             try:
-                self.wingman_applet.security.prune_stale_sessions(max_pending_age=0.0)
+                self.wingman_applet.security.prune_stale_sessions(max_pending_age=0.0, invalidate_unpaired=True)
             except Exception:
                 pass
 
@@ -1677,8 +1677,19 @@ class SatelliteNode:
                                 ):
                                     self._trigger_auto_upgrade(ms_commit, local_commit)
                         elif msg.type == FleetMessage.TYPE_EVENT:
+                            ev = msg.payload.get("event", "")
+                            if ev == "wingman_chat_message":
+                                if self.wingman_applet and hasattr(self.wingman_applet, "push_chat_message"):
+                                    try:
+                                        self.wingman_applet.push_chat_message(
+                                            sender=msg.payload.get("sender", "Gemini Core"),
+                                            text=msg.payload.get("text", ""),
+                                            is_user=msg.payload.get("is_user", False),
+                                        )
+                                    except Exception:
+                                        pass
                             if self.hud:
-                                self.hud.log_event(msg.payload.get("event", "Event received"))
+                                self.hud.log_event(ev or "Event received")
                     except Exception as err:
                         if self.hud:
                             self.report_error(err, context="msg_parse")

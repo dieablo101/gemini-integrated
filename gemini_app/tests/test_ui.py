@@ -153,7 +153,7 @@ class TestUIApp(unittest.IsolatedAsyncioTestCase):
         app._save_to_state("pending_reboot_report", "✓ Test Reboot Complete: 100% operational.")
 
         async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
+            await asyncio.sleep(0.2)
             await pilot.pause()
             # Verify the reboot report was consumed and cleared
             cleared_report = app._read_and_clear_reboot_report()

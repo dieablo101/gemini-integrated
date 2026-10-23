@@ -62,11 +62,8 @@ def save_trusted_devices(devices: Dict[str, Dict[str, Any]]) -> bool:
 
 def is_device_trusted(identifier: str) -> bool:
     """Checks if a device identifier (IP, node_id, or token) is trusted."""
-    if not identifier:
+    if not identifier or identifier in ("127.0.0.1", "::1", "localhost", "local"):
         return False
-    # Always allow local loopback
-    if identifier in ("127.0.0.1", "::1", "localhost", "local"):
-        return True
     devices = load_trusted_devices()
     return identifier in devices
 

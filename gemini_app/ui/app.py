@@ -402,20 +402,26 @@ class ChatApp(App):
         node_id = auth_data.get("node_id", "")
         dev_id = auth_data.get("device_id", "")
 
-        # Avoid duplicate modals in queue (by req_id or by device/client_ip)
+        # Avoid duplicate modals in queue (by req_id or by device/client_ip/node_id)
         for queued in self._wingman_auth_queue:
             q_req = queued.get("auth_req_id") or queued.get("session_id")
             if q_req == req_id:
                 return
-            if client_ip and queued.get("client_ip") == client_ip and queued.get("node_id") == node_id:
+            if node_id and node_id not in ("local", "mothership") and queued.get("node_id") == node_id:
                 return
             if dev_id and queued.get("device_id") == dev_id:
+                return
+            if client_ip and client_ip not in ("127.0.0.1", "::1", "localhost") and queued.get("client_ip") == client_ip:
                 return
 
         if getattr(self, "_wingman_modal_open", False):
             curr_data = getattr(self, "_active_wingman_auth_data", None)
             if curr_data:
-                if (client_ip and curr_data.get("client_ip") == client_ip) or (dev_id and curr_data.get("device_id") == dev_id):
+                if node_id and node_id not in ("local", "mothership") and curr_data.get("node_id") == node_id:
+                    return
+                if dev_id and curr_data.get("device_id") == dev_id:
+                    return
+                if client_ip and client_ip not in ("127.0.0.1", "::1", "localhost") and curr_data.get("client_ip") == client_ip:
                     return
 
         self._wingman_auth_queue.append(dict(auth_data))
@@ -464,6 +470,9 @@ class ChatApp(App):
             dec = decision or "deny"
             trust_device = (dec == "pair")
             accepted = (dec in ("accept", "pair"))
+            node_id_val = auth_data.get("node_id", node_id)
+            dev_id_val = auth_data.get("device_id", "")
+            client_ip_val = auth_data.get("client_ip", client_ip)
 
             # 1. Authorize on local Wingman applet if running
             if getattr(self, "wingman_applet", None):
@@ -478,7 +487,7 @@ class ChatApp(App):
                 send_mothership_command("resolve_wingman_auth", {
                     "auth_req_id": req_id,
                     "session_id": req_id,
-                    "node_id": node_id,
+                    "node_id": node_id_val,
                     "decision": dec,
                     "trust": trust_device,
                 }, timeout=3.0)
@@ -486,20 +495,20 @@ class ChatApp(App):
                 pass
 
             if dec == "accept":
-                self.notify(f"Wingman session accepted (one-time approval) from {client_ip} ({node_id})", title="Wingman Authorized")
+                self.notify(f"Wingman session accepted (one-time approval) from {client_ip_val} ({node_id_val})", title="Wingman Authorized")
             elif dec == "pair":
-                self.notify(f"Wingman permanently paired & trusted for {client_ip} ({node_id})", title="Wingman Paired")
+                self.notify(f"Wingman permanently paired & trusted for {client_ip_val} ({node_id_val})", title="Wingman Paired")
             else:  # deny
-                self.notify(f"Wingman connection denied for {client_ip} ({node_id})", severity="warning", title="Wingman Denied")
+                self.notify(f"Wingman connection denied for {client_ip_val} ({node_id_val})", severity="warning", title="Wingman Denied")
 
-            # Purge any remaining duplicate requests in queue for this same device or client_ip
-            dev_id = auth_data.get("device_id", "")
+            # Purge any remaining duplicate requests in queue for this same device or node
             if hasattr(self, "_wingman_auth_queue") and self._wingman_auth_queue:
                 self._wingman_auth_queue = [
                     q for q in self._wingman_auth_queue
                     if (q.get("auth_req_id") or q.get("session_id")) != req_id
-                    and (not dev_id or q.get("device_id") != dev_id)
-                    and (not client_ip or client_ip in ("127.0.0.1", "::1", "localhost") or q.get("client_ip") != client_ip)
+                    and (not dev_id_val or q.get("device_id") != dev_id_val)
+                    and (not node_id_val or node_id_val in ("local", "mothership") or q.get("node_id") != node_id_val)
+                    and (not client_ip_val or client_ip_val in ("127.0.0.1", "::1", "localhost") or q.get("client_ip") != client_ip_val)
                 ]
 
             # Handle the next queued request back-to-back!
@@ -557,7 +566,7 @@ class ChatApp(App):
             self.history.append({"turn_id": new_turn_id, "role": "user", "text": msg_body})
             self.current_chat_last_index = max(0, len(self.history) - 1)
             self.current_chat_center_marker = new_turn_id
-            self.run_worker(feed.append_message("user", msg_body, jump_to_start=False))
+            self.run_worker(feed.append_message(CURRENT_USER, msg_body, jump_to_start=False))
             self.notify(f"Wingman: {text[:40]}...", title=f"Message from {sender}")
             self.save_current_chat()
             self.ask_gemini()
@@ -1805,6 +1814,21 @@ class ChatApp(App):
         self.current_chat_center_marker = new_turn_id
         self.save_current_chat()
 
+        # Push Gemini response to local Wingman portal and fleet satellites
+        if getattr(self, "wingman_applet", None) and self.wingman_applet.engine.is_running:
+            try:
+                self.wingman_applet.push_chat_message(sender="Gemini Core", text=full_text, is_user=False)
+            except Exception:
+                pass
+        try:
+            from gemini_app.fleet.nodes import send_mothership_command
+            send_mothership_command("broadcast_wingman_chat", {
+                "sender": "Gemini Core",
+                "text": full_text,
+            }, timeout=2.0)
+        except Exception:
+            pass
+
         self.set_status_text(f"✓ Response complete ({event.words} words in {event.elapsed:.1f}s)")
         self.set_timer(1.2, self.hide_status)
 
@@ -1895,12 +1919,12 @@ class ChatApp(App):
                 elif action == "wingman_auth_prompt":
                     auth_data = payload.get("auth_data", {})
                     if auth_data:
-                        self.call_from_thread(self._handle_wingman_auth_prompt, auth_data)
+                        self._handle_wingman_auth_prompt(auth_data)
                 elif action == "wingman_chat":
                     text = payload.get("text", "")
                     sender = payload.get("sender", "operator")
                     if text:
-                        self.call_from_thread(self._handle_wingman_incoming_chat, sender, text)
+                        self._handle_wingman_incoming_chat(sender, text)
                 elif action in ("chat_message", "notify_chat"):
                     text = payload.get("text", "")
                     if text:

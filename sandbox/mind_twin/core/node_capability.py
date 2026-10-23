@@ -2,16 +2,47 @@
 Node Capability Profile & Whole-System Topology Engine.
 Models distributed fleet compute power, use cases, tooling, efficiency,
 and power states across all active nodes (Toughbook hub, iPad edge, Android PNS).
+Hardened against NaN/Inf, missing values, and corrupted remote payloads.
 """
 
 from __future__ import annotations
 
+import math
 import os
 import platform
 import shutil
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set
+
+
+def _safe_float(val: Any, default: float = 0.0, min_val: Optional[float] = None, max_val: Optional[float] = None) -> float:
+    try:
+        f = float(val)
+        if math.isnan(f) or math.isinf(f):
+            return default
+        if min_val is not None:
+            f = max(min_val, f)
+        if max_val is not None:
+            f = min(max_val, f)
+        return f
+    except (ValueError, TypeError):
+        return default
+
+
+def _safe_int(val: Any, default: int = 0, min_val: Optional[int] = None, max_val: Optional[int] = None) -> int:
+    try:
+        f = float(val)
+        if math.isnan(f) or math.isinf(f):
+            return default
+        i = int(f)
+        if min_val is not None:
+            i = max(min_val, i)
+        if max_val is not None:
+            i = min(max_val, i)
+        return i
+    except (ValueError, TypeError):
+        return default
 
 
 @dataclass
@@ -57,25 +88,25 @@ class NodeCapabilityProfile:
             "name": self.name,
             "role": self.role,
             "status": self.status,
-            "last_seen_seconds_ago": self.last_seen_seconds_ago,
+            "last_seen_seconds_ago": _safe_float(self.last_seen_seconds_ago, 0.0),
             "compute": {
                 "arch": self.arch,
-                "cpu_cores": self.cpu_cores,
-                "ram_total_mb": self.ram_total_mb,
-                "ram_avail_mb": self.ram_avail_mb,
-                "compute_tier": self.compute_tier,
-                "estimated_gflops": self.estimated_gflops,
+                "cpu_cores": _safe_int(self.cpu_cores, 4, 1, 256),
+                "ram_total_mb": _safe_int(self.ram_total_mb, 4096, 128, 1048576),
+                "ram_avail_mb": _safe_int(self.ram_avail_mb, 2048, 0, 1048576),
+                "compute_tier": _safe_int(self.compute_tier, 5, 1, 10),
+                "estimated_gflops": _safe_float(self.estimated_gflops, 50.0, 0.0, 100000.0),
             },
             "usecases": list(self.usecases),
             "tooling": list(self.tooling),
             "efficiency": {
-                "latency_ms": self.latency_ms,
-                "bandwidth_mbps": self.bandwidth_mbps,
-                "efficiency_score": self.efficiency_score,
+                "latency_ms": _safe_float(self.latency_ms, 1.0, 0.0, 100000.0),
+                "bandwidth_mbps": _safe_float(self.bandwidth_mbps, 100.0, 0.0, 100000.0),
+                "efficiency_score": _safe_float(self.efficiency_score, 0.7, 0.0, 1.0),
             },
             "power": {
                 "source": self.power_source,
-                "battery_pct": self.battery_pct,
+                "battery_pct": _safe_float(self.battery_pct, 50.0, 0.0, 100.0) if self.battery_pct is not None else None,
                 "charging": self.charging,
                 "thermal_state": self.thermal_state,
             },
@@ -84,30 +115,35 @@ class NodeCapabilityProfile:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> NodeCapabilityProfile:
-        comp = data.get("compute", {})
-        eff = data.get("efficiency", {})
-        pwr = data.get("power", {})
+        if not isinstance(data, dict):
+            return cls(node_id="corrupted_node", name="Corrupted Node", role="compute_worker")
+        comp = data.get("compute", {}) if isinstance(data.get("compute"), dict) else {}
+        eff = data.get("efficiency", {}) if isinstance(data.get("efficiency"), dict) else {}
+        pwr = data.get("power", {}) if isinstance(data.get("power"), dict) else {}
+        bat_raw = pwr.get("battery_pct")
+        safe_bat = _safe_float(bat_raw, 50.0, 0.0, 100.0) if bat_raw is not None else None
+
         return cls(
-            node_id=data.get("node_id", "unknown_node"),
-            name=data.get("name", "Unknown Node"),
-            role=data.get("role", "compute_worker"),
-            status=data.get("status", "online"),
-            last_seen_seconds_ago=float(data.get("last_seen_seconds_ago", 0.0)),
-            arch=comp.get("arch", "x86_64"),
-            cpu_cores=int(comp.get("cpu_cores", 4)),
-            ram_total_mb=int(comp.get("ram_total_mb", 4096)),
-            ram_avail_mb=int(comp.get("ram_avail_mb", 2048)),
-            compute_tier=int(comp.get("compute_tier", 5)),
-            estimated_gflops=float(comp.get("estimated_gflops", 50.0)),
+            node_id=str(data.get("node_id", "unknown_node")),
+            name=str(data.get("name", "Unknown Node")),
+            role=str(data.get("role", "compute_worker")),
+            status=str(data.get("status", "online")),
+            last_seen_seconds_ago=_safe_float(data.get("last_seen_seconds_ago"), 0.0),
+            arch=str(comp.get("arch", "x86_64")),
+            cpu_cores=_safe_int(comp.get("cpu_cores"), 4, 1, 256),
+            ram_total_mb=_safe_int(comp.get("ram_total_mb"), 4096, 128, 1048576),
+            ram_avail_mb=_safe_int(comp.get("ram_avail_mb"), 2048, 0, 1048576),
+            compute_tier=_safe_int(comp.get("compute_tier"), 5, 1, 10),
+            estimated_gflops=_safe_float(comp.get("estimated_gflops"), 50.0, 0.0, 100000.0),
             usecases=list(data.get("usecases", [])),
             tooling=list(data.get("tooling", [])),
-            latency_ms=float(eff.get("latency_ms", 1.0)),
-            bandwidth_mbps=float(eff.get("bandwidth_mbps", 100.0)),
-            efficiency_score=float(eff.get("efficiency_score", 0.7)),
-            power_source=pwr.get("source", "battery"),
-            battery_pct=pwr.get("battery_pct"),
-            charging=pwr.get("charging"),
-            thermal_state=pwr.get("thermal_state", "nominal"),
+            latency_ms=_safe_float(eff.get("latency_ms"), 1.0, 0.0, 10000.0),
+            bandwidth_mbps=_safe_float(eff.get("bandwidth_mbps"), 100.0, 0.0, 100000.0),
+            efficiency_score=_safe_float(eff.get("efficiency_score"), 0.7, 0.0, 1.0),
+            power_source=str(pwr.get("source", "battery")),
+            battery_pct=safe_bat,
+            charging=bool(pwr.get("charging")) if pwr.get("charging") is not None else None,
+            thermal_state=str(pwr.get("thermal_state", "nominal")),
             metadata=dict(data.get("metadata", {})),
         )
 
@@ -150,7 +186,12 @@ class WholeSystemCapability:
         for n in self.node_profiles:
             if n.status != "online":
                 continue
-            pwr_str = f"{int(n.battery_pct)}%" if n.battery_pct is not None else "AC"
+            if n.power_source == "ac_mains":
+                pwr_str = "AC"
+            elif n.battery_pct is not None:
+                pwr_str = f"{int(_safe_float(n.battery_pct, 50.0, 0.0, 100.0))}%"
+            else:
+                pwr_str = "Bat"
             if n.charging:
                 pwr_str += "+Chg"
             nodes_brief.append(f"{n.name}({n.arch}/{n.cpu_cores}c/{pwr_str})")
@@ -236,28 +277,33 @@ class FleetTopologySynthesizer:
     @classmethod
     def parse_satellite_node(cls, raw_node: Dict[str, Any]) -> NodeCapabilityProfile:
         """Parses a node from the fleet registry / active_nodes snapshot."""
-        node_id = raw_node.get("node_id", "unknown_node")
+        if not isinstance(raw_node, dict):
+            return NodeCapabilityProfile(node_id="invalid", name="Invalid Node", role="compute_worker", status="offline")
+
+        node_id = str(raw_node.get("node_id", "unknown_node"))
         telem = raw_node.get("telemetry", {})
         live_info = raw_node.get("live_info", {})
-        if not telem and "telemetry" in live_info:
-            telem = live_info["telemetry"]
+        if not isinstance(telem, dict):
+            telem = {}
+        if not telem and isinstance(live_info, dict) and "telemetry" in live_info:
+            telem = live_info["telemetry"] if isinstance(live_info["telemetry"], dict) else {}
 
-        last_seen = float(raw_node.get("last_seen_seconds_ago", 0.0))
-        status = raw_node.get("status", "online")
+        last_seen = _safe_float(raw_node.get("last_seen_seconds_ago"), 0.0)
+        status = str(raw_node.get("status", "online"))
         if last_seen > 60.0:
             status = "offline"
 
-        is_termux = telem.get("is_termux", False) or "termux" in node_id.lower()
-        is_ish = telem.get("is_ish", False) or "ipad" in node_id.lower() or "ish" in node_id.lower()
+        is_termux = bool(telem.get("is_termux", False)) or "termux" in node_id.lower()
+        is_ish = bool(telem.get("is_ish", False)) or "ipad" in node_id.lower() or "ish" in node_id.lower()
 
         # Defaults based on platform archetype
         if is_termux:
             name = "Android Phone (Termux)"
             role = "sensory_pns"
-            arch = telem.get("machine", "aarch64")
+            arch = str(telem.get("machine", "aarch64"))
             cores = 8
-            ram_total = telem.get("mem_total_mb", 7204)
-            ram_avail = telem.get("mem_avail_mb", 350)
+            ram_total = _safe_int(telem.get("mem_total_mb"), 7204, 256, 65536)
+            ram_avail = _safe_int(telem.get("mem_avail_mb"), 350, 0, 65536)
             compute_tier = 6
             gflops = 65.0
             usecases = [
@@ -272,17 +318,17 @@ class FleetTopologySynthesizer:
             latency = 12.0
             bandwidth = 150.0
             eff = 0.88
-            battery = telem.get("battery", {})
-            bat_pct = battery.get("percentage", 50.0)
-            chg = battery.get("charging", False)
+            battery = telem.get("battery", {}) if isinstance(telem.get("battery"), dict) else {}
+            bat_pct = _safe_float(battery.get("percentage"), 50.0, 0.0, 100.0)
+            chg = bool(battery.get("charging", False))
             pwr_source = "usb_tethered" if chg else "battery"
         elif is_ish:
             name = "iPad Satellite (iSH Alpine)"
             role = "visual_edge"
-            arch = telem.get("machine", "i686")  # iSH runs 32-bit x86 emulator on iOS
+            arch = str(telem.get("machine", "i686"))
             cores = 2
-            ram_total = telem.get("mem_total_mb", 11799)
-            ram_avail = telem.get("mem_avail_mb", 1859)
+            ram_total = _safe_int(telem.get("mem_total_mb"), 11799, 256, 65536)
+            ram_avail = _safe_int(telem.get("mem_avail_mb"), 1859, 0, 65536)
             compute_tier = 4
             gflops = 25.0
             usecases = [
@@ -302,10 +348,10 @@ class FleetTopologySynthesizer:
         else:
             name = f"Node ({node_id})"
             role = "compute_worker"
-            arch = telem.get("machine", "x86_64")
-            cores = 4
-            ram_total = telem.get("mem_total_mb", 4096)
-            ram_avail = telem.get("mem_avail_mb", 2048)
+            arch = str(telem.get("machine", "x86_64"))
+            cores = _safe_int(telem.get("cores"), 4, 1, 128)
+            ram_total = _safe_int(telem.get("mem_total_mb"), 4096, 256, 65536)
+            ram_avail = _safe_int(telem.get("mem_avail_mb"), 2048, 0, 65536)
             compute_tier = 5
             gflops = 45.0
             usecases = ["distributed_worker", "ssh_execution"]
@@ -349,15 +395,17 @@ class FleetTopologySynthesizer:
         host_profile = cls.inspect_local_host()
         profiles: List[NodeCapabilityProfile] = [host_profile]
 
-        if raw_fleet_snapshot:
+        if isinstance(raw_fleet_snapshot, dict):
             raw_nodes = raw_fleet_snapshot.get("nodes", [])
-            for rn in raw_nodes:
-                nid = rn.get("node_id", "")
-                if nid in ("console-client", "toughbook-hub"):
-                    # Local client already covered by host inspection
-                    continue
-                sat_profile = cls.parse_satellite_node(rn)
-                profiles.append(sat_profile)
+            if isinstance(raw_nodes, list):
+                for rn in raw_nodes:
+                    if not isinstance(rn, dict):
+                        continue
+                    nid = rn.get("node_id", "")
+                    if nid in ("console-client", "toughbook-hub"):
+                        continue
+                    sat_profile = cls.parse_satellite_node(rn)
+                    profiles.append(sat_profile)
 
         online_profiles = [p for p in profiles if p.status == "online"]
         total_cores = sum(p.cpu_cores for p in online_profiles)
@@ -399,7 +447,8 @@ class FleetTopologySynthesizer:
                 pwr_entries.append(f"{p.name}: AC")
             elif p.battery_pct is not None:
                 chg_str = "+Chg" if p.charging else ""
-                pwr_entries.append(f"{p.name}: {int(p.battery_pct)}%{chg_str}")
+                safe_bat = int(_safe_float(p.battery_pct, 50.0, 0.0, 100.0))
+                pwr_entries.append(f"{p.name}: {safe_bat}%{chg_str}")
         power_summary = " | ".join(pwr_entries)
 
         return WholeSystemCapability(

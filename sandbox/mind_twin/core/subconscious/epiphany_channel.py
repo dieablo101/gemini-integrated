@@ -50,6 +50,14 @@ class EpiphanyChannel:
         self.total_packets_sent: int = 0
         self.total_packets_delivered: int = 0
 
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._buffer)
+
+    def __bool__(self) -> bool:
+        """Channel instance truthiness is always True regardless of buffer occupancy."""
+        return True
+
     def push(self, packet: EpiphanyPacket) -> bool:
         """Pushes a verified epiphany into the channel. Drops oldest if full."""
         with self._lock:
@@ -72,6 +80,10 @@ class EpiphanyChannel:
             if not self._buffer:
                 return None
             return self._buffer[0]
+
+    def drain(self) -> List[EpiphanyPacket]:
+        """Alias for drain_all()."""
+        return self.drain_all()
 
     def drain_all(self) -> List[EpiphanyPacket]:
         """Drains and returns all queued epiphanies."""

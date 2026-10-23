@@ -59,6 +59,11 @@ class WorkingMemorySlot:
     max_depth_reached: int = 0
     total_nodes_in_branch: int = 1
 
+    @property
+    def vertex_id(self) -> str:
+        """Alias for target_id to support legacy tests and callers."""
+        return self.target_id
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "slot_index": self.slot_index,
@@ -175,6 +180,8 @@ class DirectionalGateEngine:
         # 1. Rank candidate root concepts based on competition metric
         scored_candidates: List[Tuple[str, float, float, Vertex]] = []
         for vid, energy in candidate_activations.items():
+            if not isinstance(energy, (int, float)) or not math.isfinite(energy) or energy <= 0.0:
+                continue
             vertex = graph.get_vertex(vid)
             if not vertex:
                 continue
@@ -182,7 +189,8 @@ class DirectionalGateEngine:
             relevance = self.compute_relevance(vertex.label, vertex.vtype, vertex.attributes)
             # Competition metric: Energy * Relevance * Momentum
             competition_score = energy * (0.4 + 0.6 * relevance) * (0.8 + 0.2 * self.momentum_score)
-            scored_candidates.append((vid, competition_score, relevance, vertex))
+            if math.isfinite(competition_score):
+                scored_candidates.append((vid, competition_score, relevance, vertex))
 
         scored_candidates.sort(key=lambda x: x[1], reverse=True)
 
@@ -257,6 +265,9 @@ class DirectionalGateEngine:
         if current_depth >= self.max_depth_limit:
             return current_depth, 1
 
+        if not math.isfinite(budget) or budget <= 0.0:
+            return current_depth, 1
+
         required_relevance = self.relevance_threshold * math.pow(self.depth_resistance_gamma, current_depth + 1)
         if budget < required_relevance:
             return current_depth, 1
@@ -322,7 +333,7 @@ class DirectionalGateEngine:
         Injects a verified subconscious epiphany into the 7-slot working memory.
         If all 7 slots are occupied, demotes the lowest energy / lowest momentum slot.
         """
-        if feasibility_score < 0.70:
+        if not isinstance(feasibility_score, (int, float)) or not math.isfinite(feasibility_score) or feasibility_score < 0.70:
             return False
 
         epiphany_node = WorkingMemoryNode(
@@ -364,14 +375,25 @@ class DirectionalGateEngine:
             return True
 
         # If full (7 slots), locate the slot with lowest energy root
-        lowest_idx = 0
+        # FAILSAFE / IMMUNITY: Slot 0 (Foreground Focus) is anchored and protected from eviction
+        # unless incoming epiphany energy exceeds the active focus root energy by a factor of 1.5x.
+        lowest_idx = -1
         min_energy = float("inf")
-        for i, s in enumerate(self.current_slots):
+        start_idx = 1 if len(self.current_slots) > 1 else 0
+
+        for i in range(start_idx, len(self.current_slots)):
+            s = self.current_slots[i]
             # Epiphanies have temporary immunity unless another higher epiphany arrives
             effective_e = s.root.energy * (0.5 if not s.is_epiphany else 1.2)
             if effective_e < min_energy:
                 min_energy = effective_e
                 lowest_idx = i
+
+        if lowest_idx == -1:
+            # Fallback if only 1 slot exists
+            if epiphany_node.energy <= self.current_slots[0].root.energy * 1.5:
+                return False
+            lowest_idx = 0
 
         # Replace lowest slot
         replaced_slot = WorkingMemorySlot(

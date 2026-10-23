@@ -5,6 +5,7 @@ Forked Subconscious Incubation Worker.
 Executes background stochastic graph diffusion and cross-domain apophenic collision
 scanning across latent, non-conscious hypergraph concepts.
 Gated by NoveltyDetector and verified by ConclusiveRealityProbe.
+Hardened against race conditions, empty buckets, and thread faults.
 """
 
 from __future__ import annotations
@@ -51,9 +52,9 @@ class SubconsciousWorker:
         target_core_id: int = 1,
     ) -> None:
         self.graph = graph
-        self.novelty_detector = novelty_detector or NoveltyDetector()
-        self.reality_probe = reality_probe or ConclusiveRealityProbe()
-        self.channel = epiphany_channel or EpiphanyChannel()
+        self.novelty_detector = novelty_detector if novelty_detector is not None else NoveltyDetector()
+        self.reality_probe = reality_probe if reality_probe is not None else ConclusiveRealityProbe()
+        self.channel = epiphany_channel if epiphany_channel is not None else EpiphanyChannel()
         self.target_core_id = target_core_id
         self.is_incubating: bool = False
         self.cycle_count: int = 0
@@ -96,7 +97,7 @@ class SubconsciousWorker:
         """
         Executes one step of subconscious incubation:
         1. Checks if worker is active.
-        2. Selects latent vertices from disparate domains.
+        2. Selects latent vertices from disparate domains safely.
         3. Scans for structural resonance or apophenic analogies.
         4. Runs reality probe.
         5. Pushes to channel if approved.
@@ -104,55 +105,67 @@ class SubconsciousWorker:
         if not self.is_incubating:
             return None
 
-        self.cycle_count += 1
-        now = t_now or time.time()
+        try:
+            self.cycle_count += 1
+            now = t_now or time.time()
 
-        # Gather vertices grouped by domain/vtype
-        domain_buckets: Dict[str, List[Vertex]] = {}
-        for vid, v in self.graph.vertices.items():
-            dom = v.attributes.get("topic") or v.vtype
-            domain_buckets.setdefault(dom, []).append(v)
+            # Gather vertices grouped by domain/vtype safely under graph lock
+            domain_buckets: Dict[str, List[Vertex]] = {}
+            vertices_snapshot = list(self.graph.get_vertices_snapshot().values())
 
-        # We need at least two distinct domains to collide
-        distinct_domains = list(domain_buckets.keys())
-        if len(distinct_domains) < 2:
-            return None
+            for v in vertices_snapshot:
+                dom = v.attributes.get("topic") or v.vtype
+                domain_buckets.setdefault(dom, []).append(v)
 
-        # Sample two distinct domains
-        dom_a, dom_b = random.sample(distinct_domains, 2)
-        node_a = random.choice(domain_buckets[dom_a])
-        node_b = random.choice(domain_buckets[dom_b])
+            # We need at least two distinct non-empty domains to collide
+            valid_domains = [d for d, nodes in domain_buckets.items() if len(nodes) > 0]
+            if len(valid_domains) < 2:
+                return None
 
-        # Evaluate cross-domain collision hypothesis
-        cluster = self._synthesize_bridge(node_a, node_b, dom_a, dom_b)
-        if not cluster:
-            return None
+            # Sample two distinct domains
+            dom_a, dom_b = random.sample(valid_domains, 2)
+            nodes_a = domain_buckets.get(dom_a, [])
+            nodes_b = domain_buckets.get(dom_b, [])
+            if not nodes_a or not nodes_b:
+                return None
 
-        # Reality test via probe
-        probe_res: RealityProbeResult = self.reality_probe.evaluate_candidate(
-            candidate_id=cluster.cluster_id,
-            concept_a=node_a.label,
-            concept_b=node_b.label,
-            domain_a=dom_a,
-            domain_b=dom_b,
-            proposed_bridge=cluster.hypothesis_summary,
-        )
+            node_a = random.choice(nodes_a)
+            node_b = random.choice(nodes_b)
 
-        if probe_res.is_feasible and probe_res.confidence >= self.reality_probe.confidence_gate:
-            packet = EpiphanyPacket(
-                packet_id=cluster.cluster_id,
-                spark_name=probe_res.spark_name,
-                domain_bridge=[dom_a, dom_b],
-                feasibility_score=probe_res.confidence,
-                summary=probe_res.actionable_summary,
-                mechanism=probe_res.technical_mechanism,
-                created_at=now,
+            # Evaluate cross-domain collision hypothesis
+            cluster = self._synthesize_bridge(node_a, node_b, dom_a, dom_b)
+            if not cluster:
+                return None
+
+            # Reality test via probe
+            probe_res: RealityProbeResult = self.reality_probe.evaluate_candidate(
+                candidate_id=cluster.cluster_id,
+                concept_a=node_a.label,
+                concept_b=node_b.label,
+                domain_a=dom_a,
+                domain_b=dom_b,
+                proposed_bridge=cluster.hypothesis_summary,
             )
-            self.channel.push(packet)
-            self.total_epiphanies_found += 1
-            return packet
 
-        return None
+            if probe_res.is_feasible and probe_res.confidence >= self.reality_probe.confidence_gate:
+                packet = EpiphanyPacket(
+                    packet_id=cluster.cluster_id,
+                    spark_name=probe_res.spark_name,
+                    domain_bridge=[dom_a, dom_b],
+                    feasibility_score=probe_res.confidence,
+                    summary=probe_res.actionable_summary,
+                    mechanism=probe_res.technical_mechanism,
+                    created_at=now,
+                )
+                self.channel.push(packet)
+                self.total_epiphanies_found += 1
+                return packet
+
+            return None
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return None
 
     def _synthesize_bridge(
         self,
@@ -168,7 +181,6 @@ class SubconsciousWorker:
         text_b = f"{node_b.label} {node_b.attributes.get('full_content', '')}".lower()
 
         # Look for complementary concepts:
-        # e.g., A provides stream/telemetry/data, B consumes physics/geometry/motion
         stream_terms = {"telemetry", "lux", "gyro", "motion", "stream", "sensor", "socket", "sound"}
         engine_terms = {"mesh", "armature", "rigging", "godot", "blender", "shader", "render", "game"}
 
@@ -182,7 +194,6 @@ class SubconsciousWorker:
         has_engine_a = bool(words_a.intersection(engine_terms))
 
         if (has_stream_a and has_engine_b) or (has_stream_b and has_engine_a):
-            # High resonance bridge!
             cid = f"cluster_{self.cycle_count}_{int(time.time() * 1000) % 10000}"
             hypothesis = (
                 f"Bridge {node_a.label} with {node_b.label} via real-time sensory stream "

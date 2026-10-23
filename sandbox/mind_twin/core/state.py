@@ -29,19 +29,40 @@ class CognitiveStateVector:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "CognitiveStateVector":
-        focus_items = [
-            FocusItem(**item) if isinstance(item, dict) else item 
-            for item in data.get("focus_spotlight", [])
-        ]
+        if not isinstance(data, dict):
+            return cls(session_id="recovered_cold_session")
+
+        focus_items = []
+        raw_spotlight = data.get("focus_spotlight", [])
+        if isinstance(raw_spotlight, list):
+            for item in raw_spotlight:
+                if isinstance(item, dict):
+                    try:
+                        cid = str(item.get("concept_id", "unknown"))
+                        energy = float(item.get("energy", 0.5))
+                        primed_hops = int(item.get("primed_hops", 0))
+                        last_act = float(item.get("last_activated", time.time()))
+                        focus_items.append(FocusItem(cid, energy, primed_hops, last_act))
+                    except Exception:
+                        pass
+                elif isinstance(item, FocusItem):
+                    focus_items.append(item)
+
+        raw_invariants = data.get("causal_invariants", [])
+        invariants = [str(x) for x in raw_invariants] if isinstance(raw_invariants, list) else []
+
+        raw_meta = data.get("metadata", {})
+        meta = dict(raw_meta) if isinstance(raw_meta, dict) else {}
+
         return cls(
-            version=data.get("version", 1),
-            session_id=data.get("session_id", "shadow_session"),
-            timestamp=data.get("timestamp", time.time()),
-            latent_intent=data.get("latent_intent", "idle"),
+            version=int(data.get("version", 1)),
+            session_id=str(data.get("session_id", "shadow_session")),
+            timestamp=float(data.get("timestamp", time.time())),
+            latent_intent=str(data.get("latent_intent", "idle")),
             focus_spotlight=focus_items,
-            causal_invariants=data.get("causal_invariants", []),
-            turn_counter=data.get("turn_counter", 0),
-            metadata=data.get("metadata", {})
+            causal_invariants=invariants,
+            turn_counter=int(data.get("turn_counter", 0)),
+            metadata=meta,
         )
 
     def get_summary_frame(self) -> str:

@@ -3,12 +3,14 @@ Unified Boot Synthesizer & Mental State Assembler.
 Unites Notes, Episodic History, PNS Sensory Telemetry, and Fleet Node Capabilities
 into a single, unitized cognitive state vector upon boot.
 Equipped with a 7-Slot Directional Working Memory Gate (Miller's Law)
-and Subconscious Incubation Worker.
+and Subconscious Incubation Worker. Hardened with comprehensive input sanitization
+and runtime failsafes.
 """
 
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import time
@@ -35,6 +37,20 @@ from sandbox.mind_twin.core.subconscious import (
     NoveltyDetector,
     SubconsciousWorker,
 )
+
+
+def _safe_float(val: Any, default: float = 0.0, min_val: Optional[float] = None, max_val: Optional[float] = None) -> float:
+    try:
+        f = float(val)
+        if math.isnan(f) or math.isinf(f):
+            return default
+        if min_val is not None:
+            f = max(min_val, f)
+        if max_val is not None:
+            f = min(max_val, f)
+        return f
+    except (ValueError, TypeError):
+        return default
 
 
 @dataclass
@@ -165,18 +181,21 @@ class BootSynthesizer:
         working_notes = ""
         revisits: List[str] = []
 
+        if notes_data is None:
+            return active_topic, working_notes, revisits
+
         raw_notes: List[Dict[str, Any]] = []
 
         # Check if NotesManager instance
         if hasattr(notes_data, "notes") and hasattr(notes_data, "current_topic"):
-            active_topic = getattr(notes_data, "current_topic", "general")
-            working_notes = getattr(notes_data, "working_notes", "")
+            active_topic = str(getattr(notes_data, "current_topic", "general") or "general")
+            working_notes = str(getattr(notes_data, "working_notes", "") or "")
             raw_notes = [n.to_dict() if hasattr(n, "to_dict") else n for n in getattr(notes_data, "notes", [])]
         elif isinstance(notes_data, dict):
             active_topic = str(notes_data.get("current_topic") or notes_data.get("topic") or "general")
             working_notes = str(notes_data.get("working_notes") or "")
             managed = notes_data.get("managed_notes", {})
-            if isinstance(managed, dict) and "notes" in managed:
+            if isinstance(managed, dict) and "notes" in managed and isinstance(managed["notes"], list):
                 raw_notes = managed["notes"]
             elif "notes" in notes_data and isinstance(notes_data["notes"], list):
                 raw_notes = notes_data["notes"]
@@ -266,18 +285,22 @@ class BootSynthesizer:
     # -------------------------------------------------------------------------
     # Pillar 2: Episodic Chat History Ingestion
     # -------------------------------------------------------------------------
-    def ingest_history(self, history: List[Dict[str, Any]], now: Optional[float] = None) -> int:
+    def ingest_history(self, history: Optional[List[Dict[str, Any]]], now: Optional[float] = None) -> int:
         """
         Ingests conversation history turns with temporal decay.
         Returns the total number of turns ingested.
         """
-        t_now = now or time.time()
-        total_turns = len(history)
+        if not history or not isinstance(history, list):
+            return 0
+
+        t_now = _safe_float(now, time.time())
+        valid_turns = [turn for turn in history if isinstance(turn, dict)]
+        total_turns = len(valid_turns)
         if total_turns == 0:
             return 0
 
         # Ingest the last 15 turns with recency retention
-        recent_window = history[-15:]
+        recent_window = valid_turns[-15:]
         prev_turn_vid: Optional[str] = None
 
         for idx, turn in enumerate(recent_window):
@@ -285,11 +308,12 @@ class BootSynthesizer:
             tid = str(turn.get("turn_id") or f"turn_{turn_num}")
             role = str(turn.get("role") or "user")
             text = str(turn.get("text") or "")
-            turn_time = float(turn.get("timestamp") or (t_now - (len(recent_window) - idx) * 120.0))
+            default_time = t_now - (len(recent_window) - idx) * 120.0
+            turn_time = _safe_float(turn.get("timestamp"), default_time)
 
             delta_t = max(0.0, t_now - turn_time)
             decay = (1.0 + self.hypergraph.decay_alpha * delta_t) ** (-self.hypergraph.decay_beta)
-            base_energy = 0.9 * decay
+            base_energy = _safe_float(0.9 * decay, 0.5, 0.01, 10.0)
 
             turn_vid = f"turn:{tid}"
             label = f"T{turn_num} ({role}): {text[:35]}..." if len(text) > 35 else f"T{turn_num} ({role})"
@@ -307,7 +331,7 @@ class BootSynthesizer:
                     sources=[prev_turn_vid],
                     targets=[turn_vid],
                     relation="conversational_sequence",
-                    weight=0.85 * decay,
+                    weight=_safe_float(0.85 * decay, 0.5, 0.01, 5.0),
                 )
             prev_turn_vid = turn_vid
 
@@ -322,7 +346,6 @@ class BootSynthesizer:
         Returns: (activated_somatic_labels, formatted_somatic_frame)
         """
         if telemetry is None:
-            # Default nominal stationary desk telemetry
             telemetry = PhoneSensoryTelemetry(
                 timestamp=time.time(),
                 lux=120.0,
@@ -517,7 +540,7 @@ class BootSynthesizer:
         profile: ActivationResult = self.activation_engine.spread(seeds=seed_boosts, t_now=now)
 
         # 7. Check Subconscious Novelty Gating Filter
-        prompt_to_check = current_user_prompt or active_topic
+        prompt_to_check = str(current_user_prompt or active_topic)
         is_novel, novelty_eval = self.subconscious_worker.check_and_ignite(
             task_prompt=prompt_to_check,
             active_topic=active_topic,
@@ -551,7 +574,7 @@ class BootSynthesizer:
         for vid, score, label in profile.get_top_nodes(top_n=12):
             spotlight.append(FocusItem(
                 concept_id=label,
-                energy=score,
+                energy=_safe_float(score, 0.5, 0.0, 50.0),
                 primed_hops=profile.hops_completed,
                 last_activated=now,
             ))
@@ -564,7 +587,7 @@ class BootSynthesizer:
         return UnifiedCognitiveBootState(
             boot_timestamp=now,
             turn_counter=turn_counter,
-            session_id=session_id,
+            session_id=str(session_id),
             active_topic=active_topic,
             working_notes_summary=working_notes,
             focus_spotlight=spotlight,

@@ -6,6 +6,7 @@ applying lapse temporal decay and reconciling buffered events upon recovery.
 import time
 import os
 import json
+import math
 from dataclasses import dataclass, field
 from typing import Dict, List, Any, Optional, Tuple
 from sandbox.mind_twin.core.state import CognitiveStateVector, FocusItem
@@ -56,9 +57,13 @@ class LapseManager:
         try:
             with open(self.checkpoint_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
+            if not isinstance(data, dict):
+                return None
             last_hb = data.get("last_heartbeat", data.get("timestamp", time.time()))
+            if not isinstance(last_hb, (int, float)) or not math.isfinite(last_hb):
+                last_hb = time.time()
             state = CognitiveStateVector.from_dict(data)
-            return state, last_hb
+            return state, float(last_hb)
         except Exception:
             return None
 

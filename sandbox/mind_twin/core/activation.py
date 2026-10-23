@@ -1,12 +1,13 @@
 """
 sandbox/mind_twin/core/activation.py
 
-ACT-R Spreading Activation & Cognitive Dynamics Engine.
+ACT-R Spreading Activation & Cognitive Dynamics Engine with Numerical Failsafes.
 Implements associative spreading activation over Attributed Directed Hypergraphs:
 A_i = B_i + sum_j ( W_j * S_ji )
 
 Enables rapid invariant retrieval and causal subgraph distillation without
-costly exhaustive vector searches.
+costly exhaustive vector searches. Built-in float overflow / underflow dampening
+and numerical zero-division failsafes.
 """
 
 from __future__ import annotations
@@ -17,6 +18,16 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Set, Optional, Tuple, Any
 
 from sandbox.mind_twin.core.hypergraph import Hypergraph, Vertex, Hyperedge
+
+
+def _safe_float(val: Any, default: float = 0.0, min_val: float = 0.0, max_val: float = 1000.0) -> float:
+    try:
+        f = float(val)
+        if math.isnan(f) or math.isinf(f):
+            return default
+        return max(min_val, min(max_val, f))
+    except (ValueError, TypeError):
+        return default
 
 
 @dataclass
@@ -56,7 +67,7 @@ class ActivationResult:
 
 class ActivationEngine:
     """
-    Executes ACT-R Spreading Activation over a Hypergraph.
+    Executes ACT-R Spreading Activation over a Hypergraph with numerical stability guarantees.
     """
 
     def __init__(
@@ -67,22 +78,27 @@ class ActivationEngine:
         max_hops: int = 3,
     ) -> None:
         self.graph = graph
-        self.default_decay = default_decay
-        self.default_threshold = default_threshold
-        self.max_hops = max_hops
+        self.default_decay = _safe_float(default_decay, 0.55, 0.01, 0.99)
+        self.default_threshold = _safe_float(default_threshold, 0.18, 0.001, 10.0)
+        self.max_hops = max(1, min(10, int(max_hops)))
 
     def match_seeds(self, query: str, top_k: int = 8) -> Dict[str, float]:
         """
         Extracts semantic seed nodes from raw text query using token matching,
         label containment, and attribute matching.
         """
+        if not query or not isinstance(query, str):
+            return {}
+
         tokens = set(re.findall(r"\w+", query.lower()))
         if not tokens:
             return {}
 
         seeds: Dict[str, float] = {}
+        # Thread-safe snapshot of vertices
+        vertices_snap = self.graph.get_vertices_snapshot()
 
-        for vid, v in self.graph.vertices.items():
+        for vid, v in vertices_snap.items():
             vid_lower = vid.lower()
             label_lower = v.label.lower()
             vtype_lower = v.vtype.lower()
@@ -108,16 +124,20 @@ class ActivationEngine:
 
             if match_score > 0.0:
                 # Modulate by vertex baseline Ebbinghaus retention energy
-                retention = v.ebbinghaus_energy()
+                retention = _safe_float(v.ebbinghaus_energy(), 1.0, 0.0, 100.0)
                 initial_energy = match_score * (0.8 + 0.2 * retention)
-                seeds[vid] = initial_energy
+                initial_energy = _safe_float(initial_energy, 1.0, 0.0, 100.0)
+                if initial_energy > 0.0:
+                    seeds[vid] = initial_energy
 
-        # Normalize and select top_k
         if not seeds:
             return {}
 
         max_val = max(seeds.values())
-        normalized = {k: v / max_val for k, v in seeds.items()}
+        if max_val <= 0.0 or math.isnan(max_val) or math.isinf(max_val):
+            return {}
+
+        normalized = {k: min(1.0, v / max_val) for k, v in seeds.items()}
         sorted_seeds = sorted(normalized.items(), key=lambda x: x[1], reverse=True)[:top_k]
         return dict(sorted_seeds)
 
@@ -132,12 +152,13 @@ class ActivationEngine:
     ) -> ActivationResult:
         """
         Executes ACT-R spreading activation from seed vertices.
+        Numerically stable: log-average geometric mean eliminates float overflow.
         """
         t0 = time.perf_counter()
         now = t_now if t_now is not None else time.time()
-        hops = max_hops if max_hops is not None else self.max_hops
-        decay_factor = decay if decay is not None else self.default_decay
-        act_threshold = threshold if threshold is not None else self.default_threshold
+        hops = max(1, min(10, max_hops if max_hops is not None else self.max_hops))
+        decay_factor = _safe_float(decay if decay is not None else self.default_decay, 0.55, 0.01, 0.99)
+        act_threshold = _safe_float(threshold if threshold is not None else self.default_threshold, 0.18, 0.001, 10.0)
 
         # Current total activation map
         total_activations: Dict[str, float] = {}
@@ -145,8 +166,9 @@ class ActivationEngine:
         # Front of newly injected energy per hop
         frontier: Dict[str, float] = {}
 
-        for vid, energy in seeds.items():
-            if vid in self.graph.vertices:
+        for vid, raw_energy in seeds.items():
+            energy = _safe_float(raw_energy, 1.0, 0.0, 50.0)
+            if self.graph.has_vertex(vid):
                 total_activations[vid] = energy
                 frontier[vid] = energy
 
@@ -161,30 +183,30 @@ class ActivationEngine:
 
             # For every active vertex in the frontier, inspect incident outgoing edges
             candidate_edges: Set[str] = set()
-            for vid in frontier:
+            for vid in list(frontier.keys()):
                 candidate_edges.update(self.graph.incident_hyperedges(vid, direction="outgoing"))
 
             for edge_id in candidate_edges:
                 edge = self.graph.get_hyperedge(edge_id)
-                if not edge:
+                if not edge or not edge.sources or not edge.targets:
                     continue
 
-                # Measure antecedent satisfaction (geometric mean of source activations)
-                src_energies = [
-                    total_activations.get(s, 0.0) for s in edge.sources
-                ]
-                # If any source is completely unactivated, antecedent is weak
-                # We compute geometric mean with floor 0.05 for partially active multi-source edges
-                product = 1.0
-                for se in src_energies:
-                    product *= max(0.01, se)
-                geometric_src_act = math.pow(product, 1.0 / len(edge.sources))
+                # Measure antecedent satisfaction using log-average geometric mean (NO float overflow)
+                log_sum = 0.0
+                for s in edge.sources:
+                    se = total_activations.get(s, 0.0)
+                    se_safe = _safe_float(se, 0.01, 0.001, 100.0)
+                    log_sum += math.log(max(0.005, se_safe))
+
+                mean_log = log_sum / len(edge.sources)
+                geometric_src_act = min(20.0, math.exp(mean_log))
 
                 # Effective edge weight under temporal decay
-                w_eff = edge.effective_weight(t_now=now)
+                w_eff = _safe_float(edge.effective_weight(t_now=now), 1.0, 0.0, 50.0)
 
                 # Transferred energy
                 transfer = geometric_src_act * w_eff * math.pow(decay_factor, hop + 1)
+                transfer = _safe_float(transfer, 0.0, 0.0, 50.0)
 
                 if transfer > 0.02:
                     activated_edges.add(edge_id)
@@ -193,11 +215,11 @@ class ActivationEngine:
 
                     # Spread to all target vertices
                     for tgt in edge.targets:
-                        next_frontier[tgt] = next_frontier.get(tgt, 0.0) + transfer
+                        next_frontier[tgt] = min(100.0, next_frontier.get(tgt, 0.0) + transfer)
 
             # Accumulate into total activations
             for vid, delta in next_frontier.items():
-                total_activations[vid] = total_activations.get(vid, 0.0) + delta
+                total_activations[vid] = min(100.0, total_activations.get(vid, 0.0) + delta)
 
             frontier = {
                 vid: delta for vid, delta in next_frontier.items()
@@ -217,7 +239,7 @@ class ActivationEngine:
         invariants = self._distill_invariants(subgraph, active_nodes)
 
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
-        total_energy = sum(active_nodes.values())
+        total_energy = float(sum(active_nodes.values()))
 
         return ActivationResult(
             query=query,
@@ -239,7 +261,11 @@ class ActivationEngine:
         """Distills active hyperedges into clear causal invariant frames."""
         invariants: List[InvariantFrame] = []
 
-        for edge_id, edge in subgraph.edges.items():
+        edges_snap = subgraph.get_edges_snapshot()
+        for edge_id, edge in edges_snap.items():
+            if not edge.sources or not edge.targets:
+                continue
+
             src_labels = [
                 subgraph.get_vertex(s).label if subgraph.get_vertex(s) else s
                 for s in edge.sources
@@ -250,7 +276,9 @@ class ActivationEngine:
             ]
 
             src_scores = [activations.get(s, 0.5) for s in edge.sources]
-            confidence = (sum(src_scores) / len(src_scores)) * min(1.0, edge.weight)
+            mean_src = sum(src_scores) / max(1, len(src_scores))
+            safe_weight = _safe_float(edge.weight, 1.0, 0.0, 1.0)
+            confidence = min(1.0, mean_src * min(1.0, safe_weight))
 
             summary = f"[{' + '.join(src_labels)}] --({edge.relation})--> [{' + '.join(tgt_labels)}]"
 
@@ -265,6 +293,5 @@ class ActivationEngine:
                 )
             )
 
-        # Sort by confidence
         invariants.sort(key=lambda x: x.confidence, reverse=True)
         return invariants

@@ -625,6 +625,67 @@ class TestWingmanSecurity(unittest.TestCase):
         finally:
             applet.stop()
 
+    def test_multi_device_chat_broadcast(self) -> None:
+        """Verifies that a chat message from node A is broadcasted to node B and local Wingman."""
+        server = MothershipServer(host="127.0.0.1", port=0, auto_broadcast_telemetry=False)
+        mock_sat_a = MagicMock()
+        mock_sat_a.send.return_value = True
+        mock_sat_b = MagicMock()
+        mock_sat_b.send.return_value = True
+
+        with server.lock:
+            server.nodes["node-a-phone"] = mock_sat_a
+            server.nodes["node-b-ipad"] = mock_sat_b
+
+        # Simulate broadcast from node A
+        count = server.broadcast_wingman_chat(
+            sender="operator",
+            text="Sync test across devices",
+            is_user=True,
+            exclude_node_id="node-a-phone",
+        )
+        self.assertEqual(count, 1)
+        mock_sat_a.send.assert_not_called()
+        mock_sat_b.send.assert_called_once()
+        sent_msg = mock_sat_b.send.call_args[0][0]
+        self.assertEqual(sent_msg.payload["event"], "wingman_chat_message")
+        self.assertEqual(sent_msg.payload["text"], "Sync test across devices")
+        self.assertTrue(sent_msg.payload["is_user"])
+
+    def test_clear_command_from_wingman(self) -> None:
+        """Verifies that /clear resets history on WingmanApplet and Mothership broadcasts clear event."""
+        applet = WingmanApplet(port=0, node_id="test-clear-node", require_pairing=False)
+        self.assertTrue(applet.start())
+        try:
+            mock_handler = MagicMock()
+            mock_handler.client_address = ("127.0.0.1", 54322)
+            mock_handler.headers = {}
+
+            # Add message
+            applet.push_chat_message("user", "Hello before clear", is_user=True)
+            self.assertEqual(len(applet._chat_history), 1)
+
+            # Send /clear
+            res = applet._handle_chat(mock_handler, {}, {"text": "/clear", "sender": "operator"})
+            self.assertEqual(res["status"], "ok")
+            self.assertEqual(len(applet._chat_history), 0)
+
+            # Test Mothership clear broadcast
+            server = MothershipServer(host="127.0.0.1", port=0, auto_broadcast_telemetry=False)
+            mock_sat = MagicMock()
+            mock_sat.send.return_value = True
+            with server.lock:
+                server.nodes["ipad-node"] = mock_sat
+                server.recent_wingman_chat.append({"text": "stale message"})
+
+            self.assertEqual(len(server.recent_wingman_chat), 1)
+            server.broadcast_wingman_clear()
+            self.assertEqual(len(server.recent_wingman_chat), 0)
+            mock_sat.send.assert_called_once()
+            self.assertEqual(mock_sat.send.call_args[0][0].payload["event"], "wingman_chat_clear")
+        finally:
+            applet.stop()
+
 
 if __name__ == "__main__":
     unittest.main()

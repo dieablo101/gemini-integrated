@@ -99,6 +99,7 @@ class MothershipServer:
         self.local_wingman = None
         self.local_inspector = None
         self.recent_wingman_actions: List[Dict[str, Any]] = []
+        self.recent_wingman_chat: List[Dict[str, Any]] = []
         self._action_events: Dict[str, threading.Event] = {}
         self._action_results: Dict[str, Dict[str, Any]] = {}
         self.pending_wingman_auth_requests: Dict[str, Dict[str, Any]] = {}
@@ -615,8 +616,18 @@ class MothershipServer:
                                 b_sender = msg.payload.get("params", {}).get("sender", "Gemini Core")
                                 b_text = msg.payload.get("params", {}).get("text", "")
                                 b_is_user = bool(msg.payload.get("params", {}).get("is_user", False))
-                                count = self.broadcast_wingman_chat(sender=b_sender, text=b_text, is_user=b_is_user)
+                                b_msg_id = msg.payload.get("params", {}).get("id", "") or msg.payload.get("params", {}).get("msg_id", "")
+                                b_exclude = msg.payload.get("params", {}).get("exclude_node_id")
+                                count = self.broadcast_wingman_chat(sender=b_sender, text=b_text, is_user=b_is_user, msg_id=b_msg_id, exclude_node_id=b_exclude)
                                 resp_payload["sent_count"] = count
+                                resp_payload["status"] = "ok"
+                            elif action in ("broadcast_wingman_clear", "clear_wingman_chat"):
+                                count = self.broadcast_wingman_clear()
+                                resp_payload["sent_count"] = count
+                                resp_payload["status"] = "ok"
+                            elif action in ("get_wingman_chat_history", "wingman_chat_history"):
+                                with self.lock:
+                                    resp_payload["history"] = list(self.recent_wingman_chat)
                                 resp_payload["status"] = "ok"
                             reply = FleetMessage(
                                 msg_type=FleetMessage.TYPE_RESPONSE,
@@ -682,15 +693,47 @@ class MothershipServer:
                                         self._notify_wingman_auth(auth_entry)
 
                             elif event_name == "wingman_chat_message":
+                                chat_text = msg.payload.get("text", "")
+                                chat_sender = msg.payload.get("sender", "operator")
+                                chat_msg_id = msg.payload.get("id") or msg.payload.get("msg_id", "")
+                                chat_ts = msg.payload.get("timestamp", time.time())
                                 chat_entry = {
                                     "node_id": node_id,
-                                    "sender": msg.payload.get("sender", "operator"),
-                                    "text": msg.payload.get("text", ""),
-                                    "timestamp": msg.payload.get("timestamp", time.time()),
+                                    "sender": chat_sender,
+                                    "text": chat_text,
+                                    "id": chat_msg_id,
+                                    "timestamp": chat_ts,
                                 }
                                 sys.stdout.write(
                                     f"[mothership] Wingman chat from {node_id} ({chat_entry['sender']}): {chat_entry['text']}\n"
                                 )
+                                if chat_text.strip().lower() == "/clear":
+                                    self.broadcast_wingman_clear()
+                                    try:
+                                        from gemini_app.config import SOCKET_PATH
+                                        if SOCKET_PATH.exists():
+                                            s_cli = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                                            s_cli.settimeout(0.5)
+                                            s_cli.connect(str(SOCKET_PATH))
+                                            s_cli.sendall(json.dumps({
+                                                "action": "clear_chat",
+                                                "sender": chat_sender,
+                                                "source": "wingman",
+                                            }).encode("utf-8"))
+                                            s_cli.close()
+                                    except Exception:
+                                        pass
+                                    continue
+
+                                # Broadcast user message to ALL OTHER connected satellites & local wingman
+                                self.broadcast_wingman_chat(
+                                    sender=chat_sender,
+                                    text=chat_text,
+                                    is_user=True,
+                                    msg_id=chat_msg_id,
+                                    exclude_node_id=node_id,
+                                )
+
                                 if hasattr(self, "_wingman_chat_callbacks"):
                                     for cb in list(self._wingman_chat_callbacks):
                                         try:
@@ -828,21 +871,66 @@ class MothershipServer:
         sender: str,
         text: str,
         is_user: bool = False,
+        msg_id: str = "",
+        exclude_node_id: Optional[str] = None,
     ) -> int:
         """Broadcasts a Wingman chat bubble across all connected satellites and local Wingman."""
+        import secrets
+        m_id = msg_id or f"msg-{int(time.time() * 1000)}-{secrets.token_hex(3)}"
+        chat_item = {
+            "id": m_id,
+            "sender": sender,
+            "text": text,
+            "is_user": is_user,
+            "timestamp": time.time(),
+        }
+        with self.lock:
+            if not any(m.get("id") == m_id for m in self.recent_wingman_chat):
+                self.recent_wingman_chat.append(chat_item)
+                if len(self.recent_wingman_chat) > 100:
+                    self.recent_wingman_chat.pop(0)
+
         if self.local_wingman and hasattr(self.local_wingman, "push_chat_message"):
             try:
-                self.local_wingman.push_chat_message(sender=sender, text=text, is_user=is_user)
+                self.local_wingman.push_chat_message(sender=sender, text=text, is_user=is_user, msg_id=m_id)
+            except Exception:
+                pass
+
+        msg = FleetMessage(
+            msg_type=FleetMessage.TYPE_EVENT,
+            node_id="mothership",
+            payload={
+                "event": "wingman_chat_message",
+                "id": m_id,
+                "sender": sender,
+                "text": text,
+                "is_user": is_user,
+                "timestamp": chat_item["timestamp"],
+            },
+        )
+        sent_count = 0
+        with self.lock:
+            for nid, sat in list(self.nodes.items()):
+                if exclude_node_id and nid == exclude_node_id:
+                    continue
+                if sat.send(msg):
+                    sent_count += 1
+        return sent_count
+
+    def broadcast_wingman_clear(self) -> int:
+        """Clears chat history across local Wingman and all fleet satellites."""
+        with self.lock:
+            self.recent_wingman_chat.clear()
+        if self.local_wingman and hasattr(self.local_wingman, "clear_chat"):
+            try:
+                self.local_wingman.clear_chat()
             except Exception:
                 pass
         msg = FleetMessage(
             msg_type=FleetMessage.TYPE_EVENT,
             node_id="mothership",
             payload={
-                "event": "wingman_chat_message",
-                "sender": sender,
-                "text": text,
-                "is_user": is_user,
+                "event": "wingman_chat_clear",
                 "timestamp": time.time(),
             },
         )

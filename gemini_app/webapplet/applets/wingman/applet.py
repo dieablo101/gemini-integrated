@@ -281,6 +281,7 @@ class WingmanApplet:
         return {
             "status": "ok",
             "message_id": msg_obj["id"],
+            "timestamp": msg_obj["timestamp"],
             "reply": "Bilateral chat cleared across fleet." if text.lower() == "/clear" else "Transmitted to Mothership — awaiting Gemini reply...",
         }
 
@@ -290,12 +291,17 @@ class WingmanApplet:
                 try:
                     fetched = self._chat_history_fetcher()
                     if fetched:
-                        existing_ids = {m.get("id") for m in self._chat_history if m.get("id")}
-                        for m in fetched:
-                            if m.get("id") and m.get("id") not in existing_ids:
-                                self._chat_history.append(m)
-                                existing_ids.add(m.get("id"))
-                        self._chat_history.sort(key=lambda x: x.get("timestamp", 0.0))
+                        fetched_ids = {m.get("id") for m in fetched if m.get("id")}
+                        # Mothership's fetched list is canonical and chronological.
+                        # Retain Mothership's canonical order and timestamps while appending
+                        # any in-flight local messages not yet synced to Mothership.
+                        merged = list(fetched)
+                        for m in self._chat_history:
+                            m_id = m.get("id")
+                            if m_id and m_id not in fetched_ids:
+                                merged.append(m)
+                        merged.sort(key=lambda x: x.get("timestamp", 0.0))
+                        self._chat_history = merged
                 except Exception:
                     pass
             return {"status": "ok", "history": list(self._chat_history)}
@@ -485,14 +491,22 @@ class WingmanApplet:
         self.engine.broadcast_event("clear_chat", {"timestamp": time.time()})
         self.engine.broadcast_event("chat_clear", {"timestamp": time.time()})
 
-    def push_chat_message(self, sender: str, text: str, is_user: bool = False, msg_id: str = "") -> str:
+    def push_chat_message(
+        self,
+        sender: str,
+        text: str,
+        is_user: bool = False,
+        msg_id: str = "",
+        timestamp: Optional[float] = None,
+    ) -> str:
         """Pushes a chat message bubble to all connected Wingman browsers in Chat mode."""
         msg_id_val = msg_id or f"msg-{secrets.token_hex(4)}-{int(time.time() * 1000)}"
+        ts = timestamp if (isinstance(timestamp, (int, float)) and timestamp > 0) else time.time()
         msg_obj = {
             "id": msg_id_val,
             "sender": sender,
             "text": text,
-            "timestamp": time.time(),
+            "timestamp": ts,
             "is_user": is_user,
         }
         with self._lock:

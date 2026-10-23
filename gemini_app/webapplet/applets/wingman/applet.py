@@ -39,6 +39,7 @@ class WingmanApplet:
         self._chat_history: List[Dict[str, Any]] = []
         self._lock = threading.Lock()
         self._passkey_verifier: Optional[Callable[[str], bool]] = None
+        self.boot_id = secrets.token_hex(8)
 
         self._setup_routes()
 
@@ -126,6 +127,7 @@ class WingmanApplet:
             "time": time.time(),
             "engine": self.engine.name,
             "node_id": self.node_id,
+            "boot_id": self.boot_id,
             "client_count": self.client_count,
         }
 
@@ -168,18 +170,20 @@ class WingmanApplet:
             is_loopback=is_loopback,
         )
 
-        is_trusted = self.security.is_device_trusted(session.device_id) or self.security.is_device_trusted(client_ip)
+        is_trusted = bool(session.device_id) and self.security.is_device_trusted(session.device_id)
+        is_paired = is_trusted or getattr(session, "is_paired", False)
         return {
             "session_id": session.session_id,
             "authenticated": (session.status == "authorized"),
             "status": session.status,
             "is_unlocked": session.is_unlocked,
-            "is_paired": is_trusted,
+            "is_paired": is_paired,
             "token": session.token if session.status == "authorized" else "",
             "mode": session.current_mode,
             "device_id": session.device_id,
             "node_id": self.node_id,
             "trusted": is_trusted,
+            "boot_id": self.boot_id,
         }
 
     def _handle_passkey_auth(self, handler: Any, query: Dict[str, List[str]], body: Any) -> Dict[str, Any]:
@@ -211,10 +215,12 @@ class WingmanApplet:
         sess = self.security.get_session_by_token(token) if token else None
 
         if self.security.require_pairing:
-            if sess and not sess.is_unlocked:
-                return {"status": "error", "message": "Session is locked. Passkey unlock required."}
-            elif not sess and not is_loopback:
-                return {"status": "error", "message": "Session is locked. Passkey unlock required."}
+            if token and not sess:
+                return {"status": "error", "session_locked": True, "message": "Session expired or Mothership rebooted. Re-authorization required."}
+            if not sess or sess.status != "authorized":
+                return {"status": "error", "session_locked": True, "message": "Session is awaiting Mothership console authorization."}
+            if not sess.is_unlocked:
+                return {"status": "error", "session_locked": True, "message": "Session is locked. Passkey unlock required."}
 
         with self._lock:
             for cb in self._action_callbacks:
@@ -239,10 +245,12 @@ class WingmanApplet:
         sess = self.security.get_session_by_token(token) if token else None
 
         if self.security.require_pairing:
-            if sess and not sess.is_unlocked:
-                return {"status": "error", "message": "Session is locked. Passkey unlock required."}
-            elif not sess and not is_loopback:
-                return {"status": "error", "message": "Session is locked. Passkey unlock required."}
+            if token and not sess:
+                return {"status": "error", "session_locked": True, "message": "Session expired or Mothership rebooted. Re-authorization required."}
+            if not sess or sess.status != "authorized":
+                return {"status": "error", "session_locked": True, "message": "Session is awaiting Mothership console authorization."}
+            if not sess.is_unlocked:
+                return {"status": "error", "session_locked": True, "message": "Session is locked. Passkey unlock required."}
 
         msg_obj = {
             "id": f"msg-{int(now * 1000)}",
@@ -313,13 +321,14 @@ class WingmanApplet:
         sess = self.security.get_session(req_id)
         if sess:
             sess.last_seen = time.time()
-            is_trusted = self.security.is_device_trusted(sess.device_id) or self.security.is_device_trusted(sess.client_ip)
+            is_trusted = bool(sess.device_id) and self.security.is_device_trusted(sess.device_id)
+            is_paired = is_trusted or getattr(sess, "is_paired", False)
             return {
                 "status": "approved" if sess.status == "authorized" else sess.status,
                 "token": sess.token if sess.status == "authorized" else "",
                 "auth_req_id": sess.session_id,
                 "trusted": is_trusted,
-                "is_paired": is_trusted,
+                "is_paired": is_paired,
             }
         return {"status": "unknown", "error": f"Request {req_id} not found"}
 
@@ -359,7 +368,7 @@ class WingmanApplet:
         trust_device = trust or (decision in ("trust", "pair"))
         sess = self.security.authorize_session(auth_req_id, trust_device=trust_device) if accepted else self.security.deny_session(auth_req_id)
         if sess:
-            is_trusted = self.security.is_device_trusted(sess.device_id) or self.security.is_device_trusted(sess.client_ip) or trust_device
+            is_trusted = bool(sess.device_id) and (trust_device or self.security.is_device_trusted(sess.device_id))
             ev_name = "auth_approved" if accepted else "auth_denied"
             self.engine.broadcast_event(ev_name, {
                 "auth_req_id": auth_req_id,
@@ -392,7 +401,7 @@ class WingmanApplet:
         if accepted:
             sess = self.security.authorize_session(session_id, trust_device=trust_device)
             if sess:
-                is_trusted = self.security.is_device_trusted(sess.device_id) or self.security.is_device_trusted(sess.client_ip) or trust_device
+                is_trusted = bool(sess.device_id) and (trust_device or self.security.is_device_trusted(sess.device_id))
                 auth_payload = {
                     "session_id": session_id,
                     "auth_req_id": session_id,

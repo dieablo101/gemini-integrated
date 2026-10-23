@@ -86,13 +86,19 @@ class WingmanSecurity:
 
     def is_device_trusted(self, device_id: str) -> bool:
         """Returns True if device ID / fingerprint has been permanently paired."""
-        if not device_id:
+        if not device_id or device_id in ("127.0.0.1", "::1", "localhost", "local"):
             return False
         devices = self._load_trusted_devices()
         return device_id in devices
 
     def trust_device(self, device_id: str, label: str = "", client_ip: str = "") -> bool:
         """Stores device in trusted paired devices registry."""
+        if not device_id and not client_ip:
+            return False
+        if device_id in ("127.0.0.1", "::1", "localhost", "local"):
+            device_id = ""
+        if client_ip in ("127.0.0.1", "::1", "localhost", "local"):
+            client_ip = ""
         if not device_id and not client_ip:
             return False
         with self._lock:
@@ -156,10 +162,7 @@ class WingmanSecurity:
                     return session
 
             # 2. Check if device is permanently trusted
-            device_trusted = (
-                (bool(effective_device_id) and self.is_device_trusted(effective_device_id))
-                or (bool(client_ip) and self.is_device_trusted(client_ip))
-            )
+            device_trusted = bool(effective_device_id) and self.is_device_trusted(effective_device_id)
 
             # If device is already trusted or require_pairing is False
             status = "authorized" if (device_trusted or not self.require_pairing) else "pending"
@@ -286,13 +289,17 @@ class WingmanSecurity:
         self,
         max_pending_age: float = 45.0,
         max_inactive_age: float = 86400.0,
+        invalidate_unpaired: bool = False,
     ) -> int:
-        """Prunes orphaned pending sessions and ancient inactive sessions from memory."""
+        """Prunes orphaned pending sessions, expired unpaired sessions, and ancient inactive sessions."""
         now = time.time()
         pruned_count = 0
         with self._lock:
             to_remove = []
             for sid, sess in self.sessions.items():
+                is_trusted = bool(sess.device_id) and self.is_device_trusted(sess.device_id)
+                is_paired = is_trusted or getattr(sess, "is_paired", False)
+
                 # Pending sessions where browser stopped polling or hasn't checked in
                 if sess.status == "pending":
                     age = now - getattr(sess, "last_seen", sess.created_at)
@@ -301,8 +308,13 @@ class WingmanSecurity:
                 elif sess.status in ("denied", "expired"):
                     if (now - getattr(sess, "last_seen", sess.created_at)) > 60.0:
                         to_remove.append(sid)
+                elif not is_paired:
+                    # Unpaired accepted sessions: expire if browser closed or inactive > 180s
+                    age = now - getattr(sess, "last_seen", sess.created_at)
+                    if invalidate_unpaired or age > 180.0:
+                        to_remove.append(sid)
                 else:
-                    # Authorized sessions inactive for over max_inactive_age (e.g. 24h)
+                    # Permanently paired sessions: persist up to max_inactive_age (e.g. 24h)
                     if (now - getattr(sess, "last_seen", sess.created_at)) > max_inactive_age:
                         to_remove.append(sid)
 

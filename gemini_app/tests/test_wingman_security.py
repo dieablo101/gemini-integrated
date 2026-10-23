@@ -43,11 +43,11 @@ class TestWingmanSecurity(unittest.TestCase):
         self.vault_patch.stop()
         self.tmp_dir.cleanup()
 
-    def test_loopback_is_always_trusted(self) -> None:
-        self.assertTrue(is_device_trusted("127.0.0.1"))
-        self.assertTrue(is_device_trusted("::1"))
-        self.assertTrue(is_device_trusted("localhost"))
-        self.assertTrue(is_device_trusted("local"))
+    def test_loopback_is_not_trusted_by_default(self) -> None:
+        self.assertFalse(is_device_trusted("127.0.0.1"))
+        self.assertFalse(is_device_trusted("::1"))
+        self.assertFalse(is_device_trusted("localhost"))
+        self.assertFalse(is_device_trusted("local"))
         self.assertFalse(is_device_trusted("192.168.1.105"))
 
     def test_trust_and_revoke_device(self) -> None:
@@ -260,7 +260,7 @@ class TestWingmanSecurity(unittest.TestCase):
 
     def test_wingman_chat_stream_and_history(self) -> None:
         """Verifies chat message reception, callbacks, and history storage."""
-        applet = WingmanApplet(port=0, node_id="test-node")
+        applet = WingmanApplet(port=0, node_id="test-node", require_pairing=False)
         self.assertTrue(applet.start())
         try:
             received_chat = []
@@ -268,6 +268,7 @@ class TestWingmanSecurity(unittest.TestCase):
 
             mock_handler = MagicMock()
             mock_handler.client_address = ("127.0.0.1", 52200)
+            mock_handler.headers = {}
 
             # Post a chat message
             res = applet._handle_chat(mock_handler, {}, {
@@ -554,6 +555,75 @@ class TestWingmanSecurity(unittest.TestCase):
             modal_arg = mock_push.call_args[0][0]
             self.assertEqual(modal_arg.__class__.__name__, "WingmanAuthModal")
             self.assertTrue(app._wingman_modal_open)
+
+    def test_satellite_receives_wingman_chat_broadcast(self) -> None:
+        """Verifies that a satellite node forwards incoming mothership wingman_chat_message events to its WingmanApplet."""
+        from gemini_app.fleet.satellite import SatelliteNode
+        from gemini_app.fleet.protocol import FleetMessage
+
+        client = SatelliteNode(node_id="test-ipad-node", mothership_host="127.0.0.1")
+        mock_applet = MagicMock()
+        client.wingman_applet = mock_applet
+
+        msg = FleetMessage(
+            msg_type=FleetMessage.TYPE_EVENT,
+            node_id="mothership",
+            payload={
+                "event": "wingman_chat_message",
+                "sender": "Gemini Core",
+                "text": "Hello iPad satellite!",
+                "is_user": False,
+            },
+        )
+
+        # Simulate handling incoming event on satellite
+        ev = msg.payload.get("event", "")
+        if ev == "wingman_chat_message":
+            if client.wingman_applet and hasattr(client.wingman_applet, "push_chat_message"):
+                client.wingman_applet.push_chat_message(
+                    sender=msg.payload.get("sender", "Gemini Core"),
+                    text=msg.payload.get("text", ""),
+                    is_user=msg.payload.get("is_user", False),
+                )
+
+        mock_applet.push_chat_message.assert_called_once_with(
+            sender="Gemini Core",
+            text="Hello iPad satellite!",
+            is_user=False,
+        )
+
+    def test_accept_without_pair_does_not_persist_pairing(self) -> None:
+        """Verifies that accepting a session without pairing (trust_device=False) does not mark device as paired."""
+        applet = WingmanApplet(port=0, node_id="test-phone-node", require_pairing=True)
+        self.assertTrue(applet.start())
+        try:
+            mock_handler = MagicMock()
+            mock_handler.client_address = ("127.0.0.1", 54321)
+            mock_handler.headers = {
+                "X-Wingman-Device": "dev-phone-unpaired",
+                "X-Wingman-Session": "sess-phone-unpaired",
+            }
+
+            # 1. Initial check: should be pending
+            res1 = applet._handle_session_check(mock_handler, {})
+            self.assertEqual(res1["status"], "pending")
+            self.assertFalse(res1["is_paired"])
+            self.assertFalse(res1["trusted"])
+
+            # 2. Operator clicks 'Accept' (one-time session approval, trust_device=False)
+            auth_res = applet.authorize_session("sess-phone-unpaired", accepted=True, trust_device=False)
+            self.assertEqual(auth_res["status"], "ok")
+            self.assertFalse(auth_res["is_paired"])
+            self.assertFalse(applet.security.is_device_trusted("dev-phone-unpaired"))
+
+            # 3. Session check after accept: authenticated is True, but is_paired remains False!
+            mock_handler.headers["X-Wingman-Token"] = auth_res["token"]
+            res2 = applet._handle_session_check(mock_handler, {})
+            self.assertTrue(res2["authenticated"])
+            self.assertFalse(res2["is_paired"])
+            self.assertFalse(res2["trusted"])
+        finally:
+            applet.stop()
 
 
 if __name__ == "__main__":

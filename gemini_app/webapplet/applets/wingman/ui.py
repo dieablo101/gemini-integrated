@@ -1182,6 +1182,14 @@ def get_wingman_html(
           setMaintenanceLock(false);
         }}
 
+        if (data.session_id) {{
+          sessionId = data.session_id;
+          sessionStorage.setItem('wingman_session_id', sessionId);
+          if (isPairedDevice) {{
+            localStorage.setItem('wingman_session_id', sessionId);
+          }}
+        }}
+
         if (data.mothership_boot_id) {{
           if (currentMothershipBootId && currentMothershipBootId !== data.mothership_boot_id) {{
             // Mothership console rebooted!
@@ -1189,7 +1197,6 @@ def get_wingman_html(
             if (!isPairedDevice) {{
               sessionToken = '';
               sessionStorage.removeItem('wingman_token');
-              sessionStorage.removeItem('wingman_session_id');
               localStorage.removeItem('wingman_token');
               localStorage.removeItem('wingman_paired');
               isSessionUnlocked = false;
@@ -1207,7 +1214,6 @@ def get_wingman_html(
             if (!isPairedDevice) {{
               sessionToken = '';
               sessionStorage.removeItem('wingman_token');
-              sessionStorage.removeItem('wingman_session_id');
               localStorage.removeItem('wingman_token');
               localStorage.removeItem('wingman_paired');
               isSessionUnlocked = false;
@@ -1219,13 +1225,6 @@ def get_wingman_html(
           }}
           currentBootId = data.boot_id;
         }}
-        if (data.session_id) {{
-          sessionId = data.session_id;
-          sessionStorage.setItem('wingman_session_id', sessionId);
-          if (isPairedDevice) {{
-            localStorage.setItem('wingman_session_id', sessionId);
-          }}
-        }}
         if (data.authenticated) {{
           if (!data.is_paired) {{
             localStorage.removeItem('wingman_token');
@@ -1236,7 +1235,6 @@ def get_wingman_html(
         }} else {{
           sessionToken = '';
           sessionStorage.removeItem('wingman_token');
-          sessionStorage.removeItem('wingman_session_id');
           localStorage.removeItem('wingman_token');
           localStorage.removeItem('wingman_paired');
           isPairedDevice = false;
@@ -1246,6 +1244,18 @@ def get_wingman_html(
       }} catch (err) {{
         console.warn("Session check failed:", err);
       }}
+    }}
+
+    let unknownAuthCount = 0;
+    async function handleSessionExpired(reason = "Session expired or Mothership rebooted. Re-authorization required.") {{
+      sessionToken = '';
+      sessionStorage.removeItem('wingman_token');
+      localStorage.removeItem('wingman_token');
+      localStorage.removeItem('wingman_paired');
+      isSessionUnlocked = false;
+      lockUI(reason);
+      await checkSession();
+      startAuthPolling();
     }}
 
     function startAuthPolling() {{
@@ -1258,6 +1268,7 @@ def get_wingman_html(
           const data = await res.json();
           if (data.status === 'approved' && data.token) {{
             clearInterval(authPollingInterval);
+            unknownAuthCount = 0;
             if (!data.is_paired) {{
               localStorage.removeItem('wingman_token');
               localStorage.removeItem('wingman_paired');
@@ -1266,6 +1277,7 @@ def get_wingman_html(
             unlockUI(data.token, Boolean(data.is_paired));
           }} else if (data.status === 'denied') {{
             clearInterval(authPollingInterval);
+            unknownAuthCount = 0;
             sessionToken = '';
             sessionStorage.removeItem('wingman_token');
             sessionStorage.removeItem('wingman_session_id');
@@ -1273,6 +1285,12 @@ def get_wingman_html(
             localStorage.removeItem('wingman_paired');
             isPairedDevice = false;
             lockUI("Access Denied by Mothership Operator");
+          }} else if (data.status === 'unknown' || data.needs_reauth) {{
+            unknownAuthCount++;
+            if (unknownAuthCount >= 2) {{
+              unknownAuthCount = 0;
+              await checkSession();
+            }}
           }}
         }} catch (e) {{}}
       }}, 1500);
@@ -1359,12 +1377,7 @@ def get_wingman_html(
           const payload = JSON.parse(e.data);
           currentMothershipBootId = payload.mothership_boot_id || payload.boot_id;
           if (!isPairedDevice) {{
-            sessionToken = '';
-            sessionStorage.removeItem('wingman_token');
-            sessionStorage.removeItem('wingman_session_id');
-            isSessionUnlocked = false;
-            lockUI("Mothership console rebooted — awaiting new authorization...");
-            startAuthPolling();
+            handleSessionExpired("Mothership console rebooted — awaiting new authorization...");
           }}
         }} catch (err) {{}}
       }});
@@ -1456,14 +1469,20 @@ def get_wingman_html(
 
     async function executeCardAction(cardId, action) {{
       try {{
-        await fetch('/applet/wingman/action', {{
+        const res = await fetch('/applet/wingman/action', {{
           method: 'POST',
           headers: {{
             'Content-Type': 'application/json',
-            'X-Wingman-Token': sessionToken
+            'X-Wingman-Token': sessionToken,
+            'X-Wingman-Device': deviceId
           }},
           body: JSON.stringify({{ card_id: cardId, action: action, timestamp: Date.now() }})
         }});
+        const reply = await res.json();
+        if (reply.session_locked || reply.reauth_required || (reply.status === 'error' && reply.message && reply.message.toLowerCase().includes('session'))) {{
+          await handleSessionExpired(reply.message || "Session expired — awaiting mothership authorization...");
+          return;
+        }}
         const cardEl = document.getElementById('card-' + cardId);
         if (cardEl) {{
           cardEl.style.opacity = '0.6';
@@ -1614,9 +1633,8 @@ def get_wingman_html(
           }})
         }});
         const reply = await res.json();
-        if (reply.session_locked || (reply.status === 'error' && reply.message && reply.message.toLowerCase().includes('session'))) {{
-          lockUI(reply.message || "Session locked — awaiting mothership authorization...");
-          startAuthPolling();
+        if (reply.session_locked || reply.reauth_required || (reply.status === 'error' && reply.message && reply.message.toLowerCase().includes('session'))) {{
+          await handleSessionExpired(reply.message || "Session expired — awaiting mothership authorization...");
           return;
         }}
         if (text.trim().toLowerCase() === '/clear') {{
@@ -1769,10 +1787,23 @@ def get_wingman_html(
       return div.innerHTML;
     }}
 
-    /* Startup */
-    window.addEventListener('focus', () => {{
-      checkSession();
-    }});
+    /* Immediate wake-up & visibility sync for mobile / screen-off devices */
+    async function onWakeOrVisibilityChange() {{
+      if (document.visibilityState === 'visible') {{
+        // Instant check: if operator approved while iPad screen was off, unlock immediately!
+        await checkSession();
+        measurePing();
+        // Check if SSE stream disconnected or stalled while screen was off
+        if (!sseSource || sseSource.readyState === 2 || sseSource.readyState === EventSource.CLOSED) {{
+          connectSSE();
+        }}
+      }}
+    }}
+
+    document.addEventListener('visibilitychange', onWakeOrVisibilityChange);
+    window.addEventListener('pageshow', onWakeOrVisibilityChange);
+    window.addEventListener('focus', onWakeOrVisibilityChange);
+
     checkSession();
     connectSSE();
     pingInterval = setInterval(measurePing, 5000);

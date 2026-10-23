@@ -871,6 +871,54 @@ class TestWingmanSecurity(unittest.TestCase):
         finally:
             applet.stop()
 
+    def test_screen_off_device_approval_and_wake_unlock(self) -> None:
+        """Verifies that when a device is approved while its screen is off, waking unlocks immediately."""
+        notifications = []
+        applet = WingmanApplet(port=0, node_id="test-node", require_pairing=True)
+        applet.on_auth_request(lambda req: notifications.append(req))
+        try:
+            # 1. Device connects while screen on -> pending
+            sess_id = "sess-ipad-sleep-1"
+            s1 = applet.security.create_or_resume_session(
+                client_ip="192.168.1.99",
+                device_id="dev-ipad-sleep",
+                existing_session_id=sess_id,
+            )
+            self.assertEqual(s1.status, "pending")
+            self.assertEqual(len(notifications), 1)
+
+            # 2. iPad screen goes off / sleeps. Operator on Mothership approves session
+            applet.authorize_session(sess_id, accepted=True, trust_device=False)
+            self.assertEqual(s1.status, "authorized")
+
+            # 3. iPad screen turns on / wakes up -> calls session check with existing_session_id
+            s2 = applet.security.create_or_resume_session(
+                client_ip="192.168.1.99",
+                device_id="dev-ipad-sleep",
+                existing_session_id=sess_id,
+                existing_token="",
+            )
+            # Must unlock immediately as authorized, without overwriting or re-prompting!
+            self.assertEqual(s2.status, "authorized")
+            self.assertEqual(s2.token, s1.token)
+            self.assertEqual(len(notifications), 1)  # No extra pending prompts!
+        finally:
+            applet.stop()
+
+    def test_chat_expiry_returns_reauth_required(self) -> None:
+        """Verifies that chat dispatch with an expired or stale session returns reauth_required."""
+        applet = WingmanApplet(port=0, node_id="test-node", require_pairing=True)
+        try:
+            mock_handler = MagicMock()
+            mock_handler.headers = {"X-Wingman-Token": "stale-expired-token", "X-Wingman-Device": "dev-ipad"}
+            res = applet._handle_chat(mock_handler, {}, {"text": "hello", "sender": "Operator"})
+            self.assertEqual(res.get("status"), "error")
+            self.assertTrue(res.get("session_locked"))
+            self.assertTrue(res.get("reauth_required"))
+            self.assertIn("Session expired or Mothership rebooted", res.get("message", ""))
+        finally:
+            applet.stop()
+
 
 if __name__ == "__main__":
     unittest.main()

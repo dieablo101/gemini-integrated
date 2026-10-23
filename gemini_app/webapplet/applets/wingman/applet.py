@@ -258,9 +258,9 @@ class WingmanApplet:
 
         if self.security.require_pairing:
             if token and not sess:
-                return {"status": "error", "session_locked": True, "message": "Session expired or Mothership rebooted. Re-authorization required."}
+                return {"status": "error", "session_locked": True, "reauth_required": True, "message": "Session expired or Mothership rebooted. Re-authorization required."}
             if not sess or sess.status != "authorized":
-                return {"status": "error", "session_locked": True, "message": "Session is awaiting Mothership console authorization."}
+                return {"status": "error", "session_locked": True, "reauth_required": True, "message": "Session is awaiting Mothership console authorization."}
             if not sess.is_unlocked:
                 return {"status": "error", "session_locked": True, "message": "Session is locked. Passkey unlock required."}
 
@@ -288,9 +288,9 @@ class WingmanApplet:
 
         if self.security.require_pairing:
             if token and not sess:
-                return {"status": "error", "session_locked": True, "message": "Session expired or Mothership rebooted. Re-authorization required."}
+                return {"status": "error", "session_locked": True, "reauth_required": True, "message": "Session expired or Mothership rebooted. Re-authorization required."}
             if not sess or sess.status != "authorized":
-                return {"status": "error", "session_locked": True, "message": "Session is awaiting Mothership console authorization."}
+                return {"status": "error", "session_locked": True, "reauth_required": True, "message": "Session is awaiting Mothership console authorization."}
             if not sess.is_unlocked:
                 return {"status": "error", "session_locked": True, "message": "Session is locked. Passkey unlock required."}
 
@@ -404,7 +404,7 @@ class WingmanApplet:
                 "trusted": is_trusted,
                 "is_paired": is_paired,
             }
-        return {"status": "unknown", "error": f"Request {req_id} not found"}
+        return {"status": "unknown", "needs_reauth": True, "error": f"Request {req_id} not found"}
 
     def _handle_verify_passkey(self, handler: Any, query: Dict[str, List[str]], body: Any) -> Dict[str, Any]:
         if not isinstance(body, dict):

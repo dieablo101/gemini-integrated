@@ -283,6 +283,7 @@ def update_cognitive_state(
 
 
 _WAN_IP_CACHE = {"ip": "", "last_check": 0.0, "is_fetching": False}
+_WAN_IPV6_CACHE = {"ip": "", "last_check": 0.0, "is_fetching": False}
 
 
 def get_local_lan_ip() -> str:
@@ -338,6 +339,41 @@ def get_public_wan_ip(ttl_seconds: float = 300.0) -> str:
     return _WAN_IP_CACHE["ip"]
 
 
+def get_public_wan_ipv6(ttl_seconds: float = 300.0) -> str:
+    """Fetches public internet WAN IPv6 with background caching to prevent blocking."""
+    global _WAN_IPV6_CACHE
+    now = time.time()
+
+    if _WAN_IPV6_CACHE["ip"] and (now - _WAN_IPV6_CACHE["last_check"] < ttl_seconds):
+        return _WAN_IPV6_CACHE["ip"]
+
+    def _fetch():
+        import urllib.request
+        endpoints = [
+            "https://api64.ipify.org",
+            "https://icanhazip.com",
+            "https://ifconfig.co/ip",
+        ]
+        for ep in endpoints:
+            try:
+                req = urllib.request.Request(ep, headers={"User-Agent": "Gemini-Fleet/1.0"})
+                with urllib.request.urlopen(req, timeout=2.5) as resp:
+                    ip = resp.read().decode("utf-8").strip()
+                    if ip and ":" in ip and "." not in ip:
+                        _WAN_IPV6_CACHE["ip"] = ip
+                        _WAN_IPV6_CACHE["last_check"] = time.time()
+                        break
+            except Exception:
+                continue
+        _WAN_IPV6_CACHE["is_fetching"] = False
+
+    if not _WAN_IPV6_CACHE["is_fetching"]:
+        _WAN_IPV6_CACHE["is_fetching"] = True
+        threading.Thread(target=_fetch, daemon=True, name="wan-ipv6-fetch").start()
+
+    return _WAN_IPV6_CACHE["ip"]
+
+
 def collect_mothership_telemetry(
     cognitive_override: Optional[Dict[str, Any]] = None,
     satellites_info: Optional[List[Dict[str, Any]]] = None,
@@ -371,6 +407,7 @@ def collect_mothership_telemetry(
         "network": {
             "lan_ip": get_local_lan_ip(),
             "wan_ip": get_public_wan_ip(),
+            "wan_ipv6": get_public_wan_ipv6(),
             "port": port,
         },
         "vitals": vitals,

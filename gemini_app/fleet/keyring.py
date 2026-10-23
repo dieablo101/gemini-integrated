@@ -117,6 +117,7 @@ class FleetKeyring:
                     enc = encrypt_bytes(fleet_key_val.encode("utf-8"), passkey)
                     FLEET_KEY_ENC.write_bytes(enc)
                     FLEET_KEY_ENC.chmod(0o600)
+                    legacy_key_path.unlink(missing_ok=True)
                 except Exception:
                     pass
 

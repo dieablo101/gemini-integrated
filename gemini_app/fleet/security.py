@@ -28,39 +28,80 @@ def get_or_create_fleet_key(key_path: Optional[Path] = None) -> str:
     if env_key:
         return env_key
 
-    target_file = key_path or FLEET_KEY_FILE
+    # 2. Explicit key path (used by satellites or isolated unit tests)
+    if key_path is not None:
+        target_file = key_path
+        try:
+            target_file.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        except Exception:
+            pass
+
+        if target_file.exists():
+            try:
+                key_data = target_file.read_text(encoding="utf-8").strip()
+                if key_data:
+                    return key_data
+            except Exception:
+                pass
+
+        new_key = secrets.token_hex(32)
+        try:
+            target_file.write_text(new_key, encoding="utf-8")
+            target_file.chmod(0o600)
+        except Exception:
+            pass
+        return new_key
+
+    # 3. Mothership / Hub context: delegate to FleetKeyring
     try:
-        target_file.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        from gemini_app.fleet.keyring import FleetKeyring
+        kr_key = FleetKeyring.get_fleet_key()
+        if kr_key:
+            return kr_key
     except Exception:
         pass
 
-    if target_file.exists():
+    # 4. Check legacy FLEET_KEY_FILE if present
+    if FLEET_KEY_FILE.exists():
         try:
-            key_data = target_file.read_text(encoding="utf-8").strip()
+            key_data = FLEET_KEY_FILE.read_text(encoding="utf-8").strip()
             if key_data:
+                try:
+                    from gemini_app.fleet.keyring import FleetKeyring
+                    FleetKeyring.set_fleet_key(key_data)
+                except Exception:
+                    pass
                 return key_data
         except Exception:
             pass
 
-    # Generate new cryptographically secure 256-bit hex token
+    # 5. Generate new cryptographically secure 256-bit hex token via FleetKeyring
     new_key = secrets.token_hex(32)
     try:
-        target_file.write_text(new_key, encoding="utf-8")
-        target_file.chmod(0o600)
+        from gemini_app.fleet.keyring import FleetKeyring
+        FleetKeyring.set_fleet_key(new_key)
     except Exception:
         pass
     return new_key
 
 
 def save_fleet_key(key: str, key_path: Optional[Path] = None) -> bool:
-    """Saves the cluster fleet key to disk with strict permissions."""
+    """Saves the cluster fleet key to disk or in-memory keyring with strict permissions."""
     if not key or not isinstance(key, str):
         return False
-    target_file = key_path or FLEET_KEY_FILE
+    if key_path is not None:
+        target_file = key_path
+        try:
+            target_file.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            target_file.write_text(key.strip(), encoding="utf-8")
+            target_file.chmod(0o600)
+            return True
+        except Exception:
+            return False
+
     try:
-        target_file.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        target_file.write_text(key.strip(), encoding="utf-8")
-        target_file.chmod(0o600)
+        from gemini_app.fleet.keyring import FleetKeyring
+        FleetKeyring.set_fleet_key(key.strip())
         return True
     except Exception:
         return False
@@ -71,10 +112,27 @@ def get_existing_fleet_key(key_path: Optional[Path] = None) -> Optional[str]:
     env_key = os.environ.get("GEMINI_FLEET_KEY", "").strip()
     if env_key:
         return env_key
-    target_file = key_path or FLEET_KEY_FILE
-    if target_file.exists():
+    if key_path is not None:
+        if key_path.exists():
+            try:
+                k = key_path.read_text(encoding="utf-8").strip()
+                if k:
+                    return k
+            except Exception:
+                pass
+        return None
+
+    try:
+        from gemini_app.fleet.keyring import FleetKeyring
+        kr_key = FleetKeyring.get_fleet_key()
+        if kr_key:
+            return kr_key
+    except Exception:
+        pass
+
+    if FLEET_KEY_FILE.exists():
         try:
-            k = target_file.read_text(encoding="utf-8").strip()
+            k = FLEET_KEY_FILE.read_text(encoding="utf-8").strip()
             if k:
                 return k
         except Exception:

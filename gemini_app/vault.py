@@ -858,18 +858,23 @@ def sync_fleet_vault(passkey: str | None = None, gemini_home: Path | None = None
             pass
 
     # 2. Fleet HMAC PSK Key
+    fleet_key_enc = home / "vault" / "fleet" / "fleet_key.enc"
     fleet_key_file = home / "fleet.key"
     if fleet_key_file.is_file():
         fleet_key_val = fleet_key_file.read_text(encoding="utf-8").strip()
         store_secret("fleet_hmac_psk", fleet_key_val, passkey=key)
+        # Safely migrate into encrypted vault/fleet/fleet_key.enc and remove unencrypted copy
+        fleet_vault_dir = home / "vault" / "fleet"
+        fleet_vault_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        fleet_key_enc.write_bytes(encrypt_bytes(fleet_key_val.encode("utf-8"), key))
+        fleet_key_enc.chmod(0o600)
+        fleet_key_file.unlink(missing_ok=True)
         synced_items.append("fleet_hmac_psk")
-    else:
+    elif fleet_key_enc.is_file():
         try:
-            sec = get_secret("fleet_hmac_psk", passkey=key)
-            if sec.get("secret"):
-                fleet_key_file.write_text(sec["secret"], encoding="utf-8")
-                fleet_key_file.chmod(0o600)
-                synced_items.append("fleet_hmac_psk_restored")
+            fleet_key_val = decrypt_bytes(fleet_key_enc.read_bytes(), key).decode("utf-8").strip()
+            store_secret("fleet_hmac_psk", fleet_key_val, passkey=key)
+            synced_items.append("fleet_hmac_psk")
         except Exception:
             pass
 

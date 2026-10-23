@@ -209,11 +209,15 @@ class SecurityAuditor:
 
     def audit_fleet_security(self) -> Dict[str, Any]:
         """Audits the cryptographic readiness of the fleet subsystem."""
-        key_file = self.gemini_dir / "fleet.key"
-        has_key = key_file.exists() and key_file.stat().st_size >= 32
+        vault_key = self.gemini_dir / "vault" / "fleet" / "fleet_key.enc"
+        legacy_key = self.gemini_dir / "fleet.key"
+        has_key = (vault_key.exists() and vault_key.stat().st_size >= 32) or (legacy_key.exists() and legacy_key.stat().st_size >= 32)
         key_mode_safe = False
-        if has_key:
-            mode = stat.S_IMODE(key_file.stat().st_mode)
+        if vault_key.exists():
+            mode = stat.S_IMODE(vault_key.stat().st_mode)
+            key_mode_safe = (mode == 0o600)
+        elif legacy_key.exists():
+            mode = stat.S_IMODE(legacy_key.stat().st_mode)
             key_mode_safe = (mode == 0o600)
 
         # Check authorized SSH keys

@@ -253,7 +253,7 @@ class WingmanApplet:
             if not sess.is_unlocked:
                 return {"status": "error", "session_locked": True, "message": "Session is locked. Passkey unlock required."}
 
-        msg_id_val = str(body.get("id") or body.get("msg_id") or f"msg-{int(now * 1000)}-{secrets.token_hex(3)}").strip()
+        msg_id_val = str(body.get("id") or body.get("msg_id") or f"msg-{secrets.token_hex(4)}-{int(now * 1000)}").strip()
         msg_obj = {
             "id": msg_id_val,
             "sender": sender,
@@ -286,11 +286,16 @@ class WingmanApplet:
 
     def _handle_chat_history(self, handler: Any, query: Dict[str, List[str]]) -> Dict[str, Any]:
         with self._lock:
-            if not self._chat_history and getattr(self, "_chat_history_fetcher", None):
+            if getattr(self, "_chat_history_fetcher", None):
                 try:
                     fetched = self._chat_history_fetcher()
                     if fetched:
-                        self._chat_history = list(fetched)
+                        existing_ids = {m.get("id") for m in self._chat_history if m.get("id")}
+                        for m in fetched:
+                            if m.get("id") and m.get("id") not in existing_ids:
+                                self._chat_history.append(m)
+                                existing_ids.add(m.get("id"))
+                        self._chat_history.sort(key=lambda x: x.get("timestamp", 0.0))
                 except Exception:
                     pass
             return {"status": "ok", "history": list(self._chat_history)}
@@ -477,11 +482,12 @@ class WingmanApplet:
         """Clears local chat history and notifies connected browsers to clear chat feed."""
         with self._lock:
             self._chat_history.clear()
+        self.engine.broadcast_event("clear_chat", {"timestamp": time.time()})
         self.engine.broadcast_event("chat_clear", {"timestamp": time.time()})
 
     def push_chat_message(self, sender: str, text: str, is_user: bool = False, msg_id: str = "") -> str:
         """Pushes a chat message bubble to all connected Wingman browsers in Chat mode."""
-        msg_id_val = msg_id or f"msg-{int(time.time() * 1000)}-{secrets.token_hex(3)}"
+        msg_id_val = msg_id or f"msg-{secrets.token_hex(4)}-{int(time.time() * 1000)}"
         msg_obj = {
             "id": msg_id_val,
             "sender": sender,

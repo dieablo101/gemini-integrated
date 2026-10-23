@@ -292,6 +292,16 @@ class TestWingmanSecurity(unittest.TestCase):
 
             hist_res2 = applet._handle_chat_history(mock_handler, {})
             self.assertEqual(len(hist_res2["history"]), 2)
+
+            # Test merger with external history fetcher (e.g. from mothership)
+            applet._chat_history_fetcher = lambda: [
+                {"id": "msg-ext-0", "sender": "mothership", "text": "Early message", "timestamp": 100.0, "is_user": False},
+                {"id": "msg-ext-99", "sender": "phone", "text": "Future message", "timestamp": 9999999999.0, "is_user": True},
+            ]
+            hist_res3 = applet._handle_chat_history(mock_handler, {})
+            self.assertEqual(len(hist_res3["history"]), 4)
+            self.assertEqual(hist_res3["history"][0]["id"], "msg-ext-0")
+            self.assertEqual(hist_res3["history"][-1]["id"], "msg-ext-99")
         finally:
             applet.stop()
 

@@ -616,7 +616,7 @@ def get_wingman_html(
 
     .chat-input {{
       flex: 1;
-      padding: 10px 12px;
+      padding: 9px 12px;
       background: #030712;
       border: 1px solid var(--border);
       border-radius: 6px;
@@ -626,6 +626,9 @@ def get_wingman_html(
       font-family: var(--font-sans);
       resize: none;
       height: 38px;
+      box-sizing: border-box;
+      line-height: 1.35;
+      overflow-y: hidden;
     }}
 
     .chat-input:focus {{
@@ -812,24 +815,23 @@ def get_wingman_html(
         </div>
       </div>
       <div class="chat-input-container" id="chatContainer">
-        <input type="text"
-               id="chatInput"
-               name="wingman_chat_prompt_field"
-               class="chat-input"
-               placeholder="Message Gemini on Mothership..."
-               autocomplete="off"
-               autocorrect="on"
-               autocapitalize="sentences"
-               spellcheck="true"
-               inputmode="text"
-               enterkeyhint="send"
-               data-form-type="other"
-               data-lpignore="true"
-               data-1p-ignore="true"
-               data-bwignore="true"
-               data-protonpass-ignore="true"
-               aria-autocomplete="none"
-               onkeydown="handleChatKeyDown(event)">
+        <textarea id="chatInput"
+                  name="wingman_chat_prompt_field"
+                  class="chat-input"
+                  rows="1"
+                  placeholder="Message Gemini on Mothership..."
+                  autocomplete="off"
+                  autocorrect="on"
+                  autocapitalize="sentences"
+                  spellcheck="true"
+                  enterkeyhint="send"
+                  data-form-type="other"
+                  data-lpignore="true"
+                  data-1p-ignore="true"
+                  data-bwignore="true"
+                  data-protonpass-ignore="true"
+                  aria-autocomplete="none"
+                  onkeydown="handleChatKeyDown(event)"></textarea>
         <button type="button" class="btn btn-primary" id="chatSendBtn" onclick="submitChatMessage()">Send ↵</button>
       </div>
     </div>
@@ -897,6 +899,31 @@ def get_wingman_html(
     let isPairedDevice = localStorage.getItem('wingman_paired') === '1';
     let deviceId = localStorage.getItem('wingman_device_id') || ('dev-' + Math.random().toString(36).substring(2, 10));
     localStorage.setItem('wingman_device_id', deviceId);
+
+    const serverNodeId = '{node_id}';
+    function detectDeviceType() {{
+      const ua = navigator.userAgent || '';
+      const platform = navigator.platform || '';
+      const isIPad = /iPad/i.test(ua) || (platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+      if (isIPad) return 'iPad';
+      if (/iPhone|iPod/i.test(ua)) return 'Phone';
+      if (/Android/i.test(ua)) {{
+        const isMobileUA = /Mobile/i.test(ua);
+        const minDim = Math.min(window.screen.width, window.screen.height);
+        if (!isMobileUA || minDim >= 600) {{
+          return 'Tablet';
+        }}
+        return 'Phone';
+      }}
+      if (typeof serverNodeId === 'string' && serverNodeId && serverNodeId !== 'local' && serverNodeId !== 'mothership') {{
+        return serverNodeId;
+      }}
+      if (/Macintosh|Mac OS X/i.test(ua)) return 'Mac';
+      if (/Windows/i.test(ua)) return 'PC';
+      if (/Linux/i.test(ua)) return 'PC';
+      return 'PC';
+    }}
+    const deviceLabel = detectDeviceType();
 
     // Ephemeral session ID for the active browser tab session
     let sessionId = sessionStorage.getItem('wingman_session_id') || '{auth_req_id}' || ('sess-' + Math.random().toString(36).substring(2, 10));
@@ -1095,9 +1122,11 @@ def get_wingman_html(
 
           const canonical = data.history.map(m => ({{
             id: m.id || ('msg-' + (m.timestamp || Math.random())),
-            sender: m.sender || 'Gemini',
+            sender: m.sender || (m.is_user ? 'Operator' : 'Gemini Core'),
             text: m.text || '',
             is_user: Boolean(m.is_user),
+            origin_device: m.origin_device || '',
+            origin_label: m.origin_label || '',
             timestamp: (typeof m.timestamp === 'number' && m.timestamp > 0) ? m.timestamp : ((Date.now() / 1000) + serverTimeOffset),
             pending: false
           }}));
@@ -1105,7 +1134,7 @@ def get_wingman_html(
           // Strict chronological sort so switching tabs never scrambles message order
           const merged = canonical.concat(pendingLocal);
           merged.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
-          chatMessages = merged;
+          chatMessages = merged.slice(-50);
           renderChatFeed();
         }}
       }} catch (err) {{}}
@@ -1352,7 +1381,15 @@ def get_wingman_html(
         try {{
           const msg = JSON.parse(e.data);
           const mId = msg.id || ('msg-' + (msg.timestamp || ''));
-          addChatMessage(msg.sender || 'Gemini', msg.text, Boolean(msg.is_user), mId, msg.timestamp);
+          addChatMessage(
+            msg.sender || (msg.is_user ? 'Operator' : 'Gemini Core'),
+            msg.text,
+            Boolean(msg.is_user),
+            mId,
+            msg.timestamp,
+            msg.origin_device || '',
+            msg.origin_label || ''
+          );
           playTone(660, 'sine', 0.08);
         }} catch (err) {{}}
       }});
@@ -1473,9 +1510,20 @@ def get_wingman_html(
         if (m.id) bubble.setAttribute('data-msg-id', m.id);
         const timeStr = m.timestamp ? new Date(m.timestamp * 1000).toLocaleTimeString() : new Date().toLocaleTimeString();
 
+        let senderText = (m.sender || (m.is_user ? 'Operator' : 'Gemini Core')).toUpperCase();
+        if (m.is_user) {{
+          const isFromThisDevice = Boolean(m.origin_device && m.origin_device === deviceId);
+          if (!isFromThisDevice) {{
+            const label = m.origin_label || (m.origin_device === 'mothership' ? 'Mothership' : '');
+            if (label) {{
+              senderText = `${{(m.sender || 'Operator').toUpperCase()}} · ${{label.toUpperCase()}}`;
+            }}
+          }}
+        }}
+
         bubble.innerHTML = `
           <div class="chat-meta">
-            <span>${{escapeHtml((m.sender || 'Gemini').toUpperCase())}}</span>
+            <span>${{escapeHtml(senderText)}}</span>
             <span>${{timeStr}}</span>
           </div>
           <div style="white-space: pre-wrap; word-break: break-word;">${{formatMarkdown(m.text || '')}}</div>
@@ -1485,14 +1533,35 @@ def get_wingman_html(
       chatFeed.scrollTop = chatFeed.scrollHeight;
     }}
 
-    function addChatMessage(sender, text, isUser = false, msgId = '', timestamp = null) {{
+    function addChatMessage(sender, text, isUser = false, msgId = '', timestamp = null, originDevice = '', originLabel = '') {{
       const mId = msgId || ('msg-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6));
       const ts = (typeof timestamp === 'number' && timestamp > 0) ? timestamp : ((Date.now() / 1000) + serverTimeOffset);
       const existingIdx = chatMessages.findIndex(m => m.id === mId);
       if (existingIdx !== -1) {{
-        chatMessages[existingIdx] = {{ id: mId, sender, text, is_user: isUser, timestamp: ts, pending: false }};
+        chatMessages[existingIdx] = {{
+          id: mId,
+          sender,
+          text,
+          is_user: isUser,
+          timestamp: ts,
+          origin_device: originDevice || chatMessages[existingIdx].origin_device || '',
+          origin_label: originLabel || chatMessages[existingIdx].origin_label || '',
+          pending: false
+        }};
       }} else {{
-        chatMessages.push({{ id: mId, sender, text, is_user: isUser, timestamp: ts, pending: false }});
+        chatMessages.push({{
+          id: mId,
+          sender,
+          text,
+          is_user: isUser,
+          timestamp: ts,
+          origin_device: originDevice,
+          origin_label: originLabel,
+          pending: false
+        }});
+      }}
+      if (chatMessages.length > 50) {{
+        chatMessages = chatMessages.slice(-50);
       }}
       renderChatFeed();
     }}
@@ -1502,7 +1571,7 @@ def get_wingman_html(
     }}
 
     async function executeSubmitChatMessage(text) {{
-      const msgId = 'msg-' + Date.now() + '-' + Math.random().toString(36).substring(2, 7);
+      const msgId = 'msg-wingman-' + Date.now() + '-' + Math.random().toString(36).substring(2, 7);
       const nowSec = (Date.now() / 1000) + serverTimeOffset;
       chatInput.value = '';
 
@@ -1511,7 +1580,19 @@ def get_wingman_html(
         renderChatFeed();
         addChatMessage('Gemini Core', 'Clearing bilateral chat across all devices...', false);
       }} else {{
-        chatMessages.push({{ id: msgId, sender: 'Operator', text: text, is_user: true, timestamp: nowSec, pending: true }});
+        chatMessages.push({{
+          id: msgId,
+          sender: 'Operator',
+          text: text,
+          is_user: true,
+          timestamp: nowSec,
+          origin_device: deviceId,
+          origin_label: deviceLabel,
+          pending: true
+        }});
+        if (chatMessages.length > 50) {{
+          chatMessages = chatMessages.slice(-50);
+        }}
         renderChatFeed();
       }}
 
@@ -1520,13 +1601,16 @@ def get_wingman_html(
           method: 'POST',
           headers: {{
             'Content-Type': 'application/json',
-            'X-Wingman-Token': sessionToken
+            'X-Wingman-Token': sessionToken,
+            'X-Wingman-Device': deviceId
           }},
           body: JSON.stringify({{
             id: msgId,
             text: text,
-            sender: 'operator',
-            timestamp: nowSec
+            sender: 'Operator',
+            timestamp: nowSec,
+            device_id: deviceId,
+            device_label: deviceLabel
           }})
         }});
         const reply = await res.json();

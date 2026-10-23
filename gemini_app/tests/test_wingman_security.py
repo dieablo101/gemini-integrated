@@ -836,6 +836,41 @@ class TestWingmanSecurity(unittest.TestCase):
         finally:
             applet.stop()
 
+    def test_wingman_chat_device_attribution_and_feed_depth(self) -> None:
+        """Verifies multi-device attribution metadata and 50-card feed depth windowing."""
+        from gemini_app.webapplet.applets.wingman.applet import WingmanApplet
+        from gemini_app.webapplet.applets.wingman.ui import get_wingman_html
+
+        # Verify textarea is used in UI instead of input type text
+        html = get_wingman_html()
+        self.assertIn('<textarea id="chatInput"', html)
+        self.assertNotIn('<input type="text"\n               id="chatInput"', html)
+        self.assertIn('detectDeviceType', html)
+        self.assertIn('enterkeyhint="send"', html)
+
+        applet = WingmanApplet(port=0, node_id="test_node")
+        try:
+            # Simulate 60 messages to test the 50-card ceiling
+            for i in range(60):
+                applet.push_chat_message(
+                    sender="Operator",
+                    text=f"Turn message {i}",
+                    is_user=True,
+                    origin_device=f"dev-{i % 3}",
+                    origin_label="Phone" if (i % 3 == 0) else ("iPad" if i % 3 == 1 else "Mothership"),
+                )
+
+            # Check that history strictly honors the 50-card rolling window
+            mock_handler = MagicMock()
+            mock_handler.headers = {}
+            hist_res = applet._handle_chat_history(mock_handler, {})
+            self.assertEqual(len(hist_res["history"]), 50)
+            self.assertEqual(hist_res["history"][-1]["text"], "Turn message 59")
+            self.assertEqual(hist_res["history"][0]["text"], "Turn message 10")
+            self.assertEqual(hist_res["history"][-1]["origin_label"], "Mothership")
+        finally:
+            applet.stop()
+
 
 if __name__ == "__main__":
     unittest.main()

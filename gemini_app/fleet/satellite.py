@@ -1816,6 +1816,8 @@ class SatelliteNode:
                                             is_user=msg.payload.get("is_user", False),
                                             msg_id=msg.payload.get("id") or msg.payload.get("msg_id", ""),
                                             timestamp=msg.payload.get("timestamp"),
+                                            origin_device=msg.payload.get("origin_device", ""),
+                                            origin_label=msg.payload.get("origin_label", ""),
                                         )
                                     except Exception:
                                         pass

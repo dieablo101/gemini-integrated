@@ -295,12 +295,16 @@ class WingmanApplet:
                 return {"status": "error", "session_locked": True, "message": "Session is locked. Passkey unlock required."}
 
         msg_id_val = str(body.get("id") or body.get("msg_id") or f"msg-{secrets.token_hex(4)}-{int(now * 1000)}").strip()
+        dev_id = str(body.get("device_id") or handler.headers.get("X-Wingman-Device", "")).strip()
+        dev_label = str(body.get("device_label") or body.get("device_name") or "").strip()
         msg_obj = {
             "id": msg_id_val,
             "sender": sender,
             "text": text,
             "timestamp": now,
             "is_user": True,
+            "origin_device": dev_id,
+            "origin_label": dev_label,
         }
         if text.lower() == "/clear":
             self.clear_chat()
@@ -309,7 +313,7 @@ class WingmanApplet:
                 if not any(m.get("id") == msg_id_val for m in self._chat_history):
                     self._chat_history.append(msg_obj)
                     self._chat_history.sort(key=lambda x: x.get("timestamp", 0.0))
-                    if len(self._chat_history) > 100:
+                    if len(self._chat_history) > 50:
                         self._chat_history.pop(0)
 
         # Broadcast chat message to other connected Wingman clients via SSE
@@ -336,22 +340,21 @@ class WingmanApplet:
             if getattr(self, "_chat_history_fetcher", None):
                 try:
                     fetched = self._chat_history_fetcher()
-                    if fetched:
+                    if isinstance(fetched, list):
                         fetched_ids = {m.get("id") for m in fetched if m.get("id")}
-                        # Mothership's fetched list is canonical and chronological.
-                        # Retain Mothership's canonical order and timestamps while appending
-                        # any in-flight local messages not yet synced to Mothership.
+                        now = time.time()
                         merged = list(fetched)
                         for m in self._chat_history:
                             m_id = m.get("id")
-                            if m_id and m_id not in fetched_ids:
+                            m_ts = m.get("timestamp", 0.0)
+                            if m_id and m_id not in fetched_ids and (now - m_ts < 20.0 or m_ts > now):
                                 merged.append(m)
                         merged.sort(key=lambda x: x.get("timestamp", 0.0))
-                        self._chat_history = merged
+                        self._chat_history = merged[-50:]
                 except Exception:
                     pass
             self._chat_history.sort(key=lambda x: x.get("timestamp", 0.0))
-            return {"status": "ok", "history": list(self._chat_history)}
+            return {"status": "ok", "history": list(self._chat_history[-50:])}
 
     def _handle_biometric_response(self, handler: Any, query: Dict[str, List[str]], body: Any) -> Dict[str, Any]:
         chal_id = body.get("challenge_id", "")
@@ -545,6 +548,8 @@ class WingmanApplet:
         is_user: bool = False,
         msg_id: str = "",
         timestamp: Optional[float] = None,
+        origin_device: str = "",
+        origin_label: str = "",
     ) -> str:
         """Pushes a chat message bubble to all connected Wingman browsers in Chat mode."""
         msg_id_val = msg_id or f"msg-{secrets.token_hex(4)}-{int(time.time() * 1000)}"
@@ -555,12 +560,14 @@ class WingmanApplet:
             "text": text,
             "timestamp": ts,
             "is_user": is_user,
+            "origin_device": origin_device,
+            "origin_label": origin_label,
         }
         with self._lock:
             if not any(m.get("id") == msg_id_val for m in self._chat_history):
                 self._chat_history.append(msg_obj)
                 self._chat_history.sort(key=lambda x: x.get("timestamp", 0.0))
-                if len(self._chat_history) > 100:
+                if len(self._chat_history) > 50:
                     self._chat_history.pop(0)
 
         self.engine.broadcast_event("chat_message", msg_obj)

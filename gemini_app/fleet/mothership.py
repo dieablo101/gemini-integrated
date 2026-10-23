@@ -713,7 +713,17 @@ class MothershipServer:
                                 b_is_user = bool(msg.payload.get("params", {}).get("is_user", False))
                                 b_msg_id = msg.payload.get("params", {}).get("id", "") or msg.payload.get("params", {}).get("msg_id", "")
                                 b_exclude = msg.payload.get("params", {}).get("exclude_node_id")
-                                count = self.broadcast_wingman_chat(sender=b_sender, text=b_text, is_user=b_is_user, msg_id=b_msg_id, exclude_node_id=b_exclude)
+                                b_origin_device = msg.payload.get("params", {}).get("origin_device", "")
+                                b_origin_label = msg.payload.get("params", {}).get("origin_label", "")
+                                count = self.broadcast_wingman_chat(
+                                    sender=b_sender,
+                                    text=b_text,
+                                    is_user=b_is_user,
+                                    msg_id=b_msg_id,
+                                    exclude_node_id=b_exclude,
+                                    origin_device=b_origin_device,
+                                    origin_label=b_origin_label,
+                                )
                                 resp_payload["sent_count"] = count
                                 resp_payload["status"] = "ok"
                             elif action in ("broadcast_wingman_clear", "clear_wingman_chat"):
@@ -722,7 +732,13 @@ class MothershipServer:
                                 resp_payload["status"] = "ok"
                             elif action in ("get_wingman_chat_history", "wingman_chat_history"):
                                 with self.lock:
-                                    resp_payload["history"] = list(self.recent_wingman_chat)
+                                    if self.local_wingman and getattr(self.local_wingman, "_chat_history_fetcher", None):
+                                        try:
+                                            resp_payload["history"] = list(self.local_wingman._chat_history_fetcher()[-50:])
+                                        except Exception:
+                                            resp_payload["history"] = list(self.recent_wingman_chat[-50:])
+                                    else:
+                                        resp_payload["history"] = list(self.recent_wingman_chat[-50:])
                                 resp_payload["status"] = "ok"
                             reply = FleetMessage(
                                 msg_type=FleetMessage.TYPE_RESPONSE,
@@ -996,6 +1012,8 @@ class MothershipServer:
         is_user: bool = False,
         msg_id: str = "",
         exclude_node_id: Optional[str] = None,
+        origin_device: str = "",
+        origin_label: str = "",
     ) -> int:
         """Broadcasts a Wingman chat bubble across all connected satellites and local Wingman."""
         import secrets
@@ -1006,16 +1024,25 @@ class MothershipServer:
             "text": text,
             "is_user": is_user,
             "timestamp": time.time(),
+            "origin_device": origin_device,
+            "origin_label": origin_label,
         }
         with self.lock:
             if not any(m.get("id") == m_id for m in self.recent_wingman_chat):
                 self.recent_wingman_chat.append(chat_item)
-                if len(self.recent_wingman_chat) > 100:
+                if len(self.recent_wingman_chat) > 50:
                     self.recent_wingman_chat.pop(0)
 
         if self.local_wingman and hasattr(self.local_wingman, "push_chat_message"):
             try:
-                self.local_wingman.push_chat_message(sender=sender, text=text, is_user=is_user, msg_id=m_id)
+                self.local_wingman.push_chat_message(
+                    sender=sender,
+                    text=text,
+                    is_user=is_user,
+                    msg_id=m_id,
+                    origin_device=origin_device,
+                    origin_label=origin_label,
+                )
             except Exception:
                 pass
 
@@ -1029,6 +1056,8 @@ class MothershipServer:
                 "text": text,
                 "is_user": is_user,
                 "timestamp": chat_item["timestamp"],
+                "origin_device": origin_device,
+                "origin_label": origin_label,
             },
         )
         sent_count = 0

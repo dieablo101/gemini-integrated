@@ -378,7 +378,9 @@ class ChatApp(App):
                 items: List[Dict[str, Any]] = []
                 hist = getattr(self, "history", [])
                 base_time = getattr(self, "_chat_start_time", 0.0) or (time.time() - max(120.0, len(hist) * 10))
-                for idx, turn in enumerate(hist):
+                # Wingman feed displays the last 50 cards (do NOT touch Mothership pagination)
+                hist_slice = hist[-50:] if len(hist) > 50 else hist
+                for idx, turn in enumerate(hist_slice):
                     role = turn.get("role", "")
                     text = turn.get("text", "")
                     turn_id = turn.get("turn_id", "")
@@ -386,16 +388,30 @@ class ChatApp(App):
                     is_u = (role == "user")
                     sender_name = "Operator" if is_u else "Gemini Core"
                     clean_text = text
-                    if clean_text.startswith("📱 **[Wingman -"):
+                    origin_label = turn.get("origin_label", "")
+                    origin_device = turn.get("origin_device", "")
+                    if clean_text.startswith("📱 **[") or clean_text.startswith("💻 **["):
                         parts = clean_text.split("\n", 1)
                         if len(parts) > 1:
                             clean_text = parts[1]
+                        if not origin_label:
+                            header = parts[0]
+                            if " - " in header:
+                                p = header.split(" - ", 1)[1].rstrip("]*").strip()
+                                origin_label = p
+                    elif is_u and not origin_label:
+                        origin_label = "Mothership"
+                        origin_device = "mothership"
+
+                    m_id = str(turn_id) if str(turn_id).startswith("msg-") else (f"msg-turn-{turn_id}" if turn_id else f"msg-hist-{idx}")
                     items.append({
-                        "id": f"msg-turn-{turn_id}" if turn_id else f"msg-hist-{idx}",
+                        "id": m_id,
                         "sender": sender_name,
                         "text": clean_text,
                         "is_user": is_u,
                         "timestamp": float(ts),
+                        "origin_device": origin_device,
+                        "origin_label": origin_label,
                     })
                 return items
 
@@ -595,12 +611,17 @@ class ChatApp(App):
 
     def _on_wingman_remote_chat(self, sender: str, text: str, meta: Dict[str, Any]) -> None:
         """Invoked from Wingman engine thread when a remote chat message is submitted."""
-        self.call_from_thread(self._handle_wingman_incoming_chat, sender, text)
+        self.call_from_thread(self._handle_wingman_incoming_chat, sender, text, meta)
 
-    def _handle_wingman_incoming_chat(self, sender: str, text: str) -> None:
+    def _handle_wingman_incoming_chat(self, sender: str, text: str, meta: Optional[Dict[str, Any]] = None) -> None:
         """Appends incoming Wingman message to ChatApp feed, saves, and prompts Gemini."""
         from uuid import uuid4
         from gemini_app.ui.widgets.feed import FeedArea
+
+        meta = meta or {}
+        dev_label = meta.get("device_label") or meta.get("device_name") or ""
+        dev_id = meta.get("device_id") or ""
+        msg_id = meta.get("id") or meta.get("msg_id") or ""
 
         if text.strip().lower() == "/clear":
             try:
@@ -608,20 +629,33 @@ class ChatApp(App):
                 feed.clear()
                 self.history = []
                 self.save_current_chat()
+                if getattr(self, "wingman_applet", None) and self.wingman_applet.engine.is_running:
+                    self.wingman_applet.clear_chat()
                 self.notify("Chat cleared via Wingman.", timeout=3.0)
             except Exception:
                 pass
             return
 
-        msg_body = f"📱 **[Wingman - {sender}]**\n{text}"
+        is_pc = (dev_label in ("PC", "Mac")) or (dev_label and not any(k in dev_label.lower() for k in ("phone", "ipad", "tablet")))
+        icon = "💻" if is_pc else "📱"
+        display_sender = "Operator" if sender.lower() == "operator" else sender
+        label_part = f" - {dev_label}" if dev_label else ""
+        msg_body = f"{icon} **[{display_sender}{label_part}]**\n{text}"
         try:
             feed = self.query_one("#feed", FeedArea)
-            new_turn_id = f"turn_{uuid4().hex[:8]}"
-            self.history.append({"turn_id": new_turn_id, "role": "user", "text": msg_body, "timestamp": time.time()})
+            new_turn_id = msg_id if msg_id else f"turn_{uuid4().hex[:8]}"
+            self.history.append({
+                "turn_id": new_turn_id,
+                "role": "user",
+                "text": msg_body,
+                "timestamp": time.time(),
+                "origin_device": dev_id,
+                "origin_label": dev_label,
+            })
             self.current_chat_last_index = max(0, len(self.history) - 1)
             self.current_chat_center_marker = new_turn_id
             self.run_worker(feed.append_message(CURRENT_USER, msg_body, jump_to_start=False))
-            self.notify(f"Wingman: {text[:40]}...", title=f"Message from {sender}")
+            self.notify(f"Wingman: {text[:40]}...", title=f"Message from {display_sender}{label_part}")
             self.save_current_chat()
             self.ask_gemini()
         except Exception:
@@ -1881,9 +1915,15 @@ class ChatApp(App):
         self.save_current_chat()
 
         # Push Gemini response to local Wingman portal and fleet satellites
+        turn_msg_id = f"msg-turn-{new_turn_id}"
         if getattr(self, "wingman_applet", None) and self.wingman_applet.engine.is_running:
             try:
-                self.wingman_applet.push_chat_message(sender="Gemini Core", text=full_text, is_user=False)
+                self.wingman_applet.push_chat_message(
+                    sender="Gemini Core",
+                    text=full_text,
+                    is_user=False,
+                    msg_id=turn_msg_id,
+                )
             except Exception:
                 pass
         try:
@@ -1891,6 +1931,8 @@ class ChatApp(App):
             send_mothership_command("broadcast_wingman_chat", {
                 "sender": "Gemini Core",
                 "text": full_text,
+                "is_user": False,
+                "id": turn_msg_id,
             }, timeout=2.0)
         except Exception:
             pass
@@ -2585,6 +2627,12 @@ class ChatApp(App):
         self.query_one("#snippet_preview", SnippetPreview).hide_preview()
         self.update_feed_nav_banner()
 
+        if getattr(self, "wingman_applet", None) and self.wingman_applet.engine.is_running:
+            try:
+                self.wingman_applet.clear_chat()
+            except Exception:
+                pass
+
     def save_current_chat(self) -> None:
         if not self.current_chat_id:
             return
@@ -3158,13 +3206,30 @@ class ChatApp(App):
         except Exception as e:
             self.notify(f"Clipboard paste error: {e}", severity="error")
 
-    async def append_to_feed(self, sender: str, text: str, jump_to_start: bool = False) -> None:
+    async def append_to_feed(
+        self,
+        sender: str,
+        text: str,
+        jump_to_start: bool = False,
+        origin_device: str = "",
+        origin_label: str = "",
+        msg_id: str = "",
+    ) -> None:
         feed = self.query_one("#feed", FeedArea)
         await feed.append_message(sender, text, jump_to_start=jump_to_start)
         is_user = (sender.lower() not in ("gemini", "gemini core", "system"))
+        eff_origin_device = origin_device or ("mothership" if is_user else "")
+        eff_origin_label = origin_label or ("Mothership" if is_user else "")
         if getattr(self, "wingman_applet", None) and self.wingman_applet.engine.is_running:
             try:
-                self.wingman_applet.push_chat_message(sender=sender, text=text, is_user=is_user)
+                self.wingman_applet.push_chat_message(
+                    sender=sender,
+                    text=text,
+                    is_user=is_user,
+                    msg_id=msg_id,
+                    origin_device=eff_origin_device,
+                    origin_label=eff_origin_label,
+                )
             except Exception:
                 pass
         try:
@@ -3173,6 +3238,9 @@ class ChatApp(App):
                 "sender": sender,
                 "text": text,
                 "is_user": is_user,
+                "id": msg_id,
+                "origin_device": eff_origin_device,
+                "origin_label": eff_origin_label,
             }, timeout=2.0)
         except Exception:
             pass
@@ -3574,21 +3642,26 @@ class ChatApp(App):
         except Exception:
             pass
 
-        await self.append_to_feed(CURRENT_USER, user_msg, jump_to_start=False)
-
-        # Broadcast user prompt to fleet satellites so all devices reflect the same conversation
-        try:
-            from gemini_app.fleet.nodes import send_mothership_command
-            send_mothership_command("broadcast_wingman_chat", {
-                "sender": "Operator",
-                "text": user_msg,
-                "is_user": True,
-            }, timeout=1.0)
-        except Exception:
-            pass
-
         new_turn_id = f"turn_{uuid4().hex[:8]}"
-        self.history.append({"turn_id": new_turn_id, "role": "user", "text": user_msg, "timestamp": time.time()})
+        turn_msg_id = f"msg-turn-{new_turn_id}"
+
+        await self.append_to_feed(
+            CURRENT_USER,
+            user_msg,
+            jump_to_start=False,
+            origin_device="mothership",
+            origin_label="Mothership",
+            msg_id=turn_msg_id,
+        )
+
+        self.history.append({
+            "turn_id": new_turn_id,
+            "role": "user",
+            "text": user_msg,
+            "timestamp": time.time(),
+            "origin_device": "mothership",
+            "origin_label": "Mothership",
+        })
         self.current_chat_last_index = max(0, len(self.history) - 1)
         self.current_chat_center_marker = new_turn_id
 

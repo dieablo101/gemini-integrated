@@ -53,6 +53,7 @@ TERMUX_AUTOSTART_BLOCK_END = "# === End Gemini Satellite (Termux) ==="
 
 TERMUX_BOOT_TEMPLATE = """#!/data/data/com.termux/files/usr/bin/sh
 # Gemini Bilateral Satellite Node Boot Autostart (Termux:Boot)
+sleep 4
 if command -v termux-wake-lock >/dev/null 2>&1; then
     termux-wake-lock
 fi

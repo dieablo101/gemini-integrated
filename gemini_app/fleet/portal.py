@@ -4,17 +4,24 @@ import http.server
 import os
 import sys
 
+from gemini_app.fleet.protocol import get_local_lan_ip
+
 PORT = 8888
 APK_DIR = os.path.expanduser("~/.gemini/apks")
 TERMUX_APK = os.path.join(APK_DIR, "termux-app_v0.118.3_arm64.apk")
 API_APK = os.path.join(APK_DIR, "termux-api-app_v0.53.0.apk")
+BOOT_APK = os.path.join(APK_DIR, "termux-boot-app_v0.8.1.apk")
 
-BOOTSTRAP_CMD = """pkg install -y git python termux-api
+LOCAL_IP = get_local_lan_ip() or "192.168.1.90"
+
+BOOTSTRAP_CMD = f"""pkg install -y git python termux-api
+termux-wake-lock
 cd ~
 rm -rf gemini-integrated
 git clone https://github.com/dieablo101/gemini-integrated.git
 cd gemini-integrated
-python3 gemini-integrated.py node 192.168.1.91"""
+python3 gemini-integrated.py autostart --install --mothership {LOCAL_IP}
+python3 gemini-integrated.py node {LOCAL_IP}"""
 
 HTML_PAGE = f"""<!DOCTYPE html>
 <html>
@@ -32,6 +39,7 @@ p {{ color: #94a3b8; font-size: 14px; margin-bottom: 20px; }}
 .btn-copy:active {{ background: #1d4ed8; }}
 .code-box {{ background: #090d14; border: 1px solid #1e293b; border-radius: 8px; padding: 14px; font-family: monospace; font-size: 13px; color: #38bdf8; word-break: break-all; margin: 12px 0; text-align: left; line-height: 1.5; white-space: pre-wrap; }}
 .step-title {{ font-weight: bold; color: #e2e8f0; font-size: 14px; margin: 16px 0 8px 0; text-align: left; }}
+.note-box {{ background: #1f2937; border-left: 4px solid #f59e0b; padding: 10px; font-size: 12px; color: #cbd5e1; text-align: left; border-radius: 4px; margin-bottom: 14px; }}
 .copied {{ background: #10b981 !important; }}
 </style>
 </head>
@@ -40,11 +48,18 @@ p {{ color: #94a3b8; font-size: 14px; margin-bottom: 20px; }}
   <h1>🛸 Gemini Mothership Gate</h1>
   <p>Satellite Provisioning & Handshake</p>
 
-  <div class="step-title">STEP 1: DOWNLOAD & INSTALL APKS</div>
-  <a href="/download/termux" class="btn-apk">⬇️ 1. DOWNLOAD TERMUX APK (34 MB)</a>
+  <div class="step-title">STEP 1: DOWNLOAD APKS</div>
+  <a href="/download/termux" class="btn-apk">⬇️ 1. DOWNLOAD TERMUX (34 MB)</a>
   <a href="/download/termux-api" class="btn-apk" style="background: #0f766e;">⬇️ 2. DOWNLOAD TERMUX:API (8.5 MB)</a>
+  <a href="/download/termux-boot" class="btn-apk" style="background: #7c3aed;">⬇️ 3. DOWNLOAD TERMUX:BOOT (0.7 MB)</a>
 
-  <div class="step-title" style="margin-top: 24px;">STEP 2: RUN IN TERMUX</div>
+  <div class="note-box">
+    <b>Important for Boot Persistence:</b><br>
+    1. Open <b>Termux:Boot</b> app once after installing.<br>
+    2. In Android Settings &rarr; Apps &rarr; Termux &rarr; Battery &rarr; Select <b>Unrestricted</b>.
+  </div>
+
+  <div class="step-title">STEP 2: RUN IN TERMUX</div>
   <button id="btn" class="btn-copy" onclick="copyCmd()">📋 TAP TO COPY RECONNECT COMMAND</button>
   <div class="code-box" id="cmd">{BOOTSTRAP_CMD}</div>
 </div>
@@ -78,6 +93,8 @@ class FleetHandler(http.server.SimpleHTTPRequestHandler):
             self._serve_file(TERMUX_APK, 'application/vnd.android.package-archive', 'Termux_v0.118.3_arm64.apk')
         elif self.path == '/download/termux-api':
             self._serve_file(API_APK, 'application/vnd.android.package-archive', 'Termux_API_v0.53.0.apk')
+        elif self.path == '/download/termux-boot':
+            self._serve_file(BOOT_APK, 'application/vnd.android.package-archive', 'Termux_Boot_v0.8.1.apk')
         else:
             self.send_response(200)
             self.send_header('Content-Type', 'text/html; charset=utf-8')

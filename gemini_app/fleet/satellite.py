@@ -832,9 +832,9 @@ def get_saved_mothership(default: Optional[str] = None) -> str:
     """Retrieves the default mothership IP/host."""
     try:
         lan_ip, wan_ip, _ = get_saved_mothership_endpoints()
-        return lan_ip or wan_ip or default or "192.168.1.91"
+        return lan_ip or wan_ip or default or "192.168.1.90"
     except Exception:
-        return default or "192.168.1.91"
+        return default or "192.168.1.90"
 
 
 def get_saved_mothership_port(default: int = DEFAULT_PORT) -> int:
@@ -920,11 +920,11 @@ class SatelliteNode:
     ) -> None:
         self._explicit_host = mothership_host.strip() if mothership_host else None
         saved_lan, saved_wan, saved_port = get_saved_mothership_endpoints()
-        self.lan_host: Optional[str] = saved_lan or ("192.168.1.91" if self._explicit_host is None else (self._explicit_host if is_lan_address(self._explicit_host) else "192.168.1.91"))
+        self.lan_host: Optional[str] = saved_lan or ("192.168.1.90" if self._explicit_host is None else (self._explicit_host if is_lan_address(self._explicit_host) else "192.168.1.90"))
         self.wan_host: Optional[str] = saved_wan or (self._explicit_host if (self._explicit_host and not is_lan_address(self._explicit_host)) else None)
 
         self.mothership_port = mothership_port if mothership_port is not None else saved_port
-        self.mothership_host = self._explicit_host or self.lan_host or self.wan_host or "192.168.1.91"
+        self.mothership_host = self._explicit_host or self.lan_host or self.wan_host or "192.168.1.90"
         self.active_host: str = self.mothership_host
         self.active_route_type: str = "LAN" if is_lan_address(self.active_host) else "WAN"
 
@@ -2046,9 +2046,7 @@ def main() -> int:
         node.run_hud()
         return 0
 
-    if not node.start():
-        return 1
-
+    node.start()
     node.run_forever()
     return 0
 

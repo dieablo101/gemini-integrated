@@ -559,6 +559,17 @@ class ChatApp(App):
         from uuid import uuid4
         from gemini_app.ui.widgets.feed import FeedArea
 
+        if text.strip().lower() == "/clear":
+            try:
+                feed = self.query_one("#feed", FeedArea)
+                feed.clear()
+                self.history = []
+                self.save_current_chat()
+                self.notify("Chat cleared via Wingman.", timeout=3.0)
+            except Exception:
+                pass
+            return
+
         msg_body = f"📱 **[Wingman - {sender}]**\n{text}"
         try:
             feed = self.query_one("#feed", FeedArea)
@@ -1925,6 +1936,17 @@ class ChatApp(App):
                     sender = payload.get("sender", "operator")
                     if text:
                         self._handle_wingman_incoming_chat(sender, text)
+                elif action == "clear_chat":
+                    def _do_clear():
+                        try:
+                            feed = self.query_one("#feed", FeedArea)
+                            feed.clear()
+                            self.history = []
+                            self.save_current_chat()
+                            self.notify("Chat cleared via Wingman.", timeout=3.0)
+                        except Exception:
+                            pass
+                    self.call_after_refresh(_do_clear)
                 elif action in ("chat_message", "notify_chat"):
                     text = payload.get("text", "")
                     if text:
@@ -3379,6 +3401,16 @@ class ChatApp(App):
             feed.clear()
             self.save_current_chat()
             self.notify("Chat cleared.")
+            if getattr(self, "wingman_applet", None) and self.wingman_applet.engine.is_running:
+                try:
+                    self.wingman_applet.clear_chat()
+                except Exception:
+                    pass
+            try:
+                from gemini_app.fleet.nodes import send_mothership_command
+                send_mothership_command("broadcast_wingman_clear", {}, timeout=2.0)
+            except Exception:
+                pass
             return True
 
         elif verb == "help":
@@ -3446,6 +3478,17 @@ class ChatApp(App):
                 return
 
         await self.append_to_feed(CURRENT_USER, user_msg, jump_to_start=False)
+
+        # Broadcast user prompt to fleet satellites so all devices reflect the same conversation
+        try:
+            from gemini_app.fleet.nodes import send_mothership_command
+            send_mothership_command("broadcast_wingman_chat", {
+                "sender": "Operator",
+                "text": user_msg,
+                "is_user": True,
+            }, timeout=1.0)
+        except Exception:
+            pass
 
         new_turn_id = f"turn_{uuid4().hex[:8]}"
         self.history.append({"turn_id": new_turn_id, "role": "user", "text": user_msg})

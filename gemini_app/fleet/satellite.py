@@ -1035,6 +1035,7 @@ class SatelliteNode:
             self.wingman_applet.engine.on_client_state_change(self._on_wingman_state_change)
             self.wingman_applet.on_action(self._on_wingman_card_action)
             self.wingman_applet.on_chat_message(self._on_wingman_chat_message)
+            self.wingman_applet._chat_history_fetcher = self.fetch_chat_history_from_mothership
             self.wingman_applet.security.on_pending_session(self._on_wingman_pending_session)
         except Exception:
             pass
@@ -1104,6 +1105,7 @@ class SatelliteNode:
         """Transmits remote chat message from Wingman UI to Mothership."""
         if not self._running or not self.sock:
             return
+        msg_id = body.get("id") or body.get("msg_id", "")
         try:
             ev = FleetMessage(
                 msg_type=FleetMessage.TYPE_EVENT,
@@ -1113,12 +1115,39 @@ class SatelliteNode:
                     "node_id": self.node_id,
                     "sender": sender,
                     "text": text,
+                    "id": msg_id,
                     "timestamp": time.time(),
                 },
             )
             self.send_message(ev)
         except Exception:
             pass
+
+    def fetch_chat_history_from_mothership(self, timeout: float = 3.0) -> List[Dict[str, Any]]:
+        """Queries Mothership for current fleet chat history."""
+        if not self._running or not self.sock:
+            return []
+        req_id = f"chathist-{int(time.time() * 1000)}"
+        ev = threading.Event()
+        self.response_events[req_id] = ev
+        try:
+            msg = FleetMessage(
+                msg_type=FleetMessage.TYPE_COMMAND,
+                node_id=self.node_id,
+                payload={"action": "get_wingman_chat_history"},
+                msg_id=req_id,
+            )
+            if not self.send_message(msg):
+                return []
+            if ev.wait(timeout):
+                resp = self.pending_responses.pop(req_id, {})
+                return resp.get("history", [])
+        except Exception:
+            pass
+        finally:
+            self.response_events.pop(req_id, None)
+            self.pending_responses.pop(req_id, None)
+        return []
 
     def _on_wingman_card_action(self, card_id: str, action: str, body: Dict[str, Any]) -> None:
         """Transmits user button click from Wingman UI back to Mothership."""
@@ -1685,7 +1714,14 @@ class SatelliteNode:
                                             sender=msg.payload.get("sender", "Gemini Core"),
                                             text=msg.payload.get("text", ""),
                                             is_user=msg.payload.get("is_user", False),
+                                            msg_id=msg.payload.get("id") or msg.payload.get("msg_id", ""),
                                         )
+                                    except Exception:
+                                        pass
+                            elif ev == "wingman_chat_clear":
+                                if self.wingman_applet and hasattr(self.wingman_applet, "clear_chat"):
+                                    try:
+                                        self.wingman_applet.clear_chat()
                                     except Exception:
                                         pass
                             if self.hud:

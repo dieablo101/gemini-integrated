@@ -39,6 +39,7 @@ class WingmanApplet:
         self._chat_history: List[Dict[str, Any]] = []
         self._lock = threading.Lock()
         self._passkey_verifier: Optional[Callable[[str], bool]] = None
+        self._chat_history_fetcher: Optional[Callable[[], List[Dict[str, Any]]]] = None
         self.boot_id = secrets.token_hex(8)
 
         self._setup_routes()
@@ -252,17 +253,22 @@ class WingmanApplet:
             if not sess.is_unlocked:
                 return {"status": "error", "session_locked": True, "message": "Session is locked. Passkey unlock required."}
 
+        msg_id_val = str(body.get("id") or body.get("msg_id") or f"msg-{int(now * 1000)}-{secrets.token_hex(3)}").strip()
         msg_obj = {
-            "id": f"msg-{int(now * 1000)}",
+            "id": msg_id_val,
             "sender": sender,
             "text": text,
             "timestamp": now,
             "is_user": True,
         }
-        with self._lock:
-            self._chat_history.append(msg_obj)
-            if len(self._chat_history) > 100:
-                self._chat_history.pop(0)
+        if text.lower() == "/clear":
+            self.clear_chat()
+        else:
+            with self._lock:
+                if not any(m.get("id") == msg_id_val for m in self._chat_history):
+                    self._chat_history.append(msg_obj)
+                    if len(self._chat_history) > 100:
+                        self._chat_history.pop(0)
 
         # Notify chat callbacks (e.g. node -> mothership link)
         with self._lock:
@@ -275,11 +281,18 @@ class WingmanApplet:
         return {
             "status": "ok",
             "message_id": msg_obj["id"],
-            "reply": "Transmitted to Mothership — awaiting Gemini reply...",
+            "reply": "Bilateral chat cleared across fleet." if text.lower() == "/clear" else "Transmitted to Mothership — awaiting Gemini reply...",
         }
 
     def _handle_chat_history(self, handler: Any, query: Dict[str, List[str]]) -> Dict[str, Any]:
         with self._lock:
+            if not self._chat_history and getattr(self, "_chat_history_fetcher", None):
+                try:
+                    fetched = self._chat_history_fetcher()
+                    if fetched:
+                        self._chat_history = list(fetched)
+                except Exception:
+                    pass
             return {"status": "ok", "history": list(self._chat_history)}
 
     def _handle_biometric_response(self, handler: Any, query: Dict[str, List[str]], body: Any) -> Dict[str, Any]:
@@ -460,23 +473,30 @@ class WingmanApplet:
         self.engine.broadcast_event("card", card_obj)
         return c_id
 
-    def push_chat_message(self, sender: str, text: str, is_user: bool = False) -> str:
+    def clear_chat(self) -> None:
+        """Clears local chat history and notifies connected browsers to clear chat feed."""
+        with self._lock:
+            self._chat_history.clear()
+        self.engine.broadcast_event("chat_clear", {"timestamp": time.time()})
+
+    def push_chat_message(self, sender: str, text: str, is_user: bool = False, msg_id: str = "") -> str:
         """Pushes a chat message bubble to all connected Wingman browsers in Chat mode."""
-        msg_id = f"msg-{int(time.time() * 1000)}"
+        msg_id_val = msg_id or f"msg-{int(time.time() * 1000)}-{secrets.token_hex(3)}"
         msg_obj = {
-            "id": msg_id,
+            "id": msg_id_val,
             "sender": sender,
             "text": text,
             "timestamp": time.time(),
             "is_user": is_user,
         }
         with self._lock:
-            self._chat_history.append(msg_obj)
-            if len(self._chat_history) > 100:
-                self._chat_history.pop(0)
+            if not any(m.get("id") == msg_id_val for m in self._chat_history):
+                self._chat_history.append(msg_obj)
+                if len(self._chat_history) > 100:
+                    self._chat_history.pop(0)
 
         self.engine.broadcast_event("chat_message", msg_obj)
-        return msg_id
+        return msg_id_val
 
     def request_biometric(self, reason: str = "Authorize Operation", timeout: float = 30.0) -> Dict[str, Any]:
         """Dispatches a WebAuthn biometric challenge to the open Wingman browser."""

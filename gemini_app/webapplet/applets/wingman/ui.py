@@ -71,7 +71,6 @@ def get_wingman_html(
       line-height: 1.5;
       display: flex;
       flex-direction: column;
-      touch-action: pan-y;
       -webkit-text-size-adjust: 100%;
     }}
 
@@ -405,7 +404,10 @@ def get_wingman_html(
     #workView {{
       flex: 1 1 0%;
       min-height: 0;
-      overflow-y: auto;
+      height: 100%;
+      max-height: 100%;
+      overflow-y: scroll;
+      overflow-x: hidden;
       -webkit-overflow-scrolling: touch;
       touch-action: pan-y;
       overscroll-behavior-y: contain;
@@ -540,14 +542,20 @@ def get_wingman_html(
       display: none;
       flex: 1 1 0%;
       min-height: 0;
+      height: 100%;
+      max-height: 100%;
       flex-direction: column;
+      overflow: hidden;
       background: var(--bg);
     }}
 
     #chatFeed {{
       flex: 1 1 0%;
       min-height: 0;
-      overflow-y: auto;
+      height: 100%;
+      max-height: 100%;
+      overflow-y: scroll;
+      overflow-x: hidden;
       -webkit-overflow-scrolling: touch;
       touch-action: pan-y;
       overscroll-behavior-y: contain;
@@ -555,6 +563,11 @@ def get_wingman_html(
       display: flex;
       flex-direction: column;
       gap: 12px;
+    }}
+
+    .card, .chat-bubble {{
+      touch-action: pan-y;
+      pointer-events: auto;
     }}
 
     .chat-bubble {{
@@ -1048,6 +1061,9 @@ def get_wingman_html(
         const res = await fetch('/applet/wingman/chat_history', {{ headers }});
         const data = await res.json();
         if (data && data.history && Array.isArray(data.history)) {{
+          if (data.history.length > 0 && chatFeed.querySelectorAll('.chat-bubble[data-msg-id]').length === 0) {{
+            chatFeed.innerHTML = '';
+          }}
           data.history.forEach(m => {{
             const mId = m.id || ('msg-' + (m.timestamp || Math.random()));
             renderChatMessage(m.sender || 'Gemini', m.text, Boolean(m.is_user), mId, m.timestamp);
@@ -1228,6 +1244,12 @@ def get_wingman_html(
         }} catch (err) {{}}
       }});
 
+      sseSource.addEventListener("chat_clear", (e) => {{
+        chatFeed.innerHTML = '';
+        renderChatMessage('Gemini Core', 'Bilateral chat cleared. Starting fresh chat session.', false);
+        playTone(440, 'triangle', 0.1);
+      }});
+
       sseSource.addEventListener("biometric_challenge", (e) => {{
         try {{
           const chal = JSON.parse(e.data);
@@ -1318,9 +1340,15 @@ def get_wingman_html(
     }}
 
     async function executeSubmitChatMessage(text) {{
+      const msgId = 'msg-' + Date.now() + '-' + Math.random().toString(36).substring(2, 7);
       chatInput.value = '';
 
-      renderChatMessage('Operator', text, true);
+      if (text.trim().toLowerCase() === '/clear') {{
+        chatFeed.innerHTML = '';
+        renderChatMessage('Gemini Core', 'Clearing bilateral chat across all devices...', false);
+      }} else {{
+        renderChatMessage('Operator', text, true, msgId, Date.now() / 1000);
+      }}
 
       try {{
         const res = await fetch('/applet/wingman/chat', {{
@@ -1330,15 +1358,21 @@ def get_wingman_html(
             'X-Wingman-Token': sessionToken
           }},
           body: JSON.stringify({{
+            id: msgId,
             text: text,
             sender: 'operator',
-            timestamp: Date.now()
+            timestamp: Date.now() / 1000
           }})
         }});
         const reply = await res.json();
         if (reply.session_locked || (reply.status === 'error' && reply.message && reply.message.toLowerCase().includes('session'))) {{
           lockUI(reply.message || "Session locked — awaiting mothership authorization...");
           startAuthPolling();
+          return;
+        }}
+        if (text.trim().toLowerCase() === '/clear') {{
+          chatFeed.innerHTML = '';
+          renderChatMessage('Gemini Core', 'Bilateral chat cleared. Starting fresh chat session.', false);
           return;
         }}
         if (reply.reply) {{

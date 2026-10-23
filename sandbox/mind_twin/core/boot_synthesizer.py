@@ -2,6 +2,8 @@
 Unified Boot Synthesizer & Mental State Assembler.
 Unites Notes, Episodic History, PNS Sensory Telemetry, and Fleet Node Capabilities
 into a single, unitized cognitive state vector upon boot.
+Equipped with a 7-Slot Directional Working Memory Gate (Miller's Law)
+and Subconscious Incubation Worker.
 """
 
 from __future__ import annotations
@@ -15,6 +17,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from sandbox.mind_twin.core.activation import ActivationEngine, ActivationResult, InvariantFrame
+from sandbox.mind_twin.core.directional_gate import DirectionalGateEngine, WorkingMemorySnapshot
 from sandbox.mind_twin.core.hypergraph import Hypergraph
 from sandbox.mind_twin.core.node_capability import (
     FleetTopologySynthesizer,
@@ -26,6 +29,12 @@ from sandbox.mind_twin.core.pns_sensor import (
     PhoneSensoryTelemetry,
 )
 from sandbox.mind_twin.core.state import CognitiveStateVector, FocusItem
+from sandbox.mind_twin.core.subconscious import (
+    ConclusiveRealityProbe,
+    EpiphanyChannel,
+    NoveltyDetector,
+    SubconsciousWorker,
+)
 
 
 @dataclass
@@ -37,14 +46,18 @@ class UnifiedCognitiveBootState:
     active_topic: str = "general"
     working_notes_summary: str = ""
 
-    # Cognitive Focus
+    # Cognitive Focus & 7-Slot Working Memory
     focus_spotlight: List[FocusItem] = field(default_factory=list)
+    working_memory_frame: str = ""
+    active_slots_count: int = 0
+    suppressed_concepts_count: int = 0
     causal_invariants: List[str] = field(default_factory=list)
     revisit_queue: List[str] = field(default_factory=list)
 
     # Physical & Fleet Context
     somatic_context: str = "PNS: offline"
     fleet_capability: Optional[WholeSystemCapability] = None
+    subconscious_status: str = "dormant"
 
     # Graph Topology Metrics
     graph_vertices_count: int = 0
@@ -66,6 +79,9 @@ class UnifiedCognitiveBootState:
                 }
                 for f in self.focus_spotlight
             ],
+            "active_slots_count": self.active_slots_count,
+            "suppressed_concepts_count": self.suppressed_concepts_count,
+            "subconscious_status": self.subconscious_status,
             "causal_invariants": self.causal_invariants,
             "revisit_queue": self.revisit_queue,
             "somatic_context": self.somatic_context,
@@ -78,7 +94,7 @@ class UnifiedCognitiveBootState:
         """
         Synthesizes the complete unitized prompt injection frame (<250 tokens).
         Gives the LLM instant, complete awareness of mental state, cluster hardware,
-        somatic conditions, and pending tasks.
+        somatic conditions, working memory slots, and pending tasks.
         """
         top_focus = sorted(self.focus_spotlight, key=lambda x: x.energy, reverse=True)[:5]
         focus_str = ", ".join([f"{item.concept_id} (e={item.energy:.2f})" for item in top_focus]) if top_focus else "Cold"
@@ -91,18 +107,22 @@ class UnifiedCognitiveBootState:
             f"[UNITIZED MENTAL STATE BOOT (Turn {self.turn_counter})]",
             f"• Active Topic: {self.active_topic}",
             f"• Hot Spotlight: {focus_str}",
+            f"• Working Memory (7-Target Gate): {self.active_slots_count}/7 slots active ({self.suppressed_concepts_count} latent suppressed)",
             f"• Somatic State: {self.somatic_context}",
+            f"• Subconscious Status: {self.subconscious_status}",
             f"• {fleet_frame}",
             f"• Revisit Queue: {revisits}",
             f"• Invariants: {invariants}",
         ]
+        if self.working_memory_frame:
+            lines.append(f"• Dynamic Working Hierarchy:\n{self.working_memory_frame}")
         return "\n".join(lines)
 
 
 class BootSynthesizer:
     """
     Master Ingestion and Boot Engine.
-    Coordinates the 4 Ingestion Pillars and Spreading Activation Dynamics.
+    Coordinates the 4 Ingestion Pillars, 7-Slot Working Memory Gate, and Subconscious Incubation.
     """
 
     def __init__(
@@ -111,6 +131,7 @@ class BootSynthesizer:
         decay_beta: float = 0.3,
         activation_damping: float = 0.75,
         activation_threshold: float = 0.10,
+        max_working_memory_slots: int = 7,
     ) -> None:
         self.hypergraph = Hypergraph(decay_alpha=decay_alpha, decay_beta=decay_beta)
         self.activation_engine = ActivationEngine(
@@ -120,6 +141,17 @@ class BootSynthesizer:
             max_hops=4,
         )
         self.pns_synthesizer = PhoneSensorySynthesizer(self.hypergraph)
+        self.directional_gate = DirectionalGateEngine(max_slots=max_working_memory_slots)
+
+        self.novelty_detector = NoveltyDetector()
+        self.reality_probe = ConclusiveRealityProbe()
+        self.epiphany_channel = EpiphanyChannel()
+        self.subconscious_worker = SubconsciousWorker(
+            graph=self.hypergraph,
+            novelty_detector=self.novelty_detector,
+            reality_probe=self.reality_probe,
+            epiphany_channel=self.epiphany_channel,
+        )
 
     # -------------------------------------------------------------------------
     # Pillar 1: Topical Notes Ingestion
@@ -438,9 +470,11 @@ class BootSynthesizer:
         sensory_telemetry: Optional[PhoneSensoryTelemetry] = None,
         fleet_snapshot: Optional[Dict[str, Any]] = None,
         session_id: str = "boot_session",
+        current_user_prompt: str = "",
     ) -> UnifiedCognitiveBootState:
         """
         Executes complete multi-pillar boot sequence and returns the unitized mental state.
+        Enforces 7-target working memory gating and checks subconscious novelty gating.
         """
         now = time.time()
 
@@ -482,7 +516,37 @@ class BootSynthesizer:
         # Spread activation
         profile: ActivationResult = self.activation_engine.spread(seeds=seed_boosts, t_now=now)
 
-        # 7. Extract Spotlight Items
+        # 7. Check Subconscious Novelty Gating Filter
+        prompt_to_check = current_user_prompt or active_topic
+        is_novel, novelty_eval = self.subconscious_worker.check_and_ignite(
+            task_prompt=prompt_to_check,
+            active_topic=active_topic,
+        )
+        subconscious_status = "active_incubation" if is_novel else "dormant"
+
+        # Drain any existing epiphanies from channel into working memory gate
+        while not self.epiphany_channel.is_empty():
+            ep = self.epiphany_channel.pop()
+            if ep:
+                self.directional_gate.traject_epiphany(
+                    spark_label=ep.spark_name,
+                    domain_bridge=ep.domain_bridge,
+                    feasibility_score=ep.feasibility_score,
+                    summary=ep.summary,
+                )
+
+        # 8. 7-Slot Working Memory Gating & Dynamic Depth Hierarchy
+        self.directional_gate.update_trajectory(
+            current_intent=prompt_to_check,
+            active_topic=active_topic,
+        )
+        wm_snapshot: WorkingMemorySnapshot = self.directional_gate.gate_and_filter(
+            graph=self.hypergraph,
+            candidate_activations=profile.node_activations,
+            t_now=now,
+        )
+
+        # 9. Extract Spotlight Items
         spotlight: List[FocusItem] = []
         for vid, score, label in profile.get_top_nodes(top_n=12):
             spotlight.append(FocusItem(
@@ -504,16 +568,20 @@ class BootSynthesizer:
             active_topic=active_topic,
             working_notes_summary=working_notes,
             focus_spotlight=spotlight,
+            working_memory_frame=wm_snapshot.get_cognitive_frame(),
+            active_slots_count=len(wm_snapshot.slots),
+            suppressed_concepts_count=wm_snapshot.suppressed_candidates_count,
             causal_invariants=invariants,
             revisit_queue=revisits[:5],
             somatic_context=somatic_frame,
             fleet_capability=fleet_cap,
+            subconscious_status=subconscious_status,
             graph_vertices_count=len(self.hypergraph.vertices),
             graph_edges_count=len(self.hypergraph.edges),
         )
 
     @classmethod
-    def boot_from_live_env(cls) -> UnifiedCognitiveBootState:
+    def boot_from_live_env(cls, current_user_prompt: str = "") -> UnifiedCognitiveBootState:
         """
         Convenience factory: Boots the synthesizer pulling directly from the live
         Toughbook environment: NotesManager, ChatStore, and Fleet nodes.
@@ -536,4 +604,5 @@ class BootSynthesizer:
             chat_history=history,
             fleet_snapshot=fleet_snapshot,
             session_id=active_chat_id or "live_toughbook_session",
+            current_user_prompt=current_user_prompt,
         )

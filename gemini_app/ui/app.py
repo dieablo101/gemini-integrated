@@ -236,6 +236,7 @@ class ChatApp(App):
         self.current_tree_content: str = "└── Unified Stream [Active]"
         self.saved_prompt_draft: str = ""
         self._active_mind_animation: dict | None = None
+        self.cognitive_adapter = None
 
         self.notes_open: bool = False
         self._last_focused_input_id: str = "input"
@@ -959,6 +960,12 @@ class ChatApp(App):
         self.update_feed_nav_banner()
         self._update_footer_markup()
 
+        if getattr(self, "cognitive_adapter", None):
+            try:
+                self.cognitive_adapter.set_theme(theme_clean)
+            except Exception:
+                pass
+
         if notify_user:
             self.notify(f"Theme set to '{theme_clean}'", timeout=2.5)
         return True
@@ -1385,18 +1392,7 @@ class ChatApp(App):
                 else base_accent
             )
 
-            if feed.fork_ui_active:
-                banner.add_class("fork-active")
-                sep_markup = "[bold black]|[/]"
-                sep_plain = "|"
-                items = [
-                    "Space: Toggle [X]",
-                    "a: Select All",
-                    "Enter: Confirm Fork",
-                    "Esc / C-c .: Cancel",
-                ]
-                content = self._render_flow_nav_banner(items, sep_markup, sep_plain, avail_w)
-            elif getattr(self, "_nav_indicator_action", None) in ("navbar", "nav", "flash", "pulse"):
+            if getattr(self, "_nav_indicator_action", None) in ("navbar", "nav", "flash", "pulse"):
                 banner.remove_class("fork-active")
                 banner.styles.background = indicator_accent
                 banner.styles.color = "#000000"
@@ -1447,11 +1443,6 @@ class ChatApp(App):
                     if self._nav_indicator_action == "mind"
                     else "C-c m: Mind"
                 )
-                fork_item = (
-                    f"[bold {indicator_accent} reverse] C-c .: Fork [/]"
-                    if self._nav_indicator_action == "fork"
-                    else "C-c .: Fork"
-                )
 
                 items = [
                     f"{up_scroll}/{dn_scroll}: Scroll",
@@ -1460,7 +1451,6 @@ class ChatApp(App):
                     edge_item,
                     snippets_item,
                     mind_item,
-                    fork_item,
                 ]
                 content = self._render_flow_nav_banner(items, sep_markup, sep_plain, avail_w)
 
@@ -2774,103 +2764,10 @@ class ChatApp(App):
 
     # for later exploration by gemini
     def action_fork_chat(self) -> None:
-        feed = self.query_one("#feed", FeedArea)
-
-        if not feed.fork_ui_active:
-            feed.toggle_fork_ui()
-            self.update_feed_nav_banner()
-            self.notify("Fork selection active: Space toggles, 'a' selects all, Enter confirms, Esc / C-c .: Cancel.", timeout=3.5)
-            return
-
-        feed.toggle_fork_ui()
-        self.update_feed_nav_banner()
-        self.notify("Exited fork mode")
+        self.notify("Fork mode retired; Cognitive Mind Lens active.", timeout=2.0)
 
     def action_confirm_fork(self) -> None:
-        feed = self.query_one("#feed", FeedArea)
-        if not feed.fork_ui_active:
-            return
-
-        selected_indices = feed.get_selected_fork_indices()
-        if not selected_indices:
-            self.notify("Please select at least one response to fork.", severity="warning")
-            return
-
-        def on_fork_named(fork_title: str | None) -> None:
-            if not fork_title:
-                self.notify("Fork cancelled.")
-                feed.toggle_fork_ui()
-                self.update_feed_nav_banner()
-                return
-            self._execute_chat_fork(selected_indices, fork_title)
-
-        self.push_screen(
-            ForkModal(default_title=self.current_chat_title),
-            callback=on_fork_named,
-        )
-
-    def _execute_chat_fork(self, selected_indices: list[int], fork_title: str) -> None:
-        feed = self.query_one("#feed", FeedArea)
-        feed.toggle_fork_ui()
-        self.update_feed_nav_banner()
-
-        selected_turns = [copy.deepcopy(self.history[i]) for i in selected_indices]
-        if not selected_turns:
-            return
-
-        if selected_turns[0]["role"] == "user":
-            text = selected_turns[0]["text"]
-            while text.startswith(FORK_HEADER_TEXT):
-                text = text[len(FORK_HEADER_TEXT):].lstrip("\n")
-            selected_turns[0]["text"] = f"{FORK_HEADER_TEXT}\n\n{text}"
-        else:
-            selected_turns.insert(0, {
-                "turn_id": f"turn_{uuid4().hex[:8]}",
-                "role": "user",
-                "text": FORK_HEADER_TEXT
-            })
-
-        for turn in selected_turns:
-            turn["turn_id"] = f"turn_{uuid4().hex[:8]}"
-
-        self.flush_current_notes()
-        self._direct_flush_chat_to_disk(self.current_chat_id, self.current_chat_notes)
-        self.save_current_chat()
-
-        parent_chat_id = self.current_chat_id
-        parent_working_dir = self.current_chat_working_dir
-        new_chat_id = uuid4().hex[:8]
-
-        self.is_legacy_chat = False
-        self.current_chat_id = new_chat_id
-        self.current_chat_title = fork_title
-        self.current_chat_parent_id = parent_chat_id
-        self.current_chat_working_dir = parent_working_dir
-        self.current_chat_last_index = 0
-        self.current_chat_center_marker = selected_turns[0].get("turn_id", "")
-        self.current_chat_notes = ""
-        self.history = selected_turns
-
-        self.save_current_chat()
-        self._render_forked_chat(selected_turns)
-
-    def _render_forked_chat(self, turns: list[dict]) -> None:
-        feed = self.query_one("#feed", FeedArea)
-        first_marker = turns[0].get("turn_id", 0) if turns else 0
-        feed.set_messages(turns, initial_target_marker=first_marker)
-        input_widget = self.query_one("#input", ExpandingInput)
-        input_widget.reset_snippets()
-        self.query_one("#snippet_preview", SnippetPreview).hide_preview()
-
-        self.update_feed_title()
-
-        notes_panel = self.query_one("#notes_panel", NotesPanel)
-        notes_panel.clear_session_expansion_states()
-        self.sync_notes_ui()
-
-        input_widget.focus()
-        self.update_feed_nav_banner()
-        self.notify(f"Fork created: '{self.current_chat_title}' (Awaiting response)", timeout=4.0)
+        pass
 
     def _start_new_chat(self, title: str, parent_id: str | None = None) -> None:
         self._stop_status_ticker()

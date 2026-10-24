@@ -565,7 +565,7 @@ def execute_fleet_upgrade(
                         with tar.extractfile(member) as src, open(dest_path, "wb") as dst:
                             dst.write(src.read())
 
-            if target_commit and target_commit != "unknown" and len(target_commit.strip()) == 40:
+            if target_commit and target_commit != "unknown" and len(target_commit.strip()) >= 7:
                 try:
                     ref_f = cwd / ".git" / "refs" / "heads" / branch_target
                     ref_f.parent.mkdir(parents=True, exist_ok=True)
@@ -639,7 +639,7 @@ def execute_fleet_upgrade(
                                 dst.write(src.read())
 
             # Synchronize git ref so version reader reflects new target commit
-            if target_commit and target_commit != "unknown" and len(target_commit.strip()) == 40:
+            if target_commit and target_commit != "unknown" and len(target_commit.strip()) >= 7:
                 try:
                     ref_f = cwd / ".git" / "refs" / "heads" / branch_target
                     if ref_f.parent.exists():

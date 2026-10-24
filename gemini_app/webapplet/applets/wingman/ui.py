@@ -1031,8 +1031,8 @@ def get_wingman_html(
         </div>
       </div>
       <div class="chat-input-container" id="chatContainer">
-        <button type="button" class="btn btn-secondary" id="chatCamBtn" title="Snap Front Camera Photo" onclick="triggerNativeCameraInput('chat-camera')" style="min-width: 44px; min-height: 44px; padding: 0 10px; font-size: 18px; display: inline-flex; align-items: center; justify-content: center;">📸</button>
-        <button type="button" class="btn btn-secondary" id="chatScreenBtn" title="Capture iPad Screen Frame" onclick="captureScreenMedia('chat-screen')" style="min-width: 44px; min-height: 44px; padding: 0 10px; font-size: 18px; display: inline-flex; align-items: center; justify-content: center;">🖥️</button>
+        <button type="button" class="btn btn-secondary" id="chatCamBtn" title="Snap Front Camera Photo" onclick="triggerNativeCameraInput('chat-camera', event)" style="min-width: 44px; min-height: 44px; padding: 0 10px; font-size: 18px; display: inline-flex; align-items: center; justify-content: center; touch-action: manipulation !important;">📸</button>
+        <button type="button" class="btn btn-secondary" id="chatScreenBtn" title="Capture iPad Screen Frame" onclick="captureScreenMedia('chat-screen', event)" style="min-width: 44px; min-height: 44px; padding: 0 10px; font-size: 18px; display: inline-flex; align-items: center; justify-content: center; touch-action: manipulation !important;">🖥️</button>
         <textarea id="chatInput"
                   name="chat_message"
                   class="chat-input"
@@ -1945,10 +1945,14 @@ def get_wingman_html(
 
       let actionsHtml = '';
       if (card.actions && Array.isArray(card.actions)) {{
-        actionsHtml = '<div class="card-actions">' +
+        actionsHtml = '<div class="card-actions" style="touch-action: manipulation; display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px;">' +
           card.actions.map(a => `
-            <button class="btn ${{a.style === 'primary' ? 'btn-primary' : 'btn-secondary'}}"
-                    onclick="handleCardAction('${{card.id}}', '${{a.action}}')">
+            <button type="button"
+                    class="btn ${{a.style === 'primary' ? 'btn-primary' : 'btn-secondary'}}"
+                    data-card-id="${{card.id}}"
+                    data-action="${{a.action}}"
+                    style="touch-action: manipulation !important; min-height: 48px; padding: 12px 20px; font-size: 14px; font-weight: 600; cursor: pointer; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; border-radius: 8px;"
+                    onclick="handleCardAction('${{card.id}}', '${{a.action}}', event)">
               ${{a.label}}
             </button>
           `).join('') +
@@ -1963,6 +1967,39 @@ def get_wingman_html(
         <div class="card-content">${{escapeHtml(card.content)}}</div>
         ${{actionsHtml}}
       `;
+
+      // Dual-event (touchend + click) bindings with micro-drift protection for iOS Safari
+      cardEl.querySelectorAll('.card-actions button').forEach(btn => {{
+        let touchStartX = 0, touchStartY = 0, touchMoved = false;
+        btn.addEventListener('touchstart', (e) => {{
+          touchMoved = false;
+          if (e.touches && e.touches[0]) {{
+            touchStartX = e.touches[0].clientX;
+            touchStartY = e.touches[0].clientY;
+          }}
+          btn.style.transform = 'scale(0.96)';
+          btn.style.filter = 'brightness(1.2)';
+        }}, {{ passive: true }});
+
+        btn.addEventListener('touchmove', (e) => {{
+          if (e.touches && e.touches[0]) {{
+            const dx = Math.abs(e.touches[0].clientX - touchStartX);
+            const dy = Math.abs(e.touches[0].clientY - touchStartY);
+            if (dx > 10 || dy > 10) touchMoved = true;
+          }}
+        }}, {{ passive: true }});
+
+        btn.addEventListener('touchend', (e) => {{
+          btn.style.transform = 'none';
+          btn.style.filter = 'none';
+          if (!touchMoved) {{
+            e.preventDefault();
+            const cId = btn.getAttribute('data-card-id');
+            const act = btn.getAttribute('data-action');
+            if (cId && act) handleCardAction(cId, act, e);
+          }}
+        }}, {{ passive: false }});
+      }});
 
       if (!existing) {{
         workView.appendChild(cardEl);
@@ -1988,15 +2025,23 @@ def get_wingman_html(
       }}
     }}
 
-    function handleCardAction(cardId, action) {{
+    function isAppleDevice() {{
+      return /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+             (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    }}
+
+    function handleCardAction(cardId, action, event = null) {{
+      if (event) {{
+        try {{ event.stopPropagation(); }} catch (_) {{}}
+      }}
       if (action === 'camera_webrtc') {{
         captureWebRTCCamera(cardId);
         return;
       }} else if (action === 'camera_native') {{
-        triggerNativeCameraInput(cardId);
+        triggerNativeCameraInput(cardId, event);
         return;
       }} else if (action === 'screen_capture' || action === 'capture_screen') {{
-        captureScreenMedia(cardId);
+        captureScreenMedia(cardId, event);
         return;
       }}
       requireSessionUnlock('Homebase passkey required to execute: ' + action, () => {{
@@ -2004,49 +2049,67 @@ def get_wingman_html(
       }});
     }}
 
-    async function captureScreenMedia(cardId = 'chat-screen') {{
+    function captureScreenMedia(cardId = 'chat-screen', event = null) {{
+      if (event) {{
+        try {{ event.preventDefault(); event.stopPropagation(); }} catch (_) {{}}
+      }}
       const cardEl = document.getElementById('card-' + cardId);
       if (cardEl) {{
         const actDiv = cardEl.querySelector('.card-actions');
-        if (actDiv) actDiv.innerHTML = '<span style="font-size: 11px; color: var(--accent);">Requesting screen share permission...</span>';
+        if (actDiv) actDiv.innerHTML = '<span style="font-size: 11px; color: var(--accent);">Initiating screen capture...</span>';
       }}
-      addChatMessage('System', 'Initiating iPad screen capture...', false);
-      if (navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {{
-        try {{
-          const stream = await navigator.mediaDevices.getDisplayMedia({{
-            video: {{ displaySurface: "browser" }}
-          }});
-          const video = document.createElement('video');
-          video.srcObject = stream;
-          video.setAttribute('playsinline', '');
-          video.muted = true;
-          await video.play();
 
-          // Wait a moment for frame render
-          await new Promise(r => setTimeout(r, 350));
+      const isApple = isAppleDevice();
+      const hasDisplayMedia = !!(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia);
 
-          const canvas = document.createElement('canvas');
-          canvas.width = video.videoWidth || window.innerWidth;
-          canvas.height = video.videoHeight || window.innerHeight;
-          const ctx = canvas.getContext('2d');
-          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      // On iOS / iPadOS Safari, automated getDisplayMedia is restricted by Apple OS sandbox.
+      // Calling input.click() asynchronously after an await getDisplayMedia() failure is
+      // strictly blocked by Safari because the user-gesture token expires.
+      // Therefore, on Apple devices (or insecure HTTP contexts), synchronously trigger
+      // the screenshot picker in the direct user gesture tick!
+      if (isApple || !hasDisplayMedia) {{
+        addChatMessage('System', '📱 Opening iPad Photo Library to upload recent screenshot...', false);
+        triggerScreenshotPicker(cardId);
+        return;
+      }}
 
-          stream.getTracks().forEach(t => t.stop());
+      captureDisplayMediaDesktop(cardId);
+    }}
 
-          const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
-          await uploadCapturedPhoto(cardId, dataUrl, 'get_display_media');
-          return;
-        }} catch (err) {{
-          console.warn('getDisplayMedia error / user cancelled:', err);
-          if (cardEl) {{
-            const actDiv = cardEl.querySelector('.card-actions');
-            if (actDiv) actDiv.innerHTML = '<span style="font-size: 11px; color: var(--warning);">Screen capture cancelled or not allowed</span>';
-          }}
+    async function captureDisplayMediaDesktop(cardId) {{
+      const cardEl = document.getElementById('card-' + cardId);
+      addChatMessage('System', 'Initiating display media screen capture...', false);
+      try {{
+        const stream = await navigator.mediaDevices.getDisplayMedia({{
+          video: {{ displaySurface: "browser" }}
+        }});
+        const video = document.createElement('video');
+        video.srcObject = stream;
+        video.setAttribute('playsinline', '');
+        video.muted = true;
+        await video.play();
+
+        // Wait a moment for frame render
+        await new Promise(r => setTimeout(r, 350));
+
+        const canvas = document.createElement('canvas');
+        canvas.width = video.videoWidth || window.innerWidth;
+        canvas.height = video.videoHeight || window.innerHeight;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+        stream.getTracks().forEach(t => t.stop());
+
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
+        await uploadCapturedPhoto(cardId, dataUrl, 'get_display_media');
+        return;
+      }} catch (err) {{
+        console.warn('getDisplayMedia error / user cancelled:', err);
+        if (cardEl) {{
+          const actDiv = cardEl.querySelector('.card-actions');
+          if (actDiv) actDiv.innerHTML = '<span style="font-size: 11px; color: var(--warning);">Screen capture cancelled or unavailable</span>';
         }}
       }}
-      // iPadOS Safari restricts automated getDisplayMedia. Fall back to native Photo Library screenshot picker:
-      addChatMessage('System', '📱 iPadOS Safari blocks automated screen recording. Opening Photo Library to upload your screenshot...', false);
-      triggerScreenshotPicker(cardId);
     }}
 
     function triggerScreenshotPicker(cardId = 'chat-screen') {{
@@ -2056,7 +2119,7 @@ def get_wingman_html(
         input.type = 'file';
         input.id = 'wingmanScreenshotInput';
         input.accept = 'image/*';
-        input.style.display = 'none';
+        input.style.cssText = 'position:fixed;top:-9999px;left:-9999px;opacity:0.001;pointer-events:none;width:1px;height:1px;';
         document.body.appendChild(input);
       }}
       input.value = '';
@@ -2075,7 +2138,11 @@ def get_wingman_html(
         }};
         reader.readAsDataURL(file);
       }};
-      input.click();
+      try {{
+        input.click();
+      }} catch (err) {{
+        console.warn("Direct screenshot input.click failed:", err);
+      }}
     }}
 
     async function captureWebRTCCamera(cardId) {{
@@ -2118,7 +2185,10 @@ def get_wingman_html(
       }}
     }}
 
-    function triggerNativeCameraInput(cardId) {{
+    function triggerNativeCameraInput(cardId = 'chat-camera', event = null) {{
+      if (event) {{
+        try {{ event.stopPropagation(); }} catch (_) {{}}
+      }}
       let input = document.getElementById('wingmanCameraInput');
       if (!input) {{
         input = document.createElement('input');
@@ -2126,9 +2196,10 @@ def get_wingman_html(
         input.id = 'wingmanCameraInput';
         input.accept = 'image/*';
         input.setAttribute('capture', 'user');
-        input.style.display = 'none';
+        input.style.cssText = 'position:fixed;top:-9999px;left:-9999px;opacity:0.001;pointer-events:none;width:1px;height:1px;';
         document.body.appendChild(input);
       }}
+      input.value = '';
       input.onchange = async (e) => {{
         const file = e.target.files && e.target.files[0];
         if (!file) return;
@@ -2138,7 +2209,11 @@ def get_wingman_html(
         }};
         reader.readAsDataURL(file);
       }};
-      input.click();
+      try {{
+        input.click();
+      }} catch (err) {{
+        console.warn("Camera input.click failed:", err);
+      }}
     }}
 
     async function uploadCapturedPhoto(cardId, dataUrl, method) {{
@@ -2421,7 +2496,10 @@ def get_wingman_html(
         </div>
         <div class="card-content">${{escapeHtml(chal.reason || 'Authentication required to authorize operation.')}}</div>
         <div style="text-align: center; padding: 16px 0;">
-          <button type="button" id="btn-bio-${{chal.challenge_id}}" class="btn btn-biometric" onclick="triggerWebAuthn('${{chal.challenge_id}}', '${{chal.nonce}}')">
+          <button type="button" id="btn-bio-${{chal.challenge_id}}" class="btn btn-biometric"
+                  style="touch-action: manipulation !important;"
+                  onclick="triggerWebAuthn('${{chal.challenge_id}}', '${{chal.nonce}}', event)"
+                  ontouchend="triggerWebAuthn('${{chal.challenge_id}}', '${{chal.nonce}}', event)">
             Scan Face ID / Touch ID
           </button>
         </div>
@@ -2429,34 +2507,22 @@ def get_wingman_html(
 
       workView.appendChild(cardEl);
       workView.scrollTop = workView.scrollHeight;
-
-      // Wire explicit click and touchend handlers directly to avoid iOS Safari tap-cancellation
-      const bioBtn = cardEl.querySelector('#btn-bio-' + chal.challenge_id);
-      if (bioBtn) {{
-        let handled = false;
-        const onActivate = (e) => {{
-          if (handled) return;
-          handled = true;
-          if (e && e.preventDefault) e.preventDefault();
-          if (e && e.stopPropagation) e.stopPropagation();
-          triggerWebAuthn(chal.challenge_id, chal.nonce);
-        }};
-        bioBtn.addEventListener('click', onActivate);
-        bioBtn.addEventListener('touchend', onActivate);
-        bioBtn.addEventListener('touchstart', () => {{
-          bioBtn.classList.add('active');
-        }}, {{ passive: true }});
-      }}
-
       playTone(659.25, 'sine', 0.15);
     }}
 
-    async function triggerWebAuthn(challengeId, nonce) {{
+    let _activeWebAuthn = false;
+    async function triggerWebAuthn(challengeId, nonce, event = null) {{
+      if (event) {{
+        try {{ event.preventDefault(); event.stopPropagation(); }} catch (_) {{}}
+      }}
+      if (_activeWebAuthn) return;
+      _activeWebAuthn = true;
       const cardEl = document.getElementById('bio-' + challengeId);
       const btnEl = document.getElementById('btn-bio-' + challengeId);
       if (btnEl) {{
-        btnEl.disabled = true;
         btnEl.innerText = "Authenticating Face ID...";
+        btnEl.style.opacity = "0.75";
+        btnEl.style.pointerEvents = "none";
       }}
       try {{
         let assertionResult = null;
@@ -2536,6 +2602,12 @@ def get_wingman_html(
           headers: {{ 'Content-Type': 'application/json', 'X-Wingman-Token': sessionToken }},
           body: JSON.stringify({{ challenge_id: challengeId, result: {{ status: "cancelled", error: err.message }} }})
         }});
+      }} finally {{
+        _activeWebAuthn = false;
+        if (btnEl) {{
+          btnEl.style.pointerEvents = "auto";
+          btnEl.style.opacity = "1";
+        }}
       }}
     }}
 
@@ -2628,12 +2700,30 @@ def get_wingman_html(
     window.addEventListener('pageshow', onWakeOrVisibilityChange);
     window.addEventListener('focus', onWakeOrVisibilityChange);
 
+    // Attach direct touchend listeners to bottom bar action buttons
+    const camBtn = document.getElementById('chatCamBtn');
+    if (camBtn) {{
+      camBtn.addEventListener('touchend', (e) => {{
+        e.preventDefault();
+        triggerNativeCameraInput('chat-camera', e);
+      }}, {{ passive: false }});
+    }}
+    const scrBtn = document.getElementById('chatScreenBtn');
+    if (scrBtn) {{
+      scrBtn.addEventListener('touchend', (e) => {{
+        e.preventDefault();
+        captureScreenMedia('chat-screen', e);
+      }}, {{ passive: false }});
+    }}
+
     checkSession();
     loadCardsHistory();
     connectSSE();
     pingInterval = setInterval(measurePing, 5000);
     measurePing();
   </script>
+  <input type="file" id="wingmanScreenshotInput" accept="image/*" style="position:fixed;top:-9999px;left:-9999px;opacity:0.001;pointer-events:none;width:1px;height:1px;">
+  <input type="file" id="wingmanCameraInput" accept="image/*" capture="user" style="position:fixed;top:-9999px;left:-9999px;opacity:0.001;pointer-events:none;width:1px;height:1px;">
 </body>
 </html>
 """

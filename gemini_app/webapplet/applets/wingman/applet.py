@@ -176,7 +176,13 @@ class WingmanApplet:
         self._serve_apk(handler, BOOT_APK, "Termux_Boot_v0.8.1.apk")
 
     def _handle_index(self, handler: Any, query: Dict[str, List[str]]) -> str:
-        return get_wingman_html(port=self.engine.port, node_id=self.node_id)
+        try:
+            import importlib
+            from gemini_app.webapplet.applets.wingman import ui as wingman_ui
+            importlib.reload(wingman_ui)
+            return wingman_ui.get_wingman_html(port=self.engine.port, node_id=self.node_id)
+        except Exception:
+            return get_wingman_html(port=self.engine.port, node_id=self.node_id)
 
     def _handle_ping(self, handler: Any, query: Dict[str, List[str]]) -> Dict[str, Any]:
         return {

@@ -355,7 +355,7 @@ class ToolRegistry:
                     "node_id": target,
                     "reason": command or "Authorize Bilateral Action",
                     "timeout": 30.0,
-                })
+                }, timeout=35.0)
             elif act in ("rescue", "restart", "reboot", "check", "exec", "provision", "autostart", "install_autostart"):
                 target = node_id or "satellite-ipad"
                 res_act = "restart" if act == "rescue" else act

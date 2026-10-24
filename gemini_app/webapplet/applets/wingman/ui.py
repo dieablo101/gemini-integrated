@@ -2404,7 +2404,7 @@ def get_wingman_html(
       }}
       try {{
         let assertionResult = null;
-        const isIp = /^(?:[0-9]{1,3}\\.){3}[0-9]{1,3}$/.test(window.location.hostname);
+        const isIp = /^(?:[0-9]{{1,3}}\\.){{3}}[0-9]{{1,3}}$/.test(window.location.hostname);
         const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
         const isHttps = window.location.protocol === 'https:';
 

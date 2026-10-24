@@ -3507,6 +3507,71 @@ class ChatApp(App):
             threading.Thread(target=_async_fetch_media, daemon=True, name="fetch-media-cmd").start()
             return True
 
+        elif verb in ("whisper", "tts", "speak"):
+            text_to_say = arg.strip() or "Bilateral audio sync online."
+            self.notify("Transmitting audio whisper to Bose earbuds...", timeout=2.5)
+
+            def _async_whisper():
+                from gemini_app.fleet.nodes import speak_node_tts
+                res = speak_node_tts(node_id="android-termux-localhost", text=text_to_say)
+                if res.get("status") == "ok" and res.get("tts_result", {}).get("status") == "ok":
+                    self.notify(f"🎧 Whispered: '{text_to_say}'", timeout=3.5)
+                else:
+                    err = res.get("error") or res.get("tts_result", {}).get("error", "Failed to transmit TTS")
+                    self.notify(f"Whisper failed: {err}", severity="error")
+
+            threading.Thread(target=_async_whisper, daemon=True, name="whisper-cmd").start()
+            return True
+
+        elif verb in ("record", "mic"):
+            dur = int(arg.strip()) if arg.strip().isdigit() else 5
+            self.notify(f"🎙️ Recording {dur}s audio from mobile / Bose microphone...", timeout=float(dur) + 2.0)
+
+            def _async_record():
+                from gemini_app.fleet.nodes import record_node_audio
+                res = record_node_audio(node_id="android-termux-localhost", duration=dur)
+                if res.get("status") == "ok":
+                    loc = res.get("local_path", "")
+                    sz = res.get("size_bytes", 0)
+                    sz_kb = round(sz / 1024, 1)
+                    md_text = f"### 🎙️ Audio Capture Complete\n- **Duration:** {dur}s\n- **File:** `{loc}`\n- **Size:** {sz_kb} KB\n- **Sink:** Active Bluetooth (Bose QuietComfort Earbuds)"
+                    self.call_after_refresh(lambda: self.append_to_feed("system", md_text, jump_to_start=False))
+                    self.notify(f"🎙️ Audio saved: {sz_kb} KB ({loc})", timeout=4.0)
+                else:
+                    err = res.get("error", "Recording failed")
+                    self.notify(f"Audio capture failed: {err}", severity="error")
+
+            threading.Thread(target=_async_record, daemon=True, name="record-cmd").start()
+            return True
+
+        elif verb in ("volume", "vol"):
+            parts = arg.strip().split()
+            stream_name = "music"
+            vol_val = None
+            if len(parts) == 1:
+                if parts[0].isdigit():
+                    vol_val = int(parts[0])
+                else:
+                    stream_name = parts[0].lower()
+            elif len(parts) >= 2:
+                stream_name = parts[0].lower()
+                if parts[1].isdigit():
+                    vol_val = int(parts[1])
+
+            def _async_volume():
+                from gemini_app.fleet.nodes import control_node_volume
+                res = control_node_volume(node_id="android-termux-localhost", stream=stream_name, volume=vol_val)
+                if res.get("status") == "ok":
+                    sub = res.get("volume_result", {})
+                    v_data = sub.get("volume", "")
+                    msg_v = f"Volume: {v_data}" if v_data else "Volume updated"
+                    self.notify(f"🔊 {msg_v}", timeout=3.5)
+                else:
+                    self.notify(f"Volume control failed: {res.get('error', 'Error')}", severity="error")
+
+            threading.Thread(target=_async_volume, daemon=True, name="vol-cmd").start()
+            return True
+
         elif verb == "help":
             help_text = (
                 "### Console Slash Commands\n"
@@ -3519,6 +3584,9 @@ class ChatApp(App):
                 "- `/projects`: List existing projects in ~/Projects\n"
                 "- `/notes [prune|archive|unarchive|stats]`: Manage, prune, or archive notes\n"
                 "- `/nowplaying [node_id]`: Query mobile track, artist, and screenshot OCR telemetry\n"
+                "- `/whisper <text>`: Synthesize speech directly into Bose Bluetooth earbuds\n"
+                "- `/record [seconds]`: Record audio from mobile mic / Bose earbuds into ~/.gemini/audio/recordings\n"
+                "- `/volume [stream] [level]`: Query or adjust satellite device hardware volume\n"
                 "- `/snapshot [label]`: Capture UI snapshot held for Gemini review\n"
                 "- `/snapshots`: View count and list of held snapshots\n"
                 "- `/diff`: Preview uncommitted git changes\n"
@@ -4028,7 +4096,7 @@ class ChatApp(App):
             f"13. `manage_system_dependencies(action='check'|'install'|'ensure'|'detect', packages=[...]): Inspects and manages system packages.\n"
             f"14. `introspect_console(tier='all'|'visual'|'runtime'|'workflow'): Inspects live console state across visual layout, runtime environment, and workflow anchors.\n"
             f"15. `interact_ui(action='set_theme'|'accent_talk'|'pulse_nav'|'animate_mind'|'mood'|'inspect', target='feed'|'mind'|'notes'|'input'|'footer'|'navbar'|'edge'|'cards'|'snippets'|'fork'|'all'|'input,navbar', palette='...', effect='sparkle'|'pulse'|'wave'|'synapse'|'glow', duration=3.0, message='...'): Express personality through accent talk on widgets, multi-widget pulses, navbar actions, ambient moods, or Mind screen animations.\n"
-            f"16. `manage_fleet_nodes(action='list'|'rescue'|'reboot'|'check'|'register'|'screenshot'|'list_screenshots'|'media'|'next'|'previous'|'play'|'pause', node_id='...', host='...', command='...'): Inspects connected satellite nodes, fetches screenshots, queries active mobile media & track OCR telemetry, controls playback (next, previous, play, pause), or performs remote SSH rescue/reboot via the configured cluster key.\n\n"
+            f"16. `manage_fleet_nodes(action='list'|'rescue'|'reboot'|'check'|'register'|'screenshot'|'list_screenshots'|'media'|'next'|'previous'|'play'|'pause'|'record_audio'|'tts_speak'|'whisper'|'audio_info'|'volume'|'toast'|'vibrate', node_id='...', host='...', command='...'): Manages satellite nodes, audio/mic capture, earbud TTS whisper, media playback, screenshots, OCR telemetry, or SSH rescue/reboot.\n\n"
             f"### UI SNAPSHOT RETENTION & VALIDATION PROTOCOL\n"
             f"• Snapshot Retention Rules:\n"
             f"  - Snapshots captured via command with a name (`/snapshot <name>`) are saved permanently to disk without deleting them.\n"

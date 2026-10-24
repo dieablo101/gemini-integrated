@@ -1668,6 +1668,266 @@ class SatelliteNode:
                     result_payload["status"] = "error"
                     result_payload["error"] = f"Failed to read screenshot: {exc}"
 
+        elif action in ("record_audio", "audio_record", "mic_record"):
+            import base64
+            duration = int(params.get("duration", 5))
+            duration = max(1, min(duration, 60))
+            encoder = str(params.get("encoder", "opus")).lower().strip()
+            if encoder not in ("opus", "aac", "amr_wb", "amr_nb", "mp4"):
+                encoder = "opus"
+            ext = "opus" if encoder == "opus" else ("m4a" if encoder in ("aac", "mp4") else encoder)
+
+            if params.get("stop"):
+                if is_termux_platform() and shutil.which("termux-microphone-record"):
+                    subprocess.run(["termux-microphone-record", "-d"], capture_output=True, timeout=5)
+                    result_payload["status"] = "ok"
+                    result_payload["message"] = "Recording stopped"
+                else:
+                    result_payload["status"] = "error"
+                    result_payload["error"] = "Not recording or termux-microphone-record unavailable"
+            elif params.get("info"):
+                if is_termux_platform() and shutil.which("termux-microphone-record"):
+                    p = subprocess.run(["termux-microphone-record", "-i"], capture_output=True, text=True, timeout=5)
+                    try:
+                        result_payload["info"] = json.loads(p.stdout)
+                        result_payload["status"] = "ok"
+                    except Exception:
+                        result_payload["status"] = "ok"
+                        result_payload["raw"] = p.stdout.strip()
+                else:
+                    result_payload["status"] = "error"
+                    result_payload["error"] = "termux-microphone-record unavailable"
+            else:
+                if is_termux_platform() and shutil.which("termux-microphone-record"):
+                    tmp_dir = Path.home()
+                    tmp_file = tmp_dir / f"audio_capture_{int(time.time())}.{ext}"
+                    try:
+                        rec_cmd = ["termux-microphone-record", "-l", str(duration), "-f", str(tmp_file), "-e", encoder]
+                        p_start = subprocess.run(rec_cmd, capture_output=True, text=True, timeout=10)
+                        if p_start.returncode != 0:
+                            result_payload["status"] = "error"
+                            result_payload["error"] = p_start.stderr or p_start.stdout or "Failed to start recording"
+                        else:
+                            t_start = time.time()
+                            while (time.time() - t_start) < (duration + 6.0):
+                                time.sleep(0.5)
+                                chk = subprocess.run(["termux-microphone-record", "-i"], capture_output=True, text=True, timeout=4)
+                                if '"isRecording": false' in chk.stdout:
+                                    break
+                            if tmp_file.exists() and tmp_file.stat().st_size > 0:
+                                raw_bytes = tmp_file.read_bytes()
+                                result_payload["status"] = "ok"
+                                result_payload["filename"] = tmp_file.name
+                                result_payload["encoder"] = encoder
+                                result_payload["duration"] = duration
+                                result_payload["size_bytes"] = len(raw_bytes)
+                                result_payload["data_b64"] = base64.b64encode(raw_bytes).decode("ascii")
+                                try:
+                                    tmp_file.unlink()
+                                except Exception:
+                                    pass
+                            else:
+                                result_payload["status"] = "error"
+                                result_payload["error"] = "Recorded audio file was empty or missing"
+                    except Exception as exc:
+                        result_payload["status"] = "error"
+                        result_payload["error"] = f"Audio capture exception: {exc}"
+                        if tmp_file.exists():
+                            try:
+                                tmp_file.unlink()
+                            except Exception:
+                                pass
+                else:
+                    result_payload["status"] = "unsupported"
+                    result_payload["error"] = "Audio recording is currently only supported on Termux nodes with termux-api"
+
+        elif action in ("tts_speak", "whisper", "say"):
+            text = params.get("text") or params.get("message") or ""
+            stream = str(params.get("stream") or "MUSIC").upper().strip()
+            pitch = float(params.get("pitch", 1.0))
+            rate = float(params.get("rate", 1.0))
+            engine = params.get("engine", "")
+            duck = bool(params.get("duck", True))
+
+            if not text:
+                result_payload["status"] = "error"
+                result_payload["error"] = "Empty text for TTS"
+            elif is_termux_platform() and shutil.which("termux-tts-speak"):
+                original_music_vol = None
+                ducked = False
+                duck_vol = None
+
+                # Query current music stream volume to support smooth audio ducking
+                if duck and shutil.which("termux-volume"):
+                    try:
+                        vp = subprocess.run(["termux-volume"], capture_output=True, text=True, timeout=3)
+                        if vp.returncode == 0:
+                            vdata = json.loads(vp.stdout)
+                            for item in vdata:
+                                if str(item.get("stream", "")).lower() == "music":
+                                    original_music_vol = int(item.get("volume", 15))
+                                    break
+                    except Exception:
+                        pass
+
+                if original_music_vol is not None and original_music_vol > 3:
+                    custom_duck = params.get("duck_volume")
+                    if custom_duck is not None:
+                        duck_vol = int(custom_duck)
+                    else:
+                        duck_vol = min(original_music_vol, max(2, int(original_music_vol * 0.25)))
+                    try:
+                        subprocess.run(["termux-volume", "music", str(duck_vol)], capture_output=True, text=True, timeout=3)
+                        ducked = True
+                    except Exception:
+                        pass
+
+                cmd = ["termux-tts-speak", "-s", stream, "-p", str(pitch), "-r", str(rate)]
+                if engine:
+                    cmd.extend(["-e", engine])
+                cmd.append(text)
+                try:
+                    p = subprocess.run(cmd, capture_output=True, text=True, timeout=25)
+                    if p.returncode == 0:
+                        result_payload["status"] = "ok"
+                        result_payload["text"] = text
+                        result_payload["stream"] = stream
+                        result_payload["ducked"] = ducked
+                        if ducked:
+                            result_payload["original_volume"] = original_music_vol
+                            result_payload["duck_volume"] = duck_vol
+                            # Hold ducking until utterance completes
+                            words = len(text.split())
+                            dur = max(1.8, (words / (2.6 * max(0.1, rate))) + 0.8)
+                            time.sleep(dur)
+                    else:
+                        result_payload["status"] = "error"
+                        result_payload["error"] = p.stderr or p.stdout or "TTS synthesis failed"
+                except Exception as exc:
+                    result_payload["status"] = "error"
+                    result_payload["error"] = str(exc)
+                finally:
+                    if ducked and original_music_vol is not None:
+                        try:
+                            subprocess.run(["termux-volume", "music", str(original_music_vol)], capture_output=True, text=True, timeout=3)
+                        except Exception:
+                            pass
+            elif shutil.which("spd-say"):
+                try:
+                    p = subprocess.run(["spd-say", text], capture_output=True, text=True, timeout=10)
+                    result_payload["status"] = "ok" if p.returncode == 0 else "error"
+                    result_payload["engine"] = "spd-say"
+                except Exception as exc:
+                    result_payload["status"] = "error"
+                    result_payload["error"] = str(exc)
+            elif shutil.which("espeak"):
+                try:
+                    p = subprocess.run(["espeak", text], capture_output=True, text=True, timeout=10)
+                    result_payload["status"] = "ok" if p.returncode == 0 else "error"
+                    result_payload["engine"] = "espeak"
+                except Exception as exc:
+                    result_payload["status"] = "error"
+                    result_payload["error"] = str(exc)
+            else:
+                result_payload["status"] = "unsupported"
+                result_payload["error"] = "No TTS engine available on this node"
+
+        elif action in ("audio_info", "get_audio_info"):
+            if is_termux_platform() and shutil.which("termux-audio-info"):
+                try:
+                    p = subprocess.run(["termux-audio-info"], capture_output=True, text=True, timeout=5)
+                    if p.returncode == 0:
+                        result_payload["status"] = "ok"
+                        try:
+                            ainfo = json.loads(p.stdout)
+                        except Exception:
+                            ainfo = {"raw": p.stdout}
+                        result_payload["audio_info"] = ainfo
+                        result_payload["bluetooth_a2dp"] = bool(ainfo.get("BLUETOOTH_A2DP_IS_ON", False))
+                        result_payload["wired_headset"] = bool(ainfo.get("WIREDHEADSET_IS_CONNECTED", False))
+                        result_payload["headphones_connected"] = bool(
+                            result_payload["bluetooth_a2dp"] or result_payload["wired_headset"]
+                        )
+                    else:
+                        result_payload["status"] = "error"
+                        result_payload["error"] = p.stderr or "termux-audio-info returned non-zero"
+                except Exception as exc:
+                    result_payload["status"] = "error"
+                    result_payload["error"] = str(exc)
+
+                if shutil.which("termux-volume"):
+                    try:
+                        vp = subprocess.run(["termux-volume"], capture_output=True, text=True, timeout=3)
+                        if vp.returncode == 0:
+                            vdata = json.loads(vp.stdout)
+                            result_payload["volumes"] = vdata
+                            for item in vdata:
+                                if str(item.get("stream", "")).lower() == "music":
+                                    result_payload["music_volume"] = item.get("volume")
+                                    result_payload["max_music_volume"] = item.get("max_volume")
+                                    break
+                    except Exception:
+                        pass
+            else:
+                result_payload["status"] = "unsupported"
+                result_payload["error"] = "termux-audio-info is only supported on Termux nodes"
+
+        elif action in ("volume_control", "volume", "set_volume"):
+            stream = str(params.get("stream") or "music").lower().strip()
+            target_vol = params.get("volume")
+            if is_termux_platform() and shutil.which("termux-volume"):
+                try:
+                    if target_vol is not None:
+                        cmd = ["termux-volume", stream, str(target_vol)]
+                        p = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+                    else:
+                        p = subprocess.run(["termux-volume"], capture_output=True, text=True, timeout=5)
+                    if p.returncode == 0:
+                        result_payload["status"] = "ok"
+                        try:
+                            result_payload["volume"] = json.loads(p.stdout)
+                        except Exception:
+                            result_payload["volume"] = p.stdout.strip()
+                    else:
+                        result_payload["status"] = "error"
+                        result_payload["error"] = p.stderr or "termux-volume returned non-zero"
+                except Exception as exc:
+                    result_payload["status"] = "error"
+                    result_payload["error"] = str(exc)
+            else:
+                result_payload["status"] = "unsupported"
+                result_payload["error"] = "termux-volume is only supported on Termux nodes"
+
+        elif action == "toast":
+            msg = params.get("message") or params.get("text") or "Bilateral notification"
+            bg = str(params.get("background", "gray"))
+            color = str(params.get("color", "white"))
+            if is_termux_platform() and shutil.which("termux-toast"):
+                cmd = ["termux-toast", "-b", bg, "-c", color, msg]
+                try:
+                    subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+                    result_payload["status"] = "ok"
+                except Exception as exc:
+                    result_payload["status"] = "error"
+                    result_payload["error"] = str(exc)
+            else:
+                result_payload["status"] = "unsupported"
+
+        elif action == "vibrate":
+            dur = int(params.get("duration_ms", 300))
+            if is_termux_platform() and shutil.which("termux-vibrate"):
+                cmd = ["termux-vibrate", "-d", str(dur)]
+                if params.get("force"):
+                    cmd.append("-f")
+                try:
+                    subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+                    result_payload["status"] = "ok"
+                except Exception as exc:
+                    result_payload["status"] = "error"
+                    result_payload["error"] = str(exc)
+            else:
+                result_payload["status"] = "unsupported"
+
         else:
             result_payload["status"] = "unsupported"
             result_payload["error"] = f"Unknown action: {action}"
@@ -1950,7 +2210,8 @@ class SatelliteNode:
                     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
                 except Exception:
                     pass
-            srv.bind(("0.0.0.0", DEFAULT_RENDEZVOUS_PORT))
+            r_port = getattr(self, "rendezvous_port", None) or DEFAULT_RENDEZVOUS_PORT
+            srv.bind(("0.0.0.0", r_port))
             srv.listen(5)
             self._rendezvous_sock = srv
 

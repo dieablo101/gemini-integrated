@@ -368,12 +368,17 @@ class TestFleetNetwork(unittest.TestCase):
     def test_rendezvous_ip_migration_dispatch(self) -> None:
         """Tests inbound rendezvous listener updating node endpoints when Mothership IP migrates."""
         node_id = "test-rendezvous-node"
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s_ephem:
+            s_ephem.bind(("127.0.0.1", 0))
+            test_r_port = s_ephem.getsockname()[1]
+
         satellite = SatelliteNode(
             mothership_host="127.0.0.1",
             mothership_port=self.test_port,
             node_id=node_id,
             heartbeat_interval=1.0,
         )
+        satellite.rendezvous_port = test_r_port
         try:
             started = satellite.start()
             self.assertTrue(started)
@@ -393,7 +398,7 @@ class TestFleetNetwork(unittest.TestCase):
 
             # Temporarily allow 127.0.0.1 in notify_fleet_of_ip_change for test
             with patch("gemini_app.fleet.nodes.load_nodes_registry", return_value={
-                node_id: {"host": "127.0.0.1", "ssh_port": None}
+                node_id: {"host": "127.0.0.1", "ssh_port": None, "rendezvous_port": test_r_port}
             }):
                 results = self.server.notify_fleet_of_ip_change(
                     new_lan_ip="192.168.1.250",
@@ -940,6 +945,190 @@ class TestFleetNodesAndAutostart(unittest.TestCase):
                 call_cmds = [call[0][0] for call in mock_sub.call_args_list]
                 self.assertTrue(any("media_session" in cmd for cmd in call_cmds))
                 self.assertTrue(any("com.spotify.mobile.android.ui.widget.NEXT" in cmd for cmd in call_cmds))
+
+    def test_node_audio_recording_dispatch(self) -> None:
+        """Verifies audio recording dispatch and base64 packaging on satellite node."""
+        import base64
+        import tempfile
+        node = SatelliteNode("127.0.0.1", 7331, node_id="test-audio-satellite")
+        fake_audio = b"\x00\x01\x02\x03FAKEOPUSAUDIO"
+
+        with patch("gemini_app.fleet.satellite.is_termux_platform", return_value=True):
+            with patch("shutil.which", return_value="/data/data/com.termux/files/usr/bin/termux-microphone-record"):
+                with patch("pathlib.Path.exists", return_value=True), \
+                     patch("pathlib.Path.stat", return_value=MagicMock(st_size=len(fake_audio))), \
+                     patch("pathlib.Path.read_bytes", return_value=fake_audio), \
+                     patch("pathlib.Path.unlink", return_value=None):
+                    with patch("subprocess.run") as mock_sub:
+                        mock_sub.side_effect = [
+                            MagicMock(returncode=0, stdout="", stderr=""),
+                            MagicMock(returncode=0, stdout='{"isRecording": false}', stderr=""),
+                        ]
+                        cmd_msg = FleetMessage(
+                            msg_type=FleetMessage.TYPE_COMMAND,
+                            node_id="test-audio-satellite",
+                            payload={"action": "record_audio", "params": {"duration": 2, "encoder": "opus"}},
+                        )
+                        resp = node.handle_command(cmd_msg)
+                        self.assertEqual(resp.payload.get("status"), "ok")
+                        self.assertEqual(resp.payload.get("encoder"), "opus")
+                        self.assertEqual(resp.payload.get("size_bytes"), len(fake_audio))
+                        self.assertEqual(resp.payload.get("data_b64"), base64.b64encode(fake_audio).decode("ascii"))
+
+    def test_node_tts_whisper_dispatch(self) -> None:
+        """Verifies text-to-speech whisper command dispatch to mobile node."""
+        node = SatelliteNode("127.0.0.1", 7331, node_id="test-tts-satellite")
+        with patch("gemini_app.fleet.satellite.is_termux_platform", return_value=True):
+            with patch("shutil.which", return_value="/data/data/com.termux/files/usr/bin/termux-tts-speak"):
+                with patch("subprocess.run") as mock_sub:
+                    mock_sub.return_value = MagicMock(returncode=0, stdout="", stderr="")
+                    cmd_msg = FleetMessage(
+                        msg_type=FleetMessage.TYPE_COMMAND,
+                        node_id="test-tts-satellite",
+                        payload={"action": "tts_speak", "params": {"text": "Audio bridge verified", "stream": "MUSIC"}},
+                    )
+                    resp = node.handle_command(cmd_msg)
+                    self.assertEqual(resp.payload.get("status"), "ok")
+                    self.assertEqual(resp.payload.get("stream"), "MUSIC")
+                    self.assertEqual(resp.payload.get("text"), "Audio bridge verified")
+                    call_args = mock_sub.call_args[0][0]
+                    self.assertIn("termux-tts-speak", call_args)
+                    self.assertIn("MUSIC", call_args)
+
+    def test_node_audio_info_dispatch(self) -> None:
+        """Verifies audio subsystem telemetry extraction."""
+        node = SatelliteNode("127.0.0.1", 7331, node_id="test-audio-satellite")
+        fake_info = '{"BLUETOOTH_A2DP_IS_ON": true, "PROPERTY_OUTPUT_SAMPLE_RATE": "48000"}'
+        with patch("gemini_app.fleet.satellite.is_termux_platform", return_value=True):
+            with patch("shutil.which", return_value="/data/data/com.termux/files/usr/bin/termux-audio-info"):
+                with patch("subprocess.run") as mock_sub:
+                    mock_sub.return_value = MagicMock(returncode=0, stdout=fake_info, stderr="")
+                    cmd_msg = FleetMessage(
+                        msg_type=FleetMessage.TYPE_COMMAND,
+                        node_id="test-audio-satellite",
+                        payload={"action": "audio_info", "params": {}},
+                    )
+                    resp = node.handle_command(cmd_msg)
+                    self.assertEqual(resp.payload.get("status"), "ok")
+                    self.assertTrue(resp.payload["audio_info"].get("BLUETOOTH_A2DP_IS_ON"))
+
+    def test_node_volume_control_dispatch(self) -> None:
+        """Verifies hardware volume control on mobile node."""
+        node = SatelliteNode("127.0.0.1", 7331, node_id="test-vol-satellite")
+        fake_vol = '[{"stream": "music", "volume": 15, "max_volume": 15}]'
+        with patch("gemini_app.fleet.satellite.is_termux_platform", return_value=True):
+            with patch("shutil.which", return_value="/data/data/com.termux/files/usr/bin/termux-volume"):
+                with patch("subprocess.run") as mock_sub:
+                    mock_sub.return_value = MagicMock(returncode=0, stdout=fake_vol, stderr="")
+                    cmd_msg = FleetMessage(
+                        msg_type=FleetMessage.TYPE_COMMAND,
+                        node_id="test-vol-satellite",
+                        payload={"action": "volume_control", "params": {"stream": "music", "volume": 12}},
+                    )
+                    resp = node.handle_command(cmd_msg)
+                    self.assertEqual(resp.payload.get("status"), "ok")
+                    call_args = mock_sub.call_args[0][0]
+                    self.assertIn("12", call_args)
+
+    def test_node_toast_and_vibrate_dispatch(self) -> None:
+        """Verifies HUD toast and haptic vibration triggers."""
+        node = SatelliteNode("127.0.0.1", 7331, node_id="test-haptics-satellite")
+        with patch("gemini_app.fleet.satellite.is_termux_platform", return_value=True):
+            with patch("shutil.which", return_value="/data/data/com.termux/files/usr/bin/termux-toast"):
+                with patch("subprocess.run") as mock_sub:
+                    mock_sub.return_value = MagicMock(returncode=0, stdout="", stderr="")
+                    cmd_toast = FleetMessage(
+                        msg_type=FleetMessage.TYPE_COMMAND,
+                        node_id="test-haptics-satellite",
+                        payload={"action": "toast", "params": {"message": "Hello Earbuds!"}},
+                    )
+                    resp_t = node.handle_command(cmd_toast)
+                    self.assertEqual(resp_t.payload.get("status"), "ok")
+
+            with patch("shutil.which", return_value="/data/data/com.termux/files/usr/bin/termux-vibrate"):
+                with patch("subprocess.run") as mock_sub:
+                    mock_sub.return_value = MagicMock(returncode=0, stdout="", stderr="")
+                    cmd_vib = FleetMessage(
+                        msg_type=FleetMessage.TYPE_COMMAND,
+                        node_id="test-haptics-satellite",
+                        payload={"action": "vibrate", "params": {"duration_ms": 500}},
+                    )
+                    resp_v = node.handle_command(cmd_vib)
+                    self.assertEqual(resp_v.payload.get("status"), "ok")
+
+    def test_fleet_audio_helper_functions(self) -> None:
+        """Verifies nodes.py audio helper wrappers send correct Mothership RPC calls."""
+        from gemini_app.fleet.nodes import (
+            control_node_volume,
+            get_node_audio_info,
+            notify_node_toast,
+            record_node_audio,
+            speak_node_tts,
+            vibrate_node,
+        )
+        with patch("gemini_app.fleet.nodes.send_mothership_command") as mock_cmd:
+            mock_cmd.return_value = {"status": "ok"}
+
+            record_node_audio(node_id="android-termux-localhost", duration=3)
+            mock_cmd.assert_called_with("record_node_audio", {"node_id": "android-termux-localhost", "duration": 3, "encoder": "opus", "stop": False, "info": False}, timeout=23.0)
+
+            speak_node_tts(node_id="android-termux-localhost", text="Hello")
+            mock_cmd.assert_called_with("speak_node_tts", {"node_id": "android-termux-localhost", "text": "Hello", "stream": "MUSIC", "pitch": 1.0, "rate": 1.0, "engine": "", "duck": True}, timeout=30.0)
+
+            get_node_audio_info(node_id="android-termux-localhost")
+            mock_cmd.assert_called_with("get_node_audio_info", {"node_id": "android-termux-localhost"}, timeout=10.0)
+
+            control_node_volume(node_id="android-termux-localhost", stream="music", volume=10)
+            mock_cmd.assert_called_with("control_node_volume", {"node_id": "android-termux-localhost", "stream": "music", "volume": 10}, timeout=10.0)
+
+            notify_node_toast(node_id="android-termux-localhost", message="Test")
+            mock_cmd.assert_called_with("notify_node_toast", {"node_id": "android-termux-localhost", "message": "Test", "background": "gray", "color": "white"}, timeout=10.0)
+
+            vibrate_node(node_id="android-termux-localhost", duration_ms=400)
+            mock_cmd.assert_called_with("vibrate_node", {"node_id": "android-termux-localhost", "duration_ms": 400, "force": False}, timeout=10.0)
+
+    def test_satellite_tts_audio_ducking_and_headphones(self) -> None:
+        """Verifies satellite tts_speak performs volume ducking and audio_info detects headphones."""
+        import json
+        node = SatelliteNode("127.0.0.1", 7331, node_id="test-audio-satellite")
+        with patch("gemini_app.fleet.satellite.is_termux_platform", return_value=True):
+            with patch("shutil.which", return_value="/termux/bin/cmd"):
+                # Mock volume check and ducking calls
+                def mock_run_side_effect(cmd, *args, **kwargs):
+                    if "termux-volume" in cmd:
+                        if len(cmd) == 1:
+                            return MagicMock(returncode=0, stdout=json.dumps([{"stream": "music", "volume": 15, "max_volume": 15}]), stderr="")
+                        return MagicMock(returncode=0, stdout="", stderr="")
+                    elif "termux-audio-info" in cmd:
+                        return MagicMock(returncode=0, stdout=json.dumps({"BLUETOOTH_A2DP_IS_ON": True, "WIREDHEADSET_IS_CONNECTED": False}), stderr="")
+                    elif "termux-tts-speak" in cmd:
+                        return MagicMock(returncode=0, stdout="", stderr="")
+                    return MagicMock(returncode=0, stdout="", stderr="")
+
+                with patch("subprocess.run", side_effect=mock_run_side_effect) as mock_sub:
+                    with patch("time.sleep", return_value=None):
+                        # Test TTS with ducking
+                        cmd_tts = FleetMessage(
+                            msg_type=FleetMessage.TYPE_COMMAND,
+                            node_id="test-audio-satellite",
+                            payload={"action": "tts_speak", "params": {"text": "Ducking active", "duck": True}},
+                        )
+                        resp = node.handle_command(cmd_tts)
+                        self.assertEqual(resp.payload.get("status"), "ok")
+                        self.assertTrue(resp.payload.get("ducked"))
+                        self.assertEqual(resp.payload.get("original_volume"), 15)
+
+                        # Test audio_info with headphones detection
+                        cmd_info = FleetMessage(
+                            msg_type=FleetMessage.TYPE_COMMAND,
+                            node_id="test-audio-satellite",
+                            payload={"action": "audio_info", "params": {}},
+                        )
+                        resp_i = node.handle_command(cmd_info)
+                        self.assertEqual(resp_i.payload.get("status"), "ok")
+                        self.assertTrue(resp_i.payload.get("bluetooth_a2dp"))
+                        self.assertTrue(resp_i.payload.get("headphones_connected"))
+                        self.assertEqual(resp_i.payload.get("music_volume"), 15)
 
 
 

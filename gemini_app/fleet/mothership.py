@@ -714,6 +714,75 @@ class MothershipServer:
                                     {"media_action": m_action},
                                     timeout=10.0,
                                 )
+                            elif action in ("record_node_audio", "record_audio", "audio_record"):
+                                target_nid = msg.payload.get("params", {}).get("node_id", "") or "android-termux-localhost"
+                                dur = int(msg.payload.get("params", {}).get("duration", 5))
+                                enc = msg.payload.get("params", {}).get("encoder", "opus")
+                                sub_resp = self.send_command(
+                                    target_nid,
+                                    "record_audio",
+                                    {"duration": dur, "encoder": enc, **msg.payload.get("params", {})},
+                                    timeout=float(dur) + 15.0,
+                                )
+                                if sub_resp.get("status") == "ok" and sub_resp.get("data_b64"):
+                                    import base64
+                                    from pathlib import Path
+                                    from gemini_app.config import GEMINI_HOME
+                                    dest_dir = GEMINI_HOME / "audio" / "recordings"
+                                    dest_dir.mkdir(parents=True, exist_ok=True)
+                                    raw_fname = sub_resp.get("filename") or f"audio_{int(time.time())}.opus"
+                                    dest_file = dest_dir / f"node_{target_nid}_{raw_fname}"
+                                    dest_file.write_bytes(base64.b64decode(sub_resp["data_b64"]))
+                                    resp_payload["status"] = "ok"
+                                    resp_payload["local_path"] = str(dest_file)
+                                    resp_payload["filename"] = raw_fname
+                                    resp_payload["size_bytes"] = len(dest_file.read_bytes())
+                                    resp_payload["duration"] = sub_resp.get("duration", dur)
+                                    resp_payload["encoder"] = sub_resp.get("encoder", enc)
+                                    resp_payload["node_id"] = target_nid
+                                else:
+                                    resp_payload["status"] = sub_resp.get("status", "error")
+                                    resp_payload["error"] = sub_resp.get("error", "Audio recording failed or node unresponsive")
+                            elif action in ("speak_node_tts", "tts_speak", "whisper", "say"):
+                                target_nid = msg.payload.get("params", {}).get("node_id", "") or "android-termux-localhost"
+                                resp_payload["tts_result"] = self.send_command(
+                                    target_nid,
+                                    "tts_speak",
+                                    msg.payload.get("params", {}),
+                                    timeout=25.0,
+                                )
+                            elif action in ("get_node_audio_info", "audio_info"):
+                                target_nid = msg.payload.get("params", {}).get("node_id", "") or "android-termux-localhost"
+                                resp_payload["audio_info"] = self.send_command(
+                                    target_nid,
+                                    "audio_info",
+                                    msg.payload.get("params", {}),
+                                    timeout=10.0,
+                                )
+                            elif action in ("control_node_volume", "volume_control", "volume"):
+                                target_nid = msg.payload.get("params", {}).get("node_id", "") or "android-termux-localhost"
+                                resp_payload["volume_result"] = self.send_command(
+                                    target_nid,
+                                    "volume_control",
+                                    msg.payload.get("params", {}),
+                                    timeout=10.0,
+                                )
+                            elif action in ("notify_node_toast", "toast"):
+                                target_nid = msg.payload.get("params", {}).get("node_id", "") or "android-termux-localhost"
+                                resp_payload["toast_result"] = self.send_command(
+                                    target_nid,
+                                    "toast",
+                                    msg.payload.get("params", {}),
+                                    timeout=10.0,
+                                )
+                            elif action in ("vibrate_node", "vibrate"):
+                                target_nid = msg.payload.get("params", {}).get("node_id", "") or "android-termux-localhost"
+                                resp_payload["vibrate_result"] = self.send_command(
+                                    target_nid,
+                                    "vibrate",
+                                    msg.payload.get("params", {}),
+                                    timeout=10.0,
+                                )
                             elif action == "mothership_telemetry":
                                 resp_payload["mothership_telemetry"] = collect_mothership_telemetry(
                                     cognitive_override=self._cognitive_override,
@@ -1540,11 +1609,12 @@ class MothershipServer:
             method_used = "rendezvous_tcp"
             detail = ""
 
-            # 1. Try Rendezvous TCP port 7332
+            # 1. Try Rendezvous TCP port
             try:
                 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 s.settimeout(timeout)
-                s.connect((nhost, DEFAULT_RENDEZVOUS_PORT))
+                target_r_port = int(ninfo.get("rendezvous_port") or DEFAULT_RENDEZVOUS_PORT)
+                s.connect((nhost, target_r_port))
                 cmd_ts = time.time()
                 cmd_sig = compute_command_signature(self.fleet_key, "update_mothership_endpoint", nid, cmd_ts)
                 cmd = FleetMessage(

@@ -455,4 +455,96 @@ def control_node_media(node_id: str = "android-termux-localhost", media_action: 
     return send_mothership_command("control_node_media", params, timeout=10.0)
 
 
+def record_node_audio(
+    node_id: str = "android-termux-localhost",
+    duration: int = 5,
+    encoder: str = "opus",
+    stop: bool = False,
+    info: bool = False,
+) -> Dict[str, Any]:
+    """Captures audio from satellite node microphone (e.g. Bose Bluetooth earbuds) and returns saved local audio path."""
+    params = {
+        "node_id": node_id,
+        "duration": duration,
+        "encoder": encoder,
+        "stop": stop,
+        "info": info,
+    }
+    return send_mothership_command("record_node_audio", params, timeout=float(duration) + 20.0)
+
+
+def speak_node_tts(
+    node_id: str = "android-termux-localhost",
+    text: str = "",
+    stream: str = "MUSIC",
+    pitch: float = 1.0,
+    rate: float = 1.0,
+    engine: str = "",
+    duck: bool = True,
+    duck_volume: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Synthesizes text-to-speech audio directly to satellite node output or active Bluetooth earbuds with intelligent music ducking."""
+    params: Dict[str, Any] = {
+        "node_id": node_id,
+        "text": text,
+        "stream": stream,
+        "pitch": pitch,
+        "rate": rate,
+        "engine": engine,
+        "duck": duck,
+    }
+    if duck_volume is not None:
+        params["duck_volume"] = duck_volume
+    return send_mothership_command("speak_node_tts", params, timeout=30.0)
+
+
+def get_node_audio_info(node_id: str = "android-termux-localhost") -> Dict[str, Any]:
+    """Queries audio subsystem telemetry (Bluetooth A2DP, sample rate, routing) from a satellite node."""
+    params = {"node_id": node_id}
+    return send_mothership_command("get_node_audio_info", params, timeout=10.0)
+
+
+def control_node_volume(
+    node_id: str = "android-termux-localhost",
+    stream: str = "music",
+    volume: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Gets or sets the hardware volume level for a specific audio stream on a satellite node."""
+    params = {"node_id": node_id, "stream": stream}
+    if volume is not None:
+        params["volume"] = volume
+    return send_mothership_command("control_node_volume", params, timeout=10.0)
+
+
+def notify_node_toast(
+    node_id: str = "android-termux-localhost",
+    message: str = "",
+    background: str = "gray",
+    color: str = "white",
+) -> Dict[str, Any]:
+    """Displays a transient popup toast on the mobile satellite screen."""
+    params = {
+        "node_id": node_id,
+        "message": message,
+        "background": background,
+        "color": color,
+    }
+    return send_mothership_command("notify_node_toast", params, timeout=10.0)
+
+
+def vibrate_node(
+    node_id: str = "android-termux-localhost",
+    duration_ms: int = 300,
+    force: bool = False,
+) -> Dict[str, Any]:
+    """Triggers physical haptic vibration on the mobile satellite node."""
+    params = {
+        "node_id": node_id,
+        "duration_ms": duration_ms,
+        "force": force,
+    }
+    return send_mothership_command("vibrate_node", params, timeout=10.0)
+
+
+
 

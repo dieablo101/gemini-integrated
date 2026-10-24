@@ -261,7 +261,7 @@ class ToolRegistry:
             host: str = "",
             command: str = "",
         ) -> Dict[str, Any]:
-            """Manages distributed satellite nodes: lists active/registered nodes, inspects vitals, fetches/lists node screenshots, controls mobile music playback (next/prev/play/pause), queries mobile media telemetry, or performs remote SSH rescue/reboot via the configured cluster key."""
+            """Manages distributed satellite nodes: lists active/registered nodes, captures mic/earbud audio, synthesizes earbud TTS whispers, inspects audio/media telemetry, controls playback, fetches screenshots, or performs remote SSH rescue/reboot."""
             self._notify_phase("fleet", f"fleet node management ({action} {node_id})")
             from gemini_app.fleet.nodes import (
                 control_node_media,
@@ -297,6 +297,47 @@ class ToolRegistry:
                 })
             elif act in ("actions", "wingman_actions", "get_actions", "poll_actions"):
                 return send_mothership_command("get_wingman_actions", {})
+            elif act in ("record", "mic_record", "record_audio", "audio_record", "capture_audio", "mic"):
+                target = node_id or "android-termux-localhost"
+                from gemini_app.fleet.nodes import record_node_audio
+                dur = 5
+                if command and command.strip().isdigit():
+                    dur = int(command.strip())
+                return record_node_audio(node_id=target, duration=dur)
+            elif act in ("tts", "tts_speak", "whisper", "say", "speak"):
+                target = node_id or "android-termux-localhost"
+                from gemini_app.fleet.nodes import speak_node_tts
+                text_to_speak = command or host or "Bilateral audio ping."
+                return speak_node_tts(node_id=target, text=text_to_speak, duck=True)
+            elif act in ("audio_info", "mic_info", "audio_status", "audio", "headphones"):
+                target = node_id or "android-termux-localhost"
+                from gemini_app.fleet.nodes import get_node_audio_info
+                return get_node_audio_info(node_id=target)
+            elif act in ("volume", "set_volume", "vol"):
+                target = node_id or "android-termux-localhost"
+                from gemini_app.fleet.nodes import control_node_volume
+                vol_val = None
+                stream_name = "music"
+                if command:
+                    parts = command.strip().split()
+                    if len(parts) == 1 and parts[0].isdigit():
+                        vol_val = int(parts[0])
+                    elif len(parts) >= 2:
+                        stream_name = parts[0]
+                        if parts[1].isdigit():
+                            vol_val = int(parts[1])
+                return control_node_volume(node_id=target, stream=stream_name, volume=vol_val)
+            elif act in ("toast", "notify_toast"):
+                target = node_id or "android-termux-localhost"
+                from gemini_app.fleet.nodes import notify_node_toast
+                return notify_node_toast(node_id=target, message=command or "Bilateral Toast")
+            elif act in ("vibrate", "buzz"):
+                target = node_id or "android-termux-localhost"
+                from gemini_app.fleet.nodes import vibrate_node
+                dur_ms = 300
+                if command and command.strip().isdigit():
+                    dur_ms = int(command.strip())
+                return vibrate_node(node_id=target, duration_ms=dur_ms)
             elif act in ("screenshot", "fetch_screenshot", "get_screenshot"):
                 target = node_id or "android-termux-localhost"
                 from gemini_app.fleet.nodes import fetch_node_screenshot

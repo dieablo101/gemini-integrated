@@ -297,8 +297,9 @@ class WingmanSecurity:
         session_id: str,
         passkey: str,
         trust_device: bool = False,
+        verifier: Optional[Callable[[str], bool]] = None,
     ) -> tuple[bool, Optional[str], str]:
-        """Verifies passkey strictly against Mothership/Vault salted PBKDF2 hash."""
+        """Verifies passkey strictly against Mothership/Vault salted PBKDF2 hash or custom verifier."""
         session = self.get_session(session_id)
         if not session:
             return False, None, "Session not found or expired"
@@ -307,8 +308,17 @@ class WingmanSecurity:
         if not clean_passkey:
             return False, None, "Passkey cannot be empty"
 
-        from gemini_app.fleet.wingman_auth import verify_homebase_passkey
-        if not verify_homebase_passkey(clean_passkey):
+        valid = False
+        if verifier:
+            try:
+                valid = bool(verifier(clean_passkey))
+            except Exception:
+                valid = False
+        else:
+            from gemini_app.fleet.wingman_auth import verify_homebase_passkey
+            valid = verify_homebase_passkey(clean_passkey)
+
+        if not valid:
             return False, None, "Invalid Homebase vault passkey"
 
         # Authorized!

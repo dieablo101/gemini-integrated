@@ -597,6 +597,63 @@ class MothershipServer:
                                 else:
                                     resp_payload["status"] = "error"
                                     resp_payload["error"] = "Missing node_id or command"
+                            elif action in ("take_node_camera_photo", "take_camera_photo", "camera_photo"):
+                                target_nid = msg.payload.get("params", {}).get("node_id", "") or "ipad-ish-localhost"
+                                facing = str(msg.payload.get("params", {}).get("facing", "front")).lower().strip()
+                                cam_id = "1" if facing in ("front", "user") else "0"
+                                if "camera_id" in msg.payload.get("params", {}):
+                                    cam_id = str(msg.payload["params"]["camera_id"])
+
+                                if target_nid == "android-termux-localhost":
+                                    # Android Termux camera execution
+                                    photo_cmd = f"export PATH=$PREFIX/bin:$PATH; termux-camera-photo -c {cam_id} $HOME/camera_snap_{cam_id}.jpg && base64 $HOME/camera_snap_{cam_id}.jpg"
+                                    sub_resp = self.send_command(
+                                        target_nid,
+                                        "exec",
+                                        {"command": photo_cmd, "timeout": 15.0},
+                                        timeout=20.0,
+                                    )
+                                    if sub_resp.get("status") == "ok" and sub_resp.get("stdout"):
+                                        import base64
+                                        from pathlib import Path
+                                        from gemini_app.config import GEMINI_HOME
+                                        dest_dir = GEMINI_HOME / "screenshots"
+                                        dest_dir.mkdir(parents=True, exist_ok=True)
+                                        fname = f"camera_{target_nid}_facing_{facing}_{int(time.time())}.jpg"
+                                        dest_file = dest_dir / fname
+                                        raw_b64 = sub_resp["stdout"].strip()
+                                        dest_file.write_bytes(base64.b64decode(raw_b64))
+                                        resp_payload["status"] = "ok"
+                                        resp_payload["local_path"] = str(dest_file)
+                                        resp_payload["filename"] = fname
+                                        resp_payload["node_id"] = target_nid
+                                        resp_payload["facing"] = facing
+                                        resp_payload["camera_id"] = cam_id
+                                        resp_payload["size_bytes"] = len(dest_file.read_bytes())
+                                    else:
+                                        resp_payload["status"] = "error"
+                                        resp_payload["error"] = sub_resp.get("stderr") or sub_resp.get("error", "Camera capture failed")
+                                else:
+                                    # iPad or other satellite node: push interactive camera shutter card to Wingman
+                                    card_title = "📸 Screen-Side Camera Capture" if facing in ("front", "user") else "📸 Camera Capture"
+                                    card_content = (
+                                        f"Gemini requested a photo capture from the {facing} camera ({target_nid}).\n"
+                                        "Tap 'Snap Front Camera' to capture via WebKit MediaDevices, or 'iOS Shutter' for native viewfinder snapshot."
+                                    )
+                                    push_res = self.push_wingman_card(
+                                        node_id=target_nid,
+                                        title=card_title,
+                                        content=card_content,
+                                        actions=[
+                                            {"label": "📸 Snap Front Camera", "action": "camera_webrtc", "style": "primary"},
+                                            {"label": "📷 iOS Viewfinder Shutter", "action": "camera_native", "style": "secondary"},
+                                        ],
+                                        accent=True,
+                                    )
+                                    resp_payload["status"] = "ok"
+                                    resp_payload["push_result"] = push_res
+                                    resp_payload["message"] = f"Camera shutter card pushed to Wingman on '{target_nid}'"
+
                             elif action in ("fetch_node_screenshot", "fetch_screenshot"):
                                 target_nid = msg.payload.get("params", {}).get("node_id", "")
                                 if not target_nid:
@@ -1016,6 +1073,34 @@ class MothershipServer:
                                         s_cli.close()
                                 except Exception:
                                     pass
+
+                            elif event_name in ("camera_photo_captured", "photo_captured"):
+                                raw_b64 = msg.payload.get("data_b64") or msg.payload.get("body", {}).get("data_b64", "")
+                                fname = msg.payload.get("filename") or msg.payload.get("body", {}).get("filename", "camera_photo.jpg")
+                                if raw_b64:
+                                    try:
+                                        import base64
+                                        from pathlib import Path
+                                        from gemini_app.config import GEMINI_HOME
+                                        dest_dir = GEMINI_HOME / "screenshots"
+                                        dest_dir.mkdir(parents=True, exist_ok=True)
+                                        dest_file = dest_dir / f"node_{node_id}_{fname}"
+                                        dest_file.write_bytes(base64.b64decode(raw_b64))
+
+                                        from gemini_app.fleet.media_ocr import extract_screen_text, parse_mobile_media
+                                        ocr_res = extract_screen_text(dest_file)
+                                        media_data = parse_mobile_media(ocr_res, filename=fname)
+                                        with self.lock:
+                                            self.latest_node_media[node_id] = {
+                                                **media_data,
+                                                "local_path": str(dest_file),
+                                                "filename": fname,
+                                                "timestamp": time.time(),
+                                                "is_camera_photo": True,
+                                            }
+                                        sys.stdout.write(f"[mothership] Camera photo synchronized from {node_id}: {dest_file} ({dest_file.stat().st_size} bytes)\n")
+                                    except Exception as exc:
+                                        sys.stderr.write(f"[mothership] Failed to process camera photo: {exc}\n")
 
                             elif event_name in ("screenshot_captured", "new_screenshot"):
                                 raw_b64 = msg.payload.get("data_b64", "")

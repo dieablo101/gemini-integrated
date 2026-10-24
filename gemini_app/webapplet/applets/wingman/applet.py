@@ -91,6 +91,9 @@ class WingmanApplet:
         # Card action responses
         self.engine.register_post("/applet/wingman/action", self._handle_action)
 
+        # Camera photo capture backhaul
+        self.engine.register_post("/applet/wingman/photo", self._handle_photo)
+
         # Bilateral Chat Stream
         self.engine.register_post("/applet/wingman/chat", self._handle_chat)
         self.engine.register_get("/applet/wingman/chat_history", self._handle_chat_history)
@@ -247,6 +250,7 @@ class WingmanApplet:
             session_id=sess_id,
             passkey=passkey,
             trust_device=trust_device,
+            verifier=self._passkey_verifier,
         )
         if ok:
             sess = self.security.get_session(sess_id)
@@ -284,6 +288,54 @@ class WingmanApplet:
                 except Exception:
                     pass
         return {"status": "ok", "card_id": card_id, "action": action}
+
+    def _handle_photo(self, handler: Any, query: Dict[str, List[str]], body: Any) -> Dict[str, Any]:
+        """Receives camera photo payload from connected Wingman browser."""
+        client_ip = handler.client_address[0] if hasattr(handler, "client_address") else "127.0.0.1"
+        data_b64 = body.get("data_b64") or body.get("image_b64") or ""
+        if data_b64.startswith("data:image"):
+            data_b64 = data_b64.split(",", 1)[-1]
+
+        if not data_b64:
+            return {"status": "error", "message": "No image data received"}
+
+        import base64
+        from pathlib import Path
+        from gemini_app.config import GEMINI_HOME
+        try:
+            raw_bytes = base64.b64decode(data_b64)
+        except Exception as exc:
+            return {"status": "error", "message": f"Base64 decode failed: {exc}"}
+
+        fname = f"wingman_camera_{self.node_id}_{int(time.time())}.jpg"
+        dest_dir = GEMINI_HOME / "screenshots"
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest_file = dest_dir / fname
+        dest_file.write_bytes(raw_bytes)
+
+        card_id = body.get("card_id", "camera-shutter")
+        with self._lock:
+            for cb in self._action_callbacks:
+                try:
+                    cb(card_id, "photo_captured", {
+                        "filename": fname,
+                        "data_b64": data_b64,
+                        "size_bytes": len(raw_bytes),
+                        "local_path": str(dest_file),
+                        "node_id": self.node_id,
+                        "facing": body.get("facing", "user"),
+                        "method": body.get("method", "camera"),
+                    })
+                except Exception:
+                    pass
+
+        return {
+            "status": "ok",
+            "filename": fname,
+            "size_bytes": len(raw_bytes),
+            "local_path": str(dest_file),
+            "message": "Photo synchronized with node filesystem",
+        }
 
     def _handle_chat(self, handler: Any, query: Dict[str, List[str]], body: Any) -> Dict[str, Any]:
         """Receives user chat message from Wingman UI and dispatches to listeners."""

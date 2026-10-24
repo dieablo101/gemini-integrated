@@ -1505,9 +1505,119 @@ def get_wingman_html(
     }}
 
     function handleCardAction(cardId, action) {{
+      if (action === 'camera_webrtc') {{
+        captureWebRTCCamera(cardId);
+        return;
+      }} else if (action === 'camera_native') {{
+        triggerNativeCameraInput(cardId);
+        return;
+      }}
       requireSessionUnlock('Homebase passkey required to execute: ' + action, () => {{
         executeCardAction(cardId, action);
       }});
+    }}
+
+    async function captureWebRTCCamera(cardId) {{
+      const cardEl = document.getElementById('card-' + cardId);
+      if (cardEl) {{
+        const actDiv = cardEl.querySelector('.card-actions');
+        if (actDiv) actDiv.innerHTML = '<span style="font-size: 11px; color: var(--accent);">Opening screen-side camera...</span>';
+      }}
+      try {{
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {{
+          triggerNativeCameraInput(cardId);
+          return;
+        }}
+        const stream = await navigator.mediaDevices.getUserMedia({{
+          video: {{ facingMode: "user" }},
+          audio: false
+        }});
+        const video = document.createElement('video');
+        video.srcObject = stream;
+        video.setAttribute('playsinline', '');
+        video.muted = true;
+        await video.play();
+
+        // Allow auto-exposure settle
+        await new Promise(r => setTimeout(r, 350));
+
+        const canvas = document.createElement('canvas');
+        canvas.width = video.videoWidth || 1280;
+        canvas.height = video.videoHeight || 720;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+        stream.getTracks().forEach(t => t.stop());
+
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
+        await uploadCapturedPhoto(cardId, dataUrl, 'webrtc_front');
+      }} catch (err) {{
+        console.warn("WebRTC front camera fallback:", err);
+        triggerNativeCameraInput(cardId);
+      }}
+    }}
+
+    function triggerNativeCameraInput(cardId) {{
+      let input = document.getElementById('wingmanCameraInput');
+      if (!input) {{
+        input = document.createElement('input');
+        input.type = 'file';
+        input.id = 'wingmanCameraInput';
+        input.accept = 'image/*';
+        input.setAttribute('capture', 'user');
+        input.style.display = 'none';
+        document.body.appendChild(input);
+      }}
+      input.onchange = async (e) => {{
+        const file = e.target.files && e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = async () => {{
+          await uploadCapturedPhoto(cardId, reader.result, 'native_ios_front');
+        }};
+        reader.readAsDataURL(file);
+      }};
+      input.click();
+    }}
+
+    async function uploadCapturedPhoto(cardId, dataUrl, method) {{
+      const cardEl = document.getElementById('card-' + cardId);
+      if (cardEl) {{
+        const actDiv = cardEl.querySelector('.card-actions');
+        if (actDiv) actDiv.innerHTML = '<span style="font-size: 11px; color: var(--accent);">Transmitting photo to Mothership...</span>';
+      }}
+      try {{
+        const res = await fetch('/applet/wingman/photo', {{
+          method: 'POST',
+          headers: {{
+            'Content-Type': 'application/json',
+            'X-Wingman-Token': sessionToken,
+            'X-Wingman-Device': deviceId
+          }},
+          body: JSON.stringify({{
+            card_id: cardId,
+            data_b64: dataUrl,
+            method: method,
+            facing: 'user',
+            device_id: deviceId,
+            device_label: deviceLabel
+          }})
+        }});
+        const reply = await res.json();
+        if (cardEl) {{
+          const actDiv = cardEl.querySelector('.card-actions');
+          if (actDiv) {{
+            const szKb = Math.round((reply.size_bytes || 0) / 1024);
+            actDiv.innerHTML = `<span style="font-size: 11px; color: var(--success);">✓ Screen-side photo captured (${{szKb}} KB)</span>`;
+          }}
+        }}
+        playTone(1046.5, 'sine', 0.15);
+      }} catch (err) {{
+        if (cardEl) {{
+          const actDiv = cardEl.querySelector('.card-actions');
+          if (actDiv) actDiv.innerHTML = `<span style="font-size: 11px; color: var(--danger);">✗ Upload failed: ${{escapeHtml(err.message)}}</span>`;
+        }}
+      }}
     }}
 
     async function executeCardAction(cardId, action) {{

@@ -546,5 +546,21 @@ def vibrate_node(
     return send_mothership_command("vibrate_node", params, timeout=10.0)
 
 
+def take_node_camera_photo(
+    node_id: str = "ipad-ish-localhost",
+    facing: str = "front",
+    camera_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Captures a photo from satellite camera (or dispatches Wingman front camera shutter card on iPad)."""
+    params: Dict[str, Any] = {
+        "node_id": node_id,
+        "facing": facing,
+    }
+    if camera_id is not None:
+        params["camera_id"] = str(camera_id)
+    return send_mothership_command("take_node_camera_photo", params, timeout=25.0)
+
+
+
 
 

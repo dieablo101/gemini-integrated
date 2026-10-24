@@ -151,6 +151,40 @@ class TestWingmanAndInspectorApplets(unittest.TestCase):
 
         self.assertIn((card_id, "approve"), received_actions)
 
+    def test_wingman_photo_capture_flow(self) -> None:
+        """Tests photo upload endpoint and callback dispatch."""
+        received_photos = []
+
+        def on_action(cid: str, act: str, body: dict) -> None:
+            if act == "photo_captured":
+                received_photos.append(body)
+
+        self.wingman.on_action(on_action)
+
+        photo_url = f"http://127.0.0.1:{self.wingman.engine.port}/applet/wingman/photo"
+        import base64
+        fake_b64 = base64.b64encode(b"FAKE_JPEG_BINARY_DATA").decode("ascii")
+        req_data = json.dumps({
+            "card_id": "test-card",
+            "data_b64": fake_b64,
+            "facing": "user",
+            "method": "webrtc_front",
+        }).encode()
+        req = urllib.request.Request(
+            photo_url,
+            data=req_data,
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=2.0) as resp:
+            self.assertEqual(resp.status, 200)
+            data = json.loads(resp.read().decode())
+            self.assertEqual(data["status"], "ok")
+            self.assertTrue(data["filename"].endswith(".jpg"))
+
+        self.assertEqual(len(received_photos), 1)
+        self.assertEqual(received_photos[0]["facing"], "user")
+        self.assertEqual(received_photos[0]["size_bytes"], len(b"FAKE_JPEG_BINARY_DATA"))
+
     def test_wingman_webauthn_biometric_flow(self) -> None:
         """Tests WebAuthn Face ID biometric challenge and response roundtrip."""
         port = self.wingman.engine.port

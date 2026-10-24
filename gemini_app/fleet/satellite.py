@@ -1204,18 +1204,21 @@ class SatelliteNode:
         return []
 
     def _on_wingman_card_action(self, card_id: str, action: str, body: Dict[str, Any]) -> None:
-        """Transmits user button click from Wingman UI back to Mothership."""
+        """Transmits user button click or camera photo from Wingman UI back to Mothership."""
         if not self._running or not self.sock:
             return
         try:
+            ev_type = "camera_photo_captured" if action == "photo_captured" else "wingman_action"
             ev = FleetMessage(
                 msg_type=FleetMessage.TYPE_EVENT,
                 node_id=self.node_id,
                 payload={
-                    "event": "wingman_action",
+                    "event": ev_type,
                     "card_id": card_id,
                     "action": action,
                     "body": body,
+                    "filename": body.get("filename", "photo.jpg"),
+                    "data_b64": body.get("data_b64", ""),
                     "timestamp": time.time(),
                 },
             )

@@ -1593,6 +1593,21 @@ class MothershipServer:
         """Creates a base64 gzipped tarball archive of HEAD for direct satellite upgrades."""
         cwd = find_repo_root(repo_dir)
         commit, _ = _get_git_info_fast(cwd)
+        full_commit = ""
+        try:
+            res_full = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if res_full.returncode == 0 and len(res_full.stdout.strip()) == 40:
+                full_commit = res_full.stdout.strip()
+        except Exception:
+            pass
+        target_commit_sha = full_commit or commit
+
         # 1. Prefer fast git archive of HEAD
         try:
             res = subprocess.run(
@@ -1603,7 +1618,7 @@ class MothershipServer:
             )
             if res.returncode == 0 and res.stdout:
                 b64 = base64.b64encode(res.stdout).decode("ascii")
-                return b64, commit
+                return b64, target_commit_sha
         except Exception:
             pass
 
@@ -1628,9 +1643,9 @@ class MothershipServer:
                                 tar.add(str(full), arcname=arcname)
             buf.seek(0)
             b64 = base64.b64encode(buf.read()).decode("ascii")
-            return b64, commit
+            return b64, target_commit_sha
         except Exception:
-            return None, commit
+            return None, target_commit_sha
 
     def upgrade_node(
         self,

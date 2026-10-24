@@ -565,7 +565,7 @@ def execute_fleet_upgrade(
                         with tar.extractfile(member) as src, open(dest_path, "wb") as dst:
                             dst.write(src.read())
 
-            if target_commit and target_commit != "unknown":
+            if target_commit and target_commit != "unknown" and len(target_commit.strip()) == 40:
                 try:
                     ref_f = cwd / ".git" / "refs" / "heads" / branch_target
                     ref_f.parent.mkdir(parents=True, exist_ok=True)
@@ -639,7 +639,7 @@ def execute_fleet_upgrade(
                                 dst.write(src.read())
 
             # Synchronize git ref so version reader reflects new target commit
-            if target_commit and target_commit != "unknown":
+            if target_commit and target_commit != "unknown" and len(target_commit.strip()) == 40:
                 try:
                     ref_f = cwd / ".git" / "refs" / "heads" / branch_target
                     if ref_f.parent.exists():
@@ -705,12 +705,13 @@ def execute_fleet_upgrade(
     if is_ish:
         if target_commit and target_commit != "unknown":
             new_commit = target_commit[:7]
-            try:
-                ref_f = cwd / ".git" / "refs" / "heads" / branch_target
-                if ref_f.parent.exists():
-                    ref_f.write_text(f"{target_commit.strip()}\n", encoding="utf-8")
-            except Exception:
-                pass
+            if len(target_commit.strip()) == 40:
+                try:
+                    ref_f = cwd / ".git" / "refs" / "heads" / branch_target
+                    if ref_f.parent.exists():
+                        ref_f.write_text(f"{target_commit.strip()}\n", encoding="utf-8")
+                except Exception:
+                    pass
         elif new_commit == "unknown":
             new_commit = "updated"
     elif new_commit == "unknown" or new_commit == old_commit:

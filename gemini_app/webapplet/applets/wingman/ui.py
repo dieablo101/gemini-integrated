@@ -485,10 +485,10 @@ def get_wingman_html(
 
     /* Buttons */
     .btn {{
-      padding: 8px 14px;
-      font-size: 12px;
+      padding: 10px 16px;
+      font-size: 13px;
       font-weight: 600;
-      border-radius: 6px;
+      border-radius: 8px;
       cursor: pointer;
       border: 1px solid transparent;
       display: inline-flex;
@@ -497,10 +497,15 @@ def get_wingman_html(
       gap: 6px;
       transition: all 0.15s ease;
       font-family: var(--font-sans);
+      touch-action: manipulation;
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-touch-callout: none;
+      -webkit-tap-highlight-color: transparent;
     }}
 
-    .btn:active {{
-      transform: scale(0.97);
+    .btn:active, .btn.active {{
+      transform: scale(0.96);
     }}
 
     .btn-primary {{
@@ -515,11 +520,30 @@ def get_wingman_html(
     .btn-biometric {{
       background: #7c3aed;
       color: #fff;
-      box-shadow: 0 0 12px rgba(124, 58, 237, 0.4);
+      font-size: 14px;
+      font-weight: 700;
+      min-height: 50px;
+      min-width: 240px;
+      padding: 14px 28px;
+      border-radius: 12px;
+      box-shadow: 0 0 18px rgba(124, 58, 237, 0.55);
+      touch-action: manipulation;
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-touch-callout: none;
+      -webkit-tap-highlight-color: rgba(124, 58, 237, 0.4);
+      cursor: pointer;
+      letter-spacing: 0.2px;
     }}
 
     .btn-biometric:hover {{
       background: #6d28d9;
+    }}
+
+    .btn-biometric:active, .btn-biometric.active {{
+      background: #5b21b6;
+      transform: scale(0.96);
+      box-shadow: 0 0 26px rgba(147, 51, 234, 0.85);
     }}
 
     .btn-secondary {{
@@ -568,6 +592,11 @@ def get_wingman_html(
     .card, .chat-bubble {{
       touch-action: pan-y;
       pointer-events: auto;
+    }}
+
+    .card button, .card .btn {{
+      touch-action: manipulation !important;
+      pointer-events: auto !important;
     }}
 
     .chat-bubble {{
@@ -2370,9 +2399,14 @@ def get_wingman_html(
 
     /* Biometric WebAuthn */
     async function renderBiometricPrompt(chal) {{
-      if (typeof switchView === 'function') {{
-        switchView('work');
+      if (typeof selectMode === 'function') {{
+        selectMode('work');
       }}
+
+      // Purge any stale uncompleted biometric cards so only the fresh challenge is active
+      const oldCards = workView.querySelectorAll('.card.biometric');
+      oldCards.forEach(c => c.remove());
+
       const cardEl = document.createElement('div');
       cardEl.className = 'card biometric';
       cardEl.id = 'bio-' + chal.challenge_id;
@@ -2380,11 +2414,14 @@ def get_wingman_html(
       cardEl.innerHTML = `
         <div class="card-header">
           <span class="card-title" style="color: #c4b5fd;">🔒 Face ID / Biometric Gate</span>
-          <span class="card-time">SECURE</span>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span class="card-time">SECURE</span>
+            <button type="button" onclick="document.getElementById('bio-${{chal.challenge_id}}')?.remove()" style="background: none; border: none; color: var(--text-muted); font-size: 16px; cursor: pointer; padding: 2px 6px; touch-action: manipulation;" title="Dismiss">✕</button>
+          </div>
         </div>
         <div class="card-content">${{escapeHtml(chal.reason || 'Authentication required to authorize operation.')}}</div>
-        <div style="text-align: center; padding: 12px 0;">
-          <button id="btn-bio-${{chal.challenge_id}}" class="btn btn-biometric" onclick="triggerWebAuthn('${{chal.challenge_id}}', '${{chal.nonce}}')">
+        <div style="text-align: center; padding: 16px 0;">
+          <button type="button" id="btn-bio-${{chal.challenge_id}}" class="btn btn-biometric" onclick="triggerWebAuthn('${{chal.challenge_id}}', '${{chal.nonce}}')">
             Scan Face ID / Touch ID
           </button>
         </div>
@@ -2392,6 +2429,25 @@ def get_wingman_html(
 
       workView.appendChild(cardEl);
       workView.scrollTop = workView.scrollHeight;
+
+      // Wire explicit click and touchend handlers directly to avoid iOS Safari tap-cancellation
+      const bioBtn = cardEl.querySelector('#btn-bio-' + chal.challenge_id);
+      if (bioBtn) {{
+        let handled = false;
+        const onActivate = (e) => {{
+          if (handled) return;
+          handled = true;
+          if (e && e.preventDefault) e.preventDefault();
+          if (e && e.stopPropagation) e.stopPropagation();
+          triggerWebAuthn(chal.challenge_id, chal.nonce);
+        }};
+        bioBtn.addEventListener('click', onActivate);
+        bioBtn.addEventListener('touchend', onActivate);
+        bioBtn.addEventListener('touchstart', () => {{
+          bioBtn.classList.add('active');
+        }}, {{ passive: true }});
+      }}
+
       playTone(659.25, 'sine', 0.15);
     }}
 
@@ -2468,8 +2524,8 @@ def get_wingman_html(
           cardEl.innerHTML = `
             <div class="card-header"><span class="card-title" style="color: var(--danger);">⚠️ Biometric Verification Failed</span></div>
             <div class="card-content" style="color: var(--danger); font-size: 13px;">${{escapeHtml(err.name || 'Error')}}: ${{escapeHtml(err.message || 'Operation failed')}}</div>
-            <div style="text-align: center; padding: 12px 0;">
-              <button class="btn btn-biometric" onclick="triggerWebAuthn('${{challengeId}}', '${{nonce}}')">
+            <div style="text-align: center; padding: 16px 0;">
+              <button type="button" class="btn btn-biometric" onclick="triggerWebAuthn('${{challengeId}}', '${{nonce}}')" ontouchend="triggerWebAuthn('${{challengeId}}', '${{nonce}}')">
                 Retry Face ID / Touch ID
               </button>
             </div>

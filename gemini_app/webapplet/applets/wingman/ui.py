@@ -2370,6 +2370,9 @@ def get_wingman_html(
 
     /* Biometric WebAuthn */
     async function renderBiometricPrompt(chal) {{
+      if (typeof switchView === 'function') {{
+        switchView('work');
+      }}
       const cardEl = document.createElement('div');
       cardEl.className = 'card biometric';
       cardEl.id = 'bio-' + chal.challenge_id;
@@ -2381,7 +2384,7 @@ def get_wingman_html(
         </div>
         <div class="card-content">${{escapeHtml(chal.reason || 'Authentication required to authorize operation.')}}</div>
         <div style="text-align: center; padding: 12px 0;">
-          <button class="btn btn-biometric" onclick="triggerWebAuthn('${{chal.challenge_id}}', '${{chal.nonce}}')">
+          <button id="btn-bio-${{chal.challenge_id}}" class="btn btn-biometric" onclick="triggerWebAuthn('${{chal.challenge_id}}', '${{chal.nonce}}')">
             Scan Face ID / Touch ID
           </button>
         </div>
@@ -2389,14 +2392,20 @@ def get_wingman_html(
 
       workView.appendChild(cardEl);
       workView.scrollTop = workView.scrollHeight;
-      triggerWebAuthn(chal.challenge_id, chal.nonce);
+      playTone(659.25, 'sine', 0.15);
     }}
 
     async function triggerWebAuthn(challengeId, nonce) {{
       const cardEl = document.getElementById('bio-' + challengeId);
+      const btnEl = document.getElementById('btn-bio-' + challengeId);
+      if (btnEl) {{
+        btnEl.disabled = true;
+        btnEl.innerText = "Authenticating Face ID...";
+      }}
       try {{
         let assertionResult = {{}};
-        if (window.PublicKeyCredential && window.isSecureContext) {{
+        const isIp = /^(?:[0-9]{1,3}\\.){3}[0-9]{1,3}$/.test(window.location.hostname);
+        if (window.PublicKeyCredential && window.isSecureContext && !isIp) {{
           const challengeBytes = new TextEncoder().encode(nonce);
           const userIdBytes = new TextEncoder().encode("gemini-operator");
 
@@ -2436,6 +2445,17 @@ def get_wingman_html(
         }}
         playTone(1046.5, 'sine', 0.2);
       }} catch (err) {{
+        if (cardEl) {{
+          cardEl.innerHTML = `
+            <div class="card-header"><span class="card-title" style="color: var(--danger);">⚠️ Biometric Verification Failed</span></div>
+            <div class="card-content" style="color: var(--danger); font-size: 13px;">${{escapeHtml(err.name || 'Error')}}: ${{escapeHtml(err.message || 'Operation failed')}}</div>
+            <div style="text-align: center; padding: 12px 0;">
+              <button class="btn btn-biometric" onclick="triggerWebAuthn('${{challengeId}}', '${{nonce}}')">
+                Retry Face ID / Touch ID
+              </button>
+            </div>
+          `;
+        }}
         fetch('/applet/wingman/webauthn_response', {{
           method: 'POST',
           headers: {{ 'Content-Type': 'application/json', 'X-Wingman-Token': sessionToken }},

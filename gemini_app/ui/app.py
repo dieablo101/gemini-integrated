@@ -3462,6 +3462,51 @@ class ChatApp(App):
                 pass
             return True
 
+        elif verb in ("nowplaying", "now_playing", "music", "playing", "phone"):
+            target_node = arg.strip() or "android-termux-localhost"
+            self.notify(f"Fetching mobile media telemetry ({target_node})...", timeout=2.5)
+
+            def _async_fetch_media():
+                from gemini_app.fleet.nodes import get_node_media_info
+                res = get_node_media_info(node_id=target_node)
+                if res.get("status") == "ok":
+                    info = res.get("media_info", {})
+                    summary = info.get("summary") or "Active track detected"
+                    artist = info.get("artist", "")
+                    title = info.get("title", "")
+                    track_display = f"{artist} - {title}" if (artist and title) else (artist or title or "Now Playing")
+                    playlist = info.get("playlist", "")
+                    album = info.get("album", "")
+                    time_s = info.get("timestamps", "")
+                    device = info.get("audio_device", "")
+                    app_name = info.get("app", "Media Player")
+
+                    md_lines = [
+                        f"### 🎵 Now Playing ({target_node})",
+                        f"**{track_display}**",
+                        f"- **Player:** {app_name}",
+                    ]
+                    if playlist:
+                        md_lines.append(f"- **Playlist:** `{playlist}`")
+                    if album:
+                        md_lines.append(f"- **Album / Art:** {album}")
+                    if time_s:
+                        md_lines.append(f"- **Progress:** {time_s}")
+                    if device:
+                        md_lines.append(f"- **Audio Device:** {device}")
+                    if res.get("local_path"):
+                        md_lines.append(f"- **Screenshot:** `{res.get('local_path')}`")
+
+                    md_text = "\n".join(md_lines)
+                    self.call_after_refresh(lambda: self.append_to_feed("system", md_text, jump_to_start=False))
+                    self.notify(f"🎵 {summary}", timeout=4.0)
+                else:
+                    err_msg = res.get("error", "Could not fetch media telemetry")
+                    self.notify(f"Media fetch failed: {err_msg}", severity="error")
+
+            threading.Thread(target=_async_fetch_media, daemon=True, name="fetch-media-cmd").start()
+            return True
+
         elif verb == "help":
             help_text = (
                 "### Console Slash Commands\n"
@@ -3473,6 +3518,7 @@ class ChatApp(App):
                 "- `/project <name> [desc]`: Scaffold a new project in ~/Projects (Git, README, LICENSE)\n"
                 "- `/projects`: List existing projects in ~/Projects\n"
                 "- `/notes [prune|archive|unarchive|stats]`: Manage, prune, or archive notes\n"
+                "- `/nowplaying [node_id]`: Query mobile track, artist, and screenshot OCR telemetry\n"
                 "- `/snapshot [label]`: Capture UI snapshot held for Gemini review\n"
                 "- `/snapshots`: View count and list of held snapshots\n"
                 "- `/diff`: Preview uncommitted git changes\n"
@@ -3982,7 +4028,7 @@ class ChatApp(App):
             f"13. `manage_system_dependencies(action='check'|'install'|'ensure'|'detect', packages=[...]): Inspects and manages system packages.\n"
             f"14. `introspect_console(tier='all'|'visual'|'runtime'|'workflow'): Inspects live console state across visual layout, runtime environment, and workflow anchors.\n"
             f"15. `interact_ui(action='set_theme'|'accent_talk'|'pulse_nav'|'animate_mind'|'mood'|'inspect', target='feed'|'mind'|'notes'|'input'|'footer'|'navbar'|'edge'|'cards'|'snippets'|'fork'|'all'|'input,navbar', palette='...', effect='sparkle'|'pulse'|'wave'|'synapse'|'glow', duration=3.0, message='...'): Express personality through accent talk on widgets, multi-widget pulses, navbar actions, ambient moods, or Mind screen animations.\n"
-            f"16. `manage_fleet_nodes(action='list'|'rescue'|'reboot'|'check'|'register'|'screenshot'|'list_screenshots', node_id='...', host='...', command='...'): Inspects connected satellite nodes, fetches screenshots, or executes remote SSH rescue/reboot via the configured cluster key.\n\n"
+            f"16. `manage_fleet_nodes(action='list'|'rescue'|'reboot'|'check'|'register'|'screenshot'|'list_screenshots'|'media'|'next'|'previous'|'play'|'pause', node_id='...', host='...', command='...'): Inspects connected satellite nodes, fetches screenshots, queries active mobile media & track OCR telemetry, controls playback (next, previous, play, pause), or performs remote SSH rescue/reboot via the configured cluster key.\n\n"
             f"### UI SNAPSHOT RETENTION & VALIDATION PROTOCOL\n"
             f"• Snapshot Retention Rules:\n"
             f"  - Snapshots captured via command with a name (`/snapshot <name>`) are saved permanently to disk without deleting them.\n"

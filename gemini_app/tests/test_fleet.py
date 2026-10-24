@@ -921,6 +921,27 @@ class TestFleetNodesAndAutostart(unittest.TestCase):
             self.assertIn("network", telem)
             self.assertEqual(telem["network"].get("wan_ipv6"), "2603:900b:d4f1:8a10::1")
 
+    def test_node_media_control_dispatch(self) -> None:
+        """Verifies media playback control commands dispatch to satellite nodes."""
+        node = SatelliteNode("127.0.0.1", 7331, node_id="test-media-satellite")
+        with patch("gemini_app.fleet.satellite.is_termux_platform", return_value=True):
+            with patch("subprocess.run") as mock_sub:
+                mock_sub.return_value = MagicMock(returncode=0, stdout="", stderr="")
+                cmd_msg = FleetMessage(
+                    msg_type=FleetMessage.TYPE_COMMAND,
+                    node_id="test-media-satellite",
+                    payload={"action": "media_control", "params": {"media_action": "next"}},
+                )
+                resp = node.handle_command(cmd_msg)
+                self.assertEqual(resp.payload.get("status"), "ok")
+                self.assertEqual(resp.payload.get("media_action"), "next")
+                self.assertIn("media_session", resp.payload.get("dispatched_methods", []))
+                # Verify /system/bin/cmd media_session dispatch next was called
+                call_cmds = [call[0][0] for call in mock_sub.call_args_list]
+                self.assertTrue(any("media_session" in cmd for cmd in call_cmds))
+                self.assertTrue(any("com.spotify.mobile.android.ui.widget.NEXT" in cmd for cmd in call_cmds))
+
+
 
 if __name__ == "__main__":
     unittest.main()

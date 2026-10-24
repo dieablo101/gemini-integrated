@@ -261,17 +261,28 @@ class ToolRegistry:
             host: str = "",
             command: str = "",
         ) -> Dict[str, Any]:
-            """Manages distributed satellite nodes: lists active/registered nodes, inspects vitals, fetches/lists node screenshots, or performs remote SSH rescue/reboot via the configured cluster key."""
+            """Manages distributed satellite nodes: lists active/registered nodes, inspects vitals, fetches/lists node screenshots, controls mobile music playback (next/prev/play/pause), queries mobile media telemetry, or performs remote SSH rescue/reboot via the configured cluster key."""
             self._notify_phase("fleet", f"fleet node management ({action} {node_id})")
             from gemini_app.fleet.nodes import (
+                control_node_media,
                 execute_ssh_rescue,
                 get_fleet_snapshot,
+                get_node_media_info,
                 register_or_update_node,
                 send_mothership_command,
             )
             act = (action or "list").lower().strip()
             if act in ("list", "snapshot", "status"):
                 return get_fleet_snapshot()
+            elif act in ("media", "now_playing", "music", "playing", "media_info", "mobile_media"):
+                target = node_id or "android-termux-localhost"
+                return get_node_media_info(node_id=target)
+            elif act in ("next", "skip", "previous", "prev", "back", "play", "pause", "toggle", "play_pause", "media_control"):
+                target = node_id or "android-termux-localhost"
+                media_act = "next" if act in ("next", "skip") else ("previous" if act in ("previous", "prev", "back") else act)
+                if act == "media_control" and command:
+                    media_act = command.strip().lower()
+                return control_node_media(node_id=target, media_action=media_act)
             elif act in ("push_card", "card", "wingman_card", "webapplet_push"):
                 target = node_id or "ipad-ish-localhost"
                 return send_mothership_command("webapplet_push", {

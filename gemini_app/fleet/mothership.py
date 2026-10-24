@@ -108,6 +108,7 @@ class MothershipServer:
         self._wingman_auth_callbacks: List[Callable[[Dict[str, Any]], None]] = []
         self.mothership_boot_id = secrets.token_hex(8)
         self.wingman_maintenance_mode = False
+        self.latest_node_media: Dict[str, Dict[str, Any]] = {}
 
     def start(self) -> bool:
         """Binds and starts accepting incoming satellite node connections."""
@@ -623,8 +624,75 @@ class MothershipServer:
                                         resp_payload["node_id"] = target_nid
                                         resp_payload["size_bytes"] = sub_resp.get("size_bytes", 0)
                                         resp_payload["mtime"] = sub_resp.get("mtime", 0)
+
+                                        # RapidOCR text and media parsing
+                                        try:
+                                            from gemini_app.fleet.media_ocr import extract_screen_text, parse_mobile_media
+                                            ocr_res = extract_screen_text(dest_file)
+                                            media_data = parse_mobile_media(ocr_res, filename=fname)
+                                            resp_payload["ocr_text"] = ocr_res.get("raw_text", "")
+                                            resp_payload["ocr_lines"] = ocr_res.get("lines", [])
+                                            resp_payload["media_info"] = media_data
+                                            with self.lock:
+                                                self.latest_node_media[target_nid] = {
+                                                    **media_data,
+                                                    "local_path": str(dest_file),
+                                                    "filename": fname,
+                                                    "timestamp": time.time(),
+                                                }
+                                        except Exception as ocr_err:
+                                            resp_payload["ocr_error"] = str(ocr_err)
                                     else:
                                         resp_payload.update(sub_resp)
+                            elif action in ("get_node_media", "node_media", "now_playing", "media_telemetry"):
+                                target_nid = msg.payload.get("params", {}).get("node_id", "") or "android-termux-localhost"
+                                cached = None
+                                with self.lock:
+                                    c = self.latest_node_media.get(target_nid)
+                                    if c and (time.time() - c.get("timestamp", 0.0)) < 4.0:
+                                        cached = dict(c)
+
+                                if cached:
+                                    resp_payload["status"] = "ok"
+                                    resp_payload["media_info"] = cached
+                                    resp_payload["cached"] = True
+                                    resp_payload["local_path"] = cached.get("local_path", "")
+                                    resp_payload["ocr_text"] = cached.get("summary", "")
+                                else:
+                                    sub_resp = self.send_command(
+                                        target_nid,
+                                        "fetch_latest_screenshot",
+                                        msg.payload.get("params", {}),
+                                        timeout=20.0,
+                                    )
+                                    if sub_resp.get("status") == "ok" and sub_resp.get("data_b64"):
+                                        import base64
+                                        from pathlib import Path
+                                        from gemini_app.config import GEMINI_HOME
+                                        dest_dir = GEMINI_HOME / "screenshots"
+                                        dest_dir.mkdir(parents=True, exist_ok=True)
+                                        fname = sub_resp.get("filename", "screenshot.png")
+                                        dest_file = dest_dir / f"node_{target_nid}_{fname}"
+                                        dest_file.write_bytes(base64.b64decode(sub_resp["data_b64"]))
+                                        from gemini_app.fleet.media_ocr import extract_screen_text, parse_mobile_media
+                                        ocr_res = extract_screen_text(dest_file)
+                                        media_data = parse_mobile_media(ocr_res, filename=fname)
+                                        media_entry = {
+                                            **media_data,
+                                            "local_path": str(dest_file),
+                                            "filename": fname,
+                                            "timestamp": time.time(),
+                                        }
+                                        with self.lock:
+                                            self.latest_node_media[target_nid] = media_entry
+                                        resp_payload["status"] = "ok"
+                                        resp_payload["media_info"] = media_entry
+                                        resp_payload["ocr_text"] = ocr_res.get("raw_text", "")
+                                        resp_payload["ocr_lines"] = ocr_res.get("lines", [])
+                                        resp_payload["local_path"] = str(dest_file)
+                                    else:
+                                        resp_payload["status"] = "error"
+                                        resp_payload["error"] = sub_resp.get("error", "No screenshot found or node unresponsive")
                             elif action in ("list_node_screenshots", "list_screenshots"):
                                 target_nid = msg.payload.get("params", {}).get("node_id", "")
                                 if not target_nid:
@@ -637,6 +705,15 @@ class MothershipServer:
                                         msg.payload.get("params", {}),
                                         timeout=10.0,
                                     ).get("screenshots", [])
+                            elif action in ("control_node_media", "media_control"):
+                                target_nid = msg.payload.get("params", {}).get("node_id", "") or "android-termux-localhost"
+                                m_action = msg.payload.get("params", {}).get("media_action", "next")
+                                resp_payload["media_result"] = self.send_command(
+                                    target_nid,
+                                    "media_control",
+                                    {"media_action": m_action},
+                                    timeout=10.0,
+                                )
                             elif action == "mothership_telemetry":
                                 resp_payload["mothership_telemetry"] = collect_mothership_telemetry(
                                     cognitive_override=self._cognitive_override,
@@ -746,9 +823,12 @@ class MothershipServer:
                                 payload=resp_payload,
                                 msg_id=f"resp-{msg.msg_id}",
                             )
-                            with self.lock:
-                                if node_id in self.nodes:
-                                    self.nodes[node_id].send(reply)
+                            try:
+                                conn.sendall(reply.serialize())
+                            except Exception:
+                                with self.lock:
+                                    if node_id in self.nodes:
+                                        self.nodes[node_id].send(reply)
 
                         elif msg.type == FleetMessage.TYPE_EVENT:
                             event_name = msg.payload.get("event", "")
@@ -867,6 +947,33 @@ class MothershipServer:
                                         s_cli.close()
                                 except Exception:
                                     pass
+
+                            elif event_name in ("screenshot_captured", "new_screenshot"):
+                                raw_b64 = msg.payload.get("data_b64", "")
+                                fname = msg.payload.get("filename", "screenshot.png")
+                                if raw_b64:
+                                    try:
+                                        import base64
+                                        from pathlib import Path
+                                        from gemini_app.config import GEMINI_HOME
+                                        dest_dir = GEMINI_HOME / "screenshots"
+                                        dest_dir.mkdir(parents=True, exist_ok=True)
+                                        dest_file = dest_dir / f"node_{node_id}_{fname}"
+                                        dest_file.write_bytes(base64.b64decode(raw_b64))
+
+                                        from gemini_app.fleet.media_ocr import extract_screen_text, parse_mobile_media
+                                        ocr_res = extract_screen_text(dest_file)
+                                        media_data = parse_mobile_media(ocr_res, filename=fname)
+                                        with self.lock:
+                                            self.latest_node_media[node_id] = {
+                                                **media_data,
+                                                "local_path": str(dest_file),
+                                                "filename": fname,
+                                                "timestamp": time.time(),
+                                            }
+                                        sys.stdout.write(f"[mothership] Mobile screenshot synchronized from {node_id}: {media_data.get('summary', fname)}\n")
+                                    except Exception as exc:
+                                        sys.stderr.write(f"[mothership] Failed to process incoming screenshot: {exc}\n")
 
                         elif msg.type == FleetMessage.TYPE_DISCONNECT:
                             sys.stdout.write(f"[mothership] Satellite requested disconnect: '{node_id}'\n")

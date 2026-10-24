@@ -132,18 +132,28 @@ def find_repo_root(start: Optional[Path] = None) -> Path:
 
 def find_node_screenshots(limit: int = 10) -> List[Dict[str, Any]]:
     """Discovers screenshots across Android, iOS (iSH), and local node directories."""
-    candidates = [
-        Path("/sdcard/DCIM/Screenshots"),
-        Path("/sdcard/Pictures/Screenshots"),
-        Path.home() / "storage" / "dcim" / "Screenshots",
-        Path.home() / "storage" / "pictures" / "Screenshots",
-        Path.home() / "storage" / "shared" / "DCIM" / "Screenshots",
-        Path.home() / "storage" / "shared" / "Pictures" / "Screenshots",
-        Path("/mnt/ipad"),
-        Path.home() / ".gemini" / "screenshots",
-        Path("/storage/emulated/0/DCIM/Screenshots"),
-        Path("/storage/emulated/0/Pictures/Screenshots"),
-    ]
+    candidates: List[Path] = []
+    if is_termux_platform():
+        candidates = [
+            Path.home() / "storage" / "dcim" / "Screenshots",
+            Path.home() / "storage" / "pictures" / "Screenshots",
+            Path.home() / "storage" / "shared" / "DCIM" / "Screenshots",
+            Path.home() / "storage" / "shared" / "Pictures" / "Screenshots",
+            Path("/sdcard/DCIM/Screenshots"),
+            Path("/sdcard/Pictures/Screenshots"),
+        ]
+    elif is_ish_platform():
+        candidates = [
+            Path("/mnt/ipad"),
+            Path.home() / ".gemini" / "screenshots",
+        ]
+    else:
+        candidates = [
+            Path.home() / ".gemini" / "screenshots",
+            Path.home() / "Pictures" / "Screenshots",
+            Path.home() / "Pictures",
+            Path("/sdcard/DCIM/Screenshots"),
+        ]
     valid_exts = {".png", ".jpg", ".jpeg", ".webp"}
     found_files: List[Dict[str, Any]] = []
     for cand in candidates:
@@ -1058,6 +1068,7 @@ class SatelliteNode:
         self._running = False
         self._heartbeat_thread: Optional[threading.Thread] = None
         self._listener_thread: Optional[threading.Thread] = None
+        self._screenshot_watcher_thread: Optional[threading.Thread] = None
         self._rendezvous_sock: Optional[socket.socket] = None
         self._rendezvous_thread: Optional[threading.Thread] = None
         self._write_lock = threading.Lock()
@@ -1554,6 +1565,83 @@ class SatelliteNode:
             limit = int(params.get("limit", 10))
             result_payload["screenshots"] = find_node_screenshots(limit=limit)
 
+        elif action == "media_control":
+            sub_act = params.get("media_action", "next").lower().strip()
+            key_map = {
+                "next": "next",
+                "skip": "next",
+                "previous": "previous",
+                "prev": "previous",
+                "back": "previous",
+                "play": "play",
+                "pause": "pause",
+                "play_pause": "play-pause",
+                "toggle": "play-pause",
+                "stop": "stop",
+            }
+            target_key = key_map.get(sub_act, sub_act)
+            success = False
+            dispatched = []
+
+            if is_termux_platform():
+                # 1. Android MediaSession dispatch (zero root/adb required for media keys)
+                try:
+                    p1 = subprocess.run(
+                        ["/system/bin/cmd", "media_session", "dispatch", target_key],
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
+                    )
+                    if p1.returncode == 0:
+                        success = True
+                        dispatched.append("media_session")
+                except Exception:
+                    pass
+
+                # 2. Spotify Android broadcast intents
+                spotify_action_map = {
+                    "next": [
+                        "com.spotify.mobile.android.ui.widget.NEXT",
+                        "com.spotify.music.playbackcontrol.ACTION_NEXT",
+                    ],
+                    "previous": [
+                        "com.spotify.mobile.android.ui.widget.PREVIOUS",
+                        "com.spotify.music.playbackcontrol.ACTION_PREVIOUS",
+                    ],
+                    "play": ["com.spotify.mobile.android.ui.widget.PLAY"],
+                    "pause": ["com.spotify.mobile.android.ui.widget.PAUSE"],
+                    "play-pause": ["com.spotify.mobile.android.ui.widget.PLAY"],
+                }
+                for act_intent in spotify_action_map.get(target_key, []):
+                    try:
+                        p2 = subprocess.run(
+                            ["am", "broadcast", "-a", act_intent, "-p", "com.spotify.music"],
+                            capture_output=True,
+                            text=True,
+                            timeout=5,
+                        )
+                        if p2.returncode == 0:
+                            success = True
+                            dispatched.append(act_intent)
+                    except Exception:
+                        pass
+
+            elif shutil.which("playerctl"):
+                try:
+                    p_cmd = ["playerctl", target_key if target_key != "play-pause" else "play-pause"]
+                    p3 = subprocess.run(p_cmd, capture_output=True, text=True, timeout=5)
+                    if p3.returncode == 0:
+                        success = True
+                        dispatched.append("playerctl")
+                except Exception:
+                    pass
+
+            result_payload["status"] = "ok" if (success or dispatched) else "error"
+            result_payload["media_action"] = target_key
+            result_payload["dispatched_methods"] = dispatched
+            if not success and not dispatched:
+                result_payload["error"] = f"Unable to dispatch media command '{target_key}' on this node platform."
+
         elif action in ("fetch_latest_screenshot", "get_screenshot", "fetch_screenshot"):
             import base64
             target_file = params.get("path") or params.get("filename")
@@ -1983,6 +2071,55 @@ class SatelliteNode:
                 break
             time.sleep(self.heartbeat_interval)
 
+    def _start_screenshot_watcher(self) -> None:
+        """Starts background thread watching for newly captured screenshots on mobile nodes."""
+        if self._screenshot_watcher_thread and self._screenshot_watcher_thread.is_alive():
+            return
+        self._screenshot_watcher_thread = threading.Thread(
+            target=self._screenshot_watcher_loop, daemon=True, name="screenshot-watcher"
+        )
+        self._screenshot_watcher_thread.start()
+
+    def _screenshot_watcher_loop(self) -> None:
+        """Polls screenshot directory every 1.5s and auto-syncs new screenshots to Mothership."""
+        import base64
+        last_mtime = 0.0
+        try:
+            initial = find_node_screenshots(limit=1)
+            if initial:
+                last_mtime = float(initial[0].get("mtime", 0.0))
+        except Exception:
+            pass
+
+        while self._running:
+            try:
+                time.sleep(1.5)
+                recent = find_node_screenshots(limit=1)
+                if not recent:
+                    continue
+                top = recent[0]
+                mtime = float(top.get("mtime", 0.0))
+                if mtime > (last_mtime + 0.1):
+                    last_mtime = mtime
+                    p = Path(top["path"])
+                    if p.exists() and p.is_file():
+                        data = p.read_bytes()
+                        event_msg = FleetMessage(
+                            msg_type=FleetMessage.TYPE_EVENT,
+                            node_id=self.node_id,
+                            payload={
+                                "event": "screenshot_captured",
+                                "filename": p.name,
+                                "path": str(p),
+                                "mtime": mtime,
+                                "size_bytes": len(data),
+                                "data_b64": base64.b64encode(data).decode("ascii"),
+                            },
+                        )
+                        self.send_message(event_msg)
+            except Exception:
+                time.sleep(3.0)
+
     def start(self) -> bool:
         """Connects and starts background listener and heartbeat loops."""
         if not self.connect():
@@ -2015,6 +2152,7 @@ class SatelliteNode:
         self._heartbeat_thread.start()
 
         self._start_rendezvous_listener()
+        self._start_screenshot_watcher()
 
         if not self.hud:
             sys.stdout.write(f"[satellite] Node '{self.node_id}' online and connected to {self.mothership_host}:{self.mothership_port}\n")

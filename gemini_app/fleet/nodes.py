@@ -442,3 +442,17 @@ def list_node_screenshots(node_id: str = "android-termux-localhost", limit: int 
     params = {"node_id": node_id, "limit": limit}
     return send_mothership_command("list_node_screenshots", params, timeout=12.0)
 
+
+def get_node_media_info(node_id: str = "android-termux-localhost") -> Dict[str, Any]:
+    """Retrieves current media playback details and screenshot OCR telemetry from a satellite node."""
+    params = {"node_id": node_id}
+    return send_mothership_command("get_node_media", params, timeout=25.0)
+
+
+def control_node_media(node_id: str = "android-termux-localhost", media_action: str = "next") -> Dict[str, Any]:
+    """Dispatches media playback controls (next, prev, play, pause, toggle) to a satellite node."""
+    params = {"node_id": node_id, "media_action": media_action}
+    return send_mothership_command("control_node_media", params, timeout=10.0)
+
+
+

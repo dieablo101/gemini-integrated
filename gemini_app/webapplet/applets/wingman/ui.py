@@ -823,6 +823,7 @@ def get_wingman_html(
         </div>
       </div>
       <div class="chat-input-container" id="chatContainer">
+        <button type="button" class="btn btn-secondary" id="chatCamBtn" title="Snap Front Camera Photo" onclick="triggerNativeCameraInput('chat-camera')" style="min-width: 44px; min-height: 44px; padding: 0 10px; font-size: 18px; display: inline-flex; align-items: center; justify-content: center;">📸</button>
         <textarea id="chatInput"
                   name="chat_message"
                   class="chat-input"
@@ -1357,6 +1358,7 @@ def get_wingman_html(
       statusText.textContent = isPairedDevice ? "PAIRED" : "ONLINE (SESSION)";
       statusDot.className = "status-dot";
       playTone(587.33, 'triangle', 0.1);
+      loadCardsHistory();
     }}
 
     function lockUI(reason = "Awaiting mothership console authorization...") {{
@@ -1377,6 +1379,7 @@ def get_wingman_html(
         // Connected or reconnected to SSE stream — re-validate session
         checkSession();
         loadChatHistory();
+        loadCardsHistory();
       }});
 
       sseSource.onerror = () => {{
@@ -1473,7 +1476,9 @@ def get_wingman_html(
 
     /* Work Mode: Render Cards */
     function renderCard(card) {{
-      const cardEl = document.createElement('div');
+      if (!card) return;
+      const existing = card.id ? document.getElementById('card-' + card.id) : null;
+      const cardEl = existing || document.createElement('div');
       cardEl.className = 'card ' + (card.accent ? 'accent' : '');
       if (card.id) cardEl.id = 'card-' + card.id;
 
@@ -1500,8 +1505,28 @@ def get_wingman_html(
         ${{actionsHtml}}
       `;
 
-      workView.appendChild(cardEl);
+      if (!existing) {{
+        workView.appendChild(cardEl);
+      }}
       workView.scrollTop = workView.scrollHeight;
+    }}
+
+    async function loadCardsHistory() {{
+      try {{
+        const res = await fetch('/applet/wingman/cards', {{
+          headers: {{
+            'X-Wingman-Device': deviceId,
+            'X-Wingman-Session': sessionId
+          }}
+        }});
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data && Array.isArray(data.cards)) {{
+          data.cards.forEach(c => renderCard(c));
+        }}
+      }} catch (err) {{
+        console.warn("Failed to load cards history:", err);
+      }}
     }}
 
     function handleCardAction(cardId, action) {{
@@ -1586,6 +1611,7 @@ def get_wingman_html(
         const actDiv = cardEl.querySelector('.card-actions');
         if (actDiv) actDiv.innerHTML = '<span style="font-size: 11px; color: var(--accent);">Transmitting photo to Mothership...</span>';
       }}
+      addChatMessage('System', 'Transmitting screen-side camera photo to Mothership...', false);
       try {{
         const res = await fetch('/applet/wingman/photo', {{
           method: 'POST',
@@ -1604,19 +1630,21 @@ def get_wingman_html(
           }})
         }});
         const reply = await res.json();
+        const szKb = Math.round((reply.size_bytes || 0) / 1024);
         if (cardEl) {{
           const actDiv = cardEl.querySelector('.card-actions');
           if (actDiv) {{
-            const szKb = Math.round((reply.size_bytes || 0) / 1024);
             actDiv.innerHTML = `<span style="font-size: 11px; color: var(--success);">✓ Screen-side photo captured (${{szKb}} KB)</span>`;
           }}
         }}
+        addChatMessage('System', `✓ Screen-side photo captured (${{szKb}} KB) and synchronized with Mothership.`, false);
         playTone(1046.5, 'sine', 0.15);
       }} catch (err) {{
         if (cardEl) {{
           const actDiv = cardEl.querySelector('.card-actions');
           if (actDiv) actDiv.innerHTML = `<span style="font-size: 11px; color: var(--danger);">✗ Upload failed: ${{escapeHtml(err.message)}}</span>`;
         }}
+        addChatMessage('System', `✗ Upload failed: ${{escapeHtml(err.message)}}`, false);
       }}
     }}
 
@@ -1993,6 +2021,7 @@ def get_wingman_html(
     window.addEventListener('focus', onWakeOrVisibilityChange);
 
     checkSession();
+    loadCardsHistory();
     connectSSE();
     pingInterval = setInterval(measurePing, 5000);
     measurePing();

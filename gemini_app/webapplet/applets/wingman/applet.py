@@ -35,7 +35,19 @@ class WingmanApplet:
         self._chat_callbacks: List[Callable[[str, str, Dict[str, Any]], None]] = []
         self._pending_biometrics: Dict[str, threading.Event] = {}
         self._biometric_results: Dict[str, Dict[str, Any]] = {}
-        self._recent_cards: List[Dict[str, Any]] = []
+        self._recent_cards: List[Dict[str, Any]] = [
+            {
+                "id": "camera-shutter",
+                "title": "📸 Screen-Side Camera Capture",
+                "content": "Capture a live photo from the iPad TrueDepth front camera.",
+                "actions": [
+                    {"label": "📸 Snap Front Camera", "action": "camera_webrtc", "style": "primary"},
+                    {"label": "📷 iOS Viewfinder Shutter", "action": "camera_native", "style": "secondary"},
+                ],
+                "accent": True,
+                "timestamp": time.time(),
+            }
+        ]
         self._chat_history: List[Dict[str, Any]] = []
         self._lock = threading.Lock()
         self._passkey_verifier: Optional[Callable[[str], bool]] = None
@@ -90,6 +102,7 @@ class WingmanApplet:
 
         # Card action responses
         self.engine.register_post("/applet/wingman/action", self._handle_action)
+        self.engine.register_get("/applet/wingman/cards", self._handle_cards_history)
 
         # Camera photo capture backhaul
         self.engine.register_post("/applet/wingman/photo", self._handle_photo)
@@ -288,6 +301,11 @@ class WingmanApplet:
                 except Exception:
                     pass
         return {"status": "ok", "card_id": card_id, "action": action}
+
+    def _handle_cards_history(self, handler: Any, query: Dict[str, List[str]]) -> Dict[str, Any]:
+        """Returns recent cards for initial UI hydration."""
+        with self._lock:
+            return {"status": "ok", "cards": list(self._recent_cards)}
 
     def _handle_photo(self, handler: Any, query: Dict[str, List[str]], body: Any) -> Dict[str, Any]:
         """Receives camera photo payload from connected Wingman browser."""

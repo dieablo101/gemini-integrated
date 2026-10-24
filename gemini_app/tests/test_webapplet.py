@@ -151,6 +151,16 @@ class TestWingmanAndInspectorApplets(unittest.TestCase):
 
         self.assertIn((card_id, "approve"), received_actions)
 
+        # Test cards history route
+        cards_url = f"http://127.0.0.1:{self.wingman.engine.port}/applet/wingman/cards"
+        with urllib.request.urlopen(cards_url, timeout=2.0) as resp:
+            self.assertEqual(resp.status, 200)
+            data = json.loads(resp.read().decode())
+            self.assertEqual(data.get("status"), "ok")
+            cards_list = data.get("cards", [])
+            self.assertTrue(any(c.get("id") == card_id for c in cards_list))
+            self.assertTrue(any(c.get("id") == "camera-shutter" for c in cards_list))
+
     def test_wingman_photo_capture_flow(self) -> None:
         """Tests photo upload endpoint and callback dispatch."""
         received_photos = []

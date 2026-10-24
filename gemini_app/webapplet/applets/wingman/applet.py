@@ -104,6 +104,9 @@ class WingmanApplet:
         self.engine.register_post("/applet/wingman/action", self._handle_action)
         self.engine.register_get("/applet/wingman/cards", self._handle_cards_history)
 
+        # Telemetry & HUD Stream
+        self.engine.register_get("/applet/wingman/telemetry", self._handle_telemetry)
+
         # Camera photo capture backhaul
         self.engine.register_post("/applet/wingman/photo", self._handle_photo)
 
@@ -306,6 +309,26 @@ class WingmanApplet:
         """Returns recent cards for initial UI hydration."""
         with self._lock:
             return {"status": "ok", "cards": list(self._recent_cards)}
+
+    def update_telemetry(self, telemetry: Dict[str, Any]) -> None:
+        """Updates internal telemetry cache from satellite/mothership stream."""
+        with self._lock:
+            if not hasattr(self, "_telemetry"):
+                self._telemetry = {}
+            if isinstance(telemetry, dict):
+                self._telemetry.update(telemetry)
+
+    def _handle_telemetry(self, handler: Any, query: Dict[str, List[str]]) -> Dict[str, Any]:
+        """Returns live cognitive telemetry and vitals for Wingman HUD view."""
+        with self._lock:
+            telem = dict(getattr(self, "_telemetry", {}))
+        if not telem:
+            try:
+                from gemini_app.fleet.telemetry import collect_telemetry
+                telem = collect_telemetry()
+            except Exception:
+                telem = {}
+        return {"status": "ok", "telemetry": telem, "timestamp": time.time()}
 
     def _handle_photo(self, handler: Any, query: Dict[str, List[str]], body: Any) -> Dict[str, Any]:
         """Receives camera photo payload from connected Wingman browser."""

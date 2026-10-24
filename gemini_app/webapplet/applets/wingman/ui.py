@@ -635,6 +635,178 @@ def get_wingman_html(
       border-color: var(--accent);
     }}
 
+    /* HUD VIEW: Live Telemetry & AI Stream */
+    #hudView {{
+      flex: 1 1 0%;
+      min-height: 0;
+      height: 100%;
+      max-height: 100%;
+      overflow-y: scroll;
+      overflow-x: hidden;
+      -webkit-overflow-scrolling: touch;
+      touch-action: pan-y;
+      overscroll-behavior-y: contain;
+      padding: 16px;
+      padding-bottom: 24px;
+      display: none;
+      flex-direction: column;
+      gap: 14px;
+    }}
+
+    .hud-top-bar {{
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 8px;
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 14px;
+    }}
+
+    .hud-status-chip {{
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: 600;
+      font-size: 12px;
+      font-family: var(--font-mono);
+      letter-spacing: 0.5px;
+    }}
+
+    .hud-meta-chips {{
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 11px;
+      font-family: var(--font-mono);
+      color: var(--text-muted);
+    }}
+
+    .hud-chip {{
+      background: rgba(255, 255, 255, 0.04);
+      padding: 2px 8px;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+    }}
+
+    .hud-field {{
+      margin-bottom: 10px;
+    }}
+
+    .hud-label {{
+      font-size: 10px;
+      font-family: var(--font-mono);
+      color: var(--text-muted);
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+      margin-bottom: 2px;
+    }}
+
+    .hud-value {{
+      font-size: 13px;
+      color: var(--text);
+    }}
+
+    .hud-value.bold {{
+      font-weight: 600;
+      font-size: 14px;
+    }}
+
+    .tool-tag {{
+      display: inline-block;
+      background: rgba(59, 130, 246, 0.2);
+      color: #60a5fa;
+      border: 1px solid rgba(59, 130, 246, 0.4);
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 600;
+    }}
+
+    .hud-thought-box {{
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 10px 12px;
+      font-size: 12px;
+      font-family: var(--font-mono);
+      color: #94a3b8;
+      max-height: 120px;
+      overflow-y: auto;
+      line-height: 1.45;
+      white-space: pre-wrap;
+    }}
+
+    .vitals-grid {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 12px;
+      margin-top: 8px;
+    }}
+
+    .vital-item {{
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 12px;
+    }}
+
+    .vital-header {{
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 11px;
+      font-family: var(--font-mono);
+      color: var(--text-muted);
+      margin-bottom: 6px;
+    }}
+
+    .meter-bar {{
+      height: 6px;
+      background: rgba(255, 255, 255, 0.08);
+      border-radius: 3px;
+      overflow: hidden;
+    }}
+
+    .meter-fill {{
+      height: 100%;
+      background: var(--accent);
+      border-radius: 3px;
+      transition: width 0.3s ease;
+    }}
+
+    .nodes-grid {{
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 10px;
+      margin-top: 8px;
+    }}
+
+    .node-card {{
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 10px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }}
+
+    .node-card-header {{
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }}
+
+    .node-name {{
+      font-weight: 600;
+      font-size: 12px;
+      color: #fff;
+    }}
+
     /* Footer */
     footer {{
       background: #080c14;
@@ -774,6 +946,13 @@ def get_wingman_html(
             <div style="font-size: 10px; opacity: 0.6;">Remote Gemini Stream</div>
           </div>
         </div>
+        <div class="dropdown-item" id="itemHud" onclick="selectMode('hud')">
+          <span>📊</span>
+          <div>
+            <div>HUD</div>
+            <div style="font-size: 10px; opacity: 0.6;">Live Telemetry & AI Stream</div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -847,6 +1026,142 @@ def get_wingman_html(
       </div>
     </div>
 
+    <!-- VIEW 3: HUD VIEW (Live Telemetry & AI Stream) -->
+    <div id="hudView">
+      <!-- HUD Connection & Top Bar -->
+      <div class="hud-top-bar">
+        <div class="hud-status-chip">
+          <div class="status-dot" id="hudStatusDot"></div>
+          <span id="hudStatusLabel">MOTHERSHIP LINKED</span>
+        </div>
+        <div class="hud-meta-chips">
+          <div class="hud-chip">PING: <span id="hudPingMs" style="color: var(--accent);">-- ms</span></div>
+          <div class="hud-chip">UPTIME: <span id="hudUptime">--</span></div>
+          <div class="hud-chip">NODE: <span id="hudNodeId" style="color: #fff;">{node_id}</span></div>
+        </div>
+      </div>
+
+      <!-- Cognitive Stream Card -->
+      <div class="card accent" id="hudCognitiveCard">
+        <div class="card-header">
+          <span class="card-title" style="display: flex; align-items: center; gap: 8px;">
+            <span>🧠</span>
+            <span>AI COGNITIVE STREAM</span>
+          </span>
+          <span class="badge" id="hudTurnBadge">TURN #--</span>
+        </div>
+        <div class="hud-field">
+          <div class="hud-label">STATE / PHASE</div>
+          <div class="hud-value bold" id="hudCognitiveState" style="color: var(--accent);">Bilateral Pair Programming</div>
+        </div>
+        <div class="hud-field">
+          <div class="hud-label">ACTIVE TASK</div>
+          <div class="hud-value" id="hudCognitiveTask" style="color: #fff;">Standby</div>
+        </div>
+        <div class="hud-field">
+          <div class="hud-label">CURRENT TOOL</div>
+          <div class="hud-value"><span class="tool-tag" id="hudCognitiveTool">idle</span></div>
+        </div>
+        <div class="hud-field" style="margin-bottom: 0;">
+          <div class="hud-label">THOUGHT STREAM</div>
+          <div class="hud-thought-box" id="hudCognitiveThought">Awaiting cognitive thought stream from Mothership...</div>
+        </div>
+      </div>
+
+      <!-- Vitals & Metrics Card -->
+      <div class="card" id="hudVitalsCard">
+        <div class="card-header">
+          <span class="card-title" style="display: flex; align-items: center; gap: 8px;">
+            <span>⚡</span>
+            <span>NODE VITALS & TELEMETRY</span>
+          </span>
+          <span class="hud-chip" id="hudPlatformChip" style="font-size: 10px;">iPad Pro / Alpine</span>
+        </div>
+        <div class="vitals-grid">
+          <div class="vital-item">
+            <div class="vital-header">
+              <span>RAM</span>
+              <span id="hudMemText">-- / -- MB</span>
+            </div>
+            <div class="meter-bar"><div class="meter-fill" id="hudMemBar" style="width: 0%;"></div></div>
+          </div>
+          <div class="vital-item">
+            <div class="vital-header">
+              <span>DISK FREE</span>
+              <span id="hudDiskText">-- GB</span>
+            </div>
+            <div class="meter-bar"><div class="meter-fill" id="hudDiskBar" style="width: 0%;"></div></div>
+          </div>
+          <div class="vital-item">
+            <div class="vital-header">
+              <span>BATTERY</span>
+              <span id="hudBatteryText">--%</span>
+            </div>
+            <div class="meter-bar"><div class="meter-fill" id="hudBatteryBar" style="width: 0%;"></div></div>
+          </div>
+          <div class="vital-item">
+            <div class="vital-header">
+              <span>GIT COMMIT</span>
+              <span id="hudCommitText" style="font-family: var(--font-mono); color: var(--accent);">--</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Connected Nodes Mesh Card -->
+      <div class="card" id="hudNodesCard">
+        <div class="card-header">
+          <span class="card-title" style="display: flex; align-items: center; gap: 8px;">
+            <span>🌐</span>
+            <span>CONNECTED FLEET MESH</span>
+          </span>
+          <span class="hud-chip" id="hudNodesCount">3 NODES</span>
+        </div>
+        <div id="hudNodesList" class="nodes-grid">
+          <div class="node-card">
+            <div class="node-card-header">
+              <span class="node-name">mothership (Ubuntu)</span>
+              <span class="status-dot"></span>
+            </div>
+            <div style="font-size: 11px; color: var(--text-muted); font-family: var(--font-mono);">
+              192.168.1.90:7331 · Active Console
+            </div>
+          </div>
+          <div class="node-card">
+            <div class="node-card-header">
+              <span class="node-name">ipad-ish-localhost</span>
+              <span class="status-dot"></span>
+            </div>
+            <div style="font-size: 11px; color: var(--text-muted); font-family: var(--font-mono);">
+              192.168.1.38 · iSH Alpine
+            </div>
+          </div>
+          <div class="node-card">
+            <div class="node-card-header">
+              <span class="node-name">android-termux-localhost</span>
+              <span class="status-dot"></span>
+            </div>
+            <div style="font-size: 11px; color: var(--text-muted); font-family: var(--font-mono);">
+              192.168.1.179 · Android Termux
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Terminal HUD Quick Launch Tip Card -->
+      <div class="card" style="border-style: dashed; border-color: var(--border);">
+        <div class="card-header">
+          <span class="card-title" style="font-size: 12px; color: var(--text-muted);">⌨️ RUN TERMINAL HUD IN iSH</span>
+        </div>
+        <div style="font-size: 12px; color: var(--text-muted); line-height: 1.5; margin-bottom: 8px;">
+          For a zero-overhead, battery-efficient ANSI curses dashboard directly inside the iPad's <strong>iSH Alpine shell</strong>, run:
+        </div>
+        <div style="background: var(--code-bg); padding: 8px 12px; border-radius: 6px; font-family: var(--font-mono); font-size: 12px; color: var(--accent); display: flex; align-items: center; justify-content: space-between;">
+          <code>python3 gemini-integrated.py hud</code>
+        </div>
+      </div>
+    </div>
+
   </div>
 
   <!-- First-Action Session Passkey Modal -->
@@ -913,6 +1228,8 @@ def get_wingman_html(
     const modeLabel = document.getElementById('modeLabel');
     const itemWork = document.getElementById('itemWork');
     const itemChat = document.getElementById('itemChat');
+    const itemHud = document.getElementById('itemHud');
+    const hudView = document.getElementById('hudView');
 
     let currentMode = 'work';
     let chatMessages = [];
@@ -1129,17 +1446,129 @@ def get_wingman_html(
         modeLabel.textContent = 'Work';
         itemWork.classList.add('active');
         itemChat.classList.remove('active');
+        if (itemHud) itemHud.classList.remove('active');
         workView.style.display = 'flex';
         chatView.style.display = 'none';
+        if (hudView) hudView.style.display = 'none';
+      }} else if (mode === 'hud') {{
+        modeIcon.textContent = '📊';
+        modeLabel.textContent = 'HUD';
+        if (itemHud) itemHud.classList.add('active');
+        itemWork.classList.remove('active');
+        itemChat.classList.remove('active');
+        workView.style.display = 'none';
+        chatView.style.display = 'none';
+        if (hudView) hudView.style.display = 'flex';
+        fetchTelemetryHUD();
       }} else {{
         modeIcon.textContent = '💬';
         modeLabel.textContent = 'Chat';
         itemChat.classList.add('active');
         itemWork.classList.remove('active');
+        if (itemHud) itemHud.classList.remove('active');
         workView.style.display = 'none';
+        if (hudView) hudView.style.display = 'none';
         chatView.style.display = 'flex';
         chatInput.focus();
         loadChatHistory();
+      }}
+    }}
+
+    async function fetchTelemetryHUD() {{
+      try {{
+        const headers = {{
+          'X-Wingman-Device': deviceId,
+          'X-Wingman-Session': sessionId
+        }};
+        if (sessionToken) headers['X-Wingman-Token'] = sessionToken;
+        const res = await fetch('/applet/wingman/telemetry', {{ headers }});
+        const json = await res.json();
+        if (!json || !json.telemetry) return;
+        const t = json.telemetry;
+
+        const isOnline = t.connected !== false;
+        const hudDot = document.getElementById('hudStatusDot');
+        const hudLabel = document.getElementById('hudStatusLabel');
+        if (hudDot && hudLabel) {{
+          hudDot.className = 'status-dot ' + (isOnline ? '' : 'offline');
+          hudLabel.textContent = isOnline ? 'MOTHERSHIP LINKED' : 'DISCONNECTED';
+        }}
+        const pingMs = t.ping_ms || (footerPing.textContent.match(/\\d+/) ? footerPing.textContent.match(/\\d+/)[0] : null);
+        const pingEl = document.getElementById('hudPingMs');
+        if (pingEl && pingMs) pingEl.textContent = pingMs + ' ms';
+        const upEl = document.getElementById('hudUptime');
+        if (upEl && t.uptime_seconds) {{
+          const s = Math.round(t.uptime_seconds);
+          const m = Math.floor(s / 60);
+          upEl.textContent = m > 60 ? (Math.floor(m / 60) + 'h ' + (m % 60) + 'm') : (m + 'm ' + (s % 60) + 's');
+        }}
+
+        const cog = t.cognitive || {{}};
+        const stateEl = document.getElementById('hudCognitiveState');
+        if (stateEl && cog.state_desc) stateEl.textContent = cog.state_desc;
+        const taskEl = document.getElementById('hudCognitiveTask');
+        if (taskEl && cog.task) taskEl.textContent = cog.task;
+        const toolEl = document.getElementById('hudCognitiveTool');
+        if (toolEl) toolEl.textContent = cog.tool || 'idle';
+        const thoughtEl = document.getElementById('hudCognitiveThought');
+        if (thoughtEl && cog.thought) thoughtEl.textContent = cog.thought;
+        const turnBadge = document.getElementById('hudTurnBadge');
+        if (turnBadge && cog.turn_number) turnBadge.textContent = 'TURN #' + cog.turn_number;
+
+        const memAvail = t.mem_avail_mb || 0;
+        const memTotal = t.mem_total_mb || 1;
+        const memUsed = Math.max(0, memTotal - memAvail);
+        const memPct = Math.min(100, Math.round((memUsed / memTotal) * 100));
+        const memText = document.getElementById('hudMemText');
+        if (memText && memTotal > 1) memText.textContent = memUsed + ' / ' + memTotal + ' MB (' + memPct + '%)';
+        const memBar = document.getElementById('hudMemBar');
+        if (memBar && memTotal > 1) memBar.style.width = memPct + '%';
+
+        const diskFree = t.disk_free_gb || 0;
+        const diskTotal = t.disk_total_gb || 1;
+        const diskUsed = Math.max(0, diskTotal - diskFree);
+        const diskPct = Math.min(100, Math.round((diskUsed / diskTotal) * 100));
+        const diskText = document.getElementById('hudDiskText');
+        if (diskText && diskTotal > 1) diskText.textContent = diskFree + ' GB Free / ' + diskTotal + ' GB';
+        const diskBar = document.getElementById('hudDiskBar');
+        if (diskBar && diskTotal > 1) diskBar.style.width = diskPct + '%';
+
+        const batt = t.battery || {{}};
+        const battText = document.getElementById('hudBatteryText');
+        if (battText) {{
+          if (batt.percentage !== null && batt.percentage !== undefined) {{
+            battText.textContent = batt.percentage + '%' + (batt.charging ? ' ⚡' : '');
+            const battBar = document.getElementById('hudBatteryBar');
+            if (battBar) battBar.style.width = batt.percentage + '%';
+          }} else {{
+            battText.textContent = 'AC Powered';
+            const battBar = document.getElementById('hudBatteryBar');
+            if (battBar) battBar.style.width = '100%';
+          }}
+        }}
+
+        const commitText = document.getElementById('hudCommitText');
+        if (commitText && t.git_commit) commitText.textContent = t.git_commit.substring(0, 7) + (t.git_branch ? ' (' + t.git_branch + ')' : '');
+
+        const nodesList = document.getElementById('hudNodesList');
+        if (nodesList && Array.isArray(t.nodes)) {{
+          nodesList.innerHTML = t.nodes.map(n => {{
+            const isNOnline = n.status === 'online' || (n.last_seen !== undefined && n.last_seen < 30);
+            return `
+              <div class="node-card">
+                <div class="node-card-header">
+                  <span class="node-name">${{n.node_id || 'node'}}</span>
+                  <span class="status-dot ${{isNOnline ? '' : 'offline'}}"></span>
+                </div>
+                <div style="font-size: 11px; color: var(--text-muted); font-family: var(--font-mono);">
+                  ${{n.host || n.address || ''}} · ${{n.system || ''}}
+                </div>
+              </div>
+            `;
+          }}).join('');
+        }}
+      }} catch (e) {{
+        console.warn('HUD telemetry fetch error:', e);
       }}
     }}
 
@@ -1936,6 +2365,9 @@ def get_wingman_html(
 
     function measurePing() {{
       const t0 = performance.now();
+      if (currentMode === 'hud') {{
+        fetchTelemetryHUD();
+      }}
       fetch('/applet/wingman/ping')
         .then(res => res.json())
         .then(data => {{

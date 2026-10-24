@@ -2097,6 +2097,11 @@ class SatelliteNode:
                                 self._pending_ping_t0 = None
                                 if self.hud:
                                     self.hud.set_connection_status(True, ping_ms=round(rtt_ms, 1))
+                                if self.wingman_applet and hasattr(self.wingman_applet, "update_telemetry"):
+                                    try:
+                                        self.wingman_applet.update_telemetry({"ping_ms": round(rtt_ms, 1), "connected": True})
+                                    except Exception:
+                                        pass
                         elif msg.type == FleetMessage.TYPE_TELEMETRY:
                             telem_data = msg.payload.get("mothership_telemetry", msg.payload)
                             ms_boot_id = msg.payload.get("mothership_boot_id") or telem_data.get("mothership_boot_id")
@@ -2128,6 +2133,11 @@ class SatelliteNode:
 
                             if self.hud:
                                 self.hud.update_telemetry(telem_data)
+                            if self.wingman_applet and hasattr(self.wingman_applet, "update_telemetry"):
+                                try:
+                                    self.wingman_applet.update_telemetry(telem_data)
+                                except Exception:
+                                    pass
 
                             # Adopt cluster fleet_key if shared by Mothership over LAN
                             provided_key = msg.payload.get("fleet_key")

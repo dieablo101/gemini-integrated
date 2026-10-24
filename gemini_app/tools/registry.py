@@ -309,7 +309,7 @@ class ToolRegistry:
                 from gemini_app.fleet.nodes import speak_node_tts
                 text_to_speak = command or host or "Bilateral audio ping."
                 duck_flag = True
-                if "no_duck" in params or "noduck" in params:
+                if "no_duck" in text_to_speak.lower() or "noduck" in text_to_speak.lower():
                     duck_flag = False
                 return speak_node_tts(node_id=target, text=text_to_speak, duck=duck_flag)
             elif act in ("audio_info", "mic_info", "audio_status", "audio", "headphones"):

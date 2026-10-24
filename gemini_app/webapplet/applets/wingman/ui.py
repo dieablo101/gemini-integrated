@@ -1031,8 +1031,14 @@ def get_wingman_html(
         </div>
       </div>
       <div class="chat-input-container" id="chatContainer">
-        <button type="button" class="btn btn-secondary" id="chatCamBtn" title="Snap Front Camera Photo" onclick="triggerNativeCameraInput('chat-camera', event)" style="min-width: 44px; min-height: 44px; padding: 0 10px; font-size: 18px; display: inline-flex; align-items: center; justify-content: center; touch-action: manipulation !important;">📸</button>
-        <button type="button" class="btn btn-secondary" id="chatScreenBtn" title="Upload iPad Screenshot (Tap 'Photo Library')" onclick="captureScreenMedia('chat-screen', event)" style="min-width: 44px; min-height: 44px; padding: 0 10px; font-size: 18px; display: inline-flex; align-items: center; justify-content: center; touch-action: manipulation !important;">🖥️</button>
+        <label class="btn btn-secondary" id="chatCamBtn" title="Snap Front Camera Photo" style="min-width: 44px; min-height: 44px; padding: 0 10px; font-size: 18px; display: inline-flex; align-items: center; justify-content: center; touch-action: manipulation !important; cursor: pointer; position: relative; margin: 0;">
+          📸
+          <input type="file" accept="image/*" capture="user" style="position: absolute; inset: 0; opacity: 0; width: 100%; height: 100%; cursor: pointer;" onchange="handleDirectFileSelect(event, 'chat-camera', 'native_ios_front')">
+        </label>
+        <label class="btn btn-secondary" id="chatScreenBtn" title="Upload iPad Screenshot (Tap 'Photo Library')" style="min-width: 44px; min-height: 44px; padding: 0 10px; font-size: 18px; display: inline-flex; align-items: center; justify-content: center; touch-action: manipulation !important; cursor: pointer; position: relative; margin: 0;">
+          🖥️
+          <input type="file" accept="image/*" style="position: absolute; inset: 0; opacity: 0; width: 100%; height: 100%; cursor: pointer;" onchange="handleDirectFileSelect(event, 'chat-screen', 'ios_screenshot_picker')">
+        </label>
         <textarea id="chatInput"
                   name="chat_message"
                   class="chat-input"
@@ -1946,16 +1952,42 @@ def get_wingman_html(
       let actionsHtml = '';
       if (card.actions && Array.isArray(card.actions)) {{
         actionsHtml = '<div class="card-actions" style="touch-action: manipulation; display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px;">' +
-          card.actions.map(a => `
-            <button type="button"
-                    class="btn ${{a.style === 'primary' ? 'btn-primary' : 'btn-secondary'}}"
-                    data-card-id="${{card.id}}"
-                    data-action="${{a.action}}"
-                    style="touch-action: manipulation !important; min-height: 48px; padding: 12px 20px; font-size: 14px; font-weight: 600; cursor: pointer; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; border-radius: 8px;"
-                    onclick="handleCardAction('${{card.id}}', '${{a.action}}', event)">
-              ${{a.label}}
-            </button>
-          `).join('') +
+          card.actions.map(a => {{
+            if (a.action === 'screen_capture' || a.action === 'capture_screen') {{
+              return `
+                <label class="btn ${{a.style === 'primary' ? 'btn-primary' : 'btn-secondary'}}"
+                       style="touch-action: manipulation !important; min-height: 48px; padding: 12px 20px; font-size: 14px; font-weight: 600; cursor: pointer; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; border-radius: 8px; display: inline-flex; align-items: center; justify-content: center; position: relative; margin: 0;">
+                  ${{a.label}}
+                  <input type="file"
+                         accept="image/*"
+                         style="position: absolute; inset: 0; opacity: 0; width: 100%; height: 100%; cursor: pointer;"
+                         onchange="handleDirectFileSelect(event, '${{card.id}}', 'ios_screenshot_picker')">
+                </label>
+              `;
+            }} else if (a.action === 'camera_native') {{
+              return `
+                <label class="btn ${{a.style === 'primary' ? 'btn-primary' : 'btn-secondary'}}"
+                       style="touch-action: manipulation !important; min-height: 48px; padding: 12px 20px; font-size: 14px; font-weight: 600; cursor: pointer; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; border-radius: 8px; display: inline-flex; align-items: center; justify-content: center; position: relative; margin: 0;">
+                  ${{a.label}}
+                  <input type="file"
+                         accept="image/*"
+                         capture="user"
+                         style="position: absolute; inset: 0; opacity: 0; width: 100%; height: 100%; cursor: pointer;"
+                         onchange="handleDirectFileSelect(event, '${{card.id}}', 'native_ios_front')">
+                </label>
+              `;
+            }}
+            return `
+              <button type="button"
+                      class="btn ${{a.style === 'primary' ? 'btn-primary' : 'btn-secondary'}}"
+                      data-card-id="${{card.id}}"
+                      data-action="${{a.action}}"
+                      style="touch-action: manipulation !important; min-height: 48px; padding: 12px 20px; font-size: 14px; font-weight: 600; cursor: pointer; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; border-radius: 8px;"
+                      onclick="handleCardAction('${{card.id}}', '${{a.action}}', event)">
+                ${{a.label}}
+              </button>
+            `;
+          }}).join('') +
           '</div>';
       }}
 
@@ -1966,6 +1998,7 @@ def get_wingman_html(
         </div>
         <div class="card-content">${{escapeHtml(card.content)}}</div>
         ${{actionsHtml}}
+        <div class="card-status-msg" style="font-size: 11px; margin-top: 8px; display: none;"></div>
       `;
 
       // Dual-event (touchend + click) bindings with micro-drift protection for iOS Safari
@@ -2025,6 +2058,39 @@ def get_wingman_html(
       }}
     }}
 
+    function setCardStatus(cardId, message, style = 'accent') {{
+      const cardEl = document.getElementById('card-' + cardId);
+      if (!cardEl) return;
+      let msgEl = cardEl.querySelector('.card-status-msg');
+      if (!msgEl) {{
+        msgEl = document.createElement('div');
+        msgEl.className = 'card-status-msg';
+        cardEl.appendChild(msgEl);
+      }}
+      let color = 'var(--accent)';
+      if (style === 'success') color = 'var(--success)';
+      else if (style === 'warning') color = 'var(--warning)';
+      else if (style === 'danger' || style === 'error') color = 'var(--danger)';
+      msgEl.style.cssText = `font-size: 11px; margin-top: 8px; color: ${{color}}; line-height: 1.4;`;
+      msgEl.style.display = 'block';
+      msgEl.innerHTML = message;
+    }}
+
+    function handleDirectFileSelect(event, cardId, method) {{
+      const file = event.target.files && event.target.files[0];
+      if (!file) return;
+      const isScreen = (method === 'ios_screenshot_picker' || method === 'screenshot');
+      const label = isScreen ? 'screenshot' : 'photo';
+      setCardStatus(cardId, `<span style="color: var(--accent);">Transmitting ${{label}} to Mothership...</span>`, 'accent');
+      addChatMessage('System', `Uploading selected ${{label}} (${{escapeHtml(file.name)}}) to Mothership...`, false);
+      const reader = new FileReader();
+      reader.onload = async () => {{
+        await uploadCapturedPhoto(cardId, reader.result, method);
+        try {{ event.target.value = ''; }} catch (_) {{}}
+      }};
+      reader.readAsDataURL(file);
+    }}
+
     function isAppleDevice() {{
       return /iPad|iPhone|iPod/.test(navigator.userAgent) ||
              (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
@@ -2056,11 +2122,7 @@ def get_wingman_html(
       if (event) {{
         try {{ event.preventDefault(); event.stopPropagation(); }} catch (_) {{}}
       }}
-      const cardEl = document.getElementById('card-' + cardId);
-      if (cardEl) {{
-        const actDiv = cardEl.querySelector('.card-actions');
-        if (actDiv) actDiv.innerHTML = '<span style="font-size: 11px; color: var(--accent);">Initiating screen capture...</span>';
-      }}
+      setCardStatus(cardId, '<span style="font-size: 11px; color: var(--accent);">Initiating screen capture...</span>', 'accent');
 
       const isApple = isAppleDevice();
       const hasDisplayMedia = !!(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia);
@@ -2080,11 +2142,7 @@ def get_wingman_html(
     }}
 
     async function syncLatestScreenshot(cardId = 'screen-capture-card') {{
-      const cardEl = document.getElementById('card-' + cardId);
-      if (cardEl) {{
-        const actDiv = cardEl.querySelector('.card-actions');
-        if (actDiv) actDiv.innerHTML = '<span style="font-size: 11px; color: var(--accent);">Scanning iPad storage for screenshots...</span>';
-      }}
+      setCardStatus(cardId, '<span style="font-size: 11px; color: var(--accent);">Scanning iPad storage for screenshots...</span>', 'accent');
       addChatMessage('System', '🔍 Scanning iPad storage (/mnt/ipad) for recent screenshots...', false);
       try {{
         const headers = {{
@@ -2096,31 +2154,16 @@ def get_wingman_html(
         const data = await res.json();
         if (data && data.status === 'ok') {{
           const szKb = Math.round((data.size_bytes || 0) / 1024);
-          if (cardEl) {{
-            const actDiv = cardEl.querySelector('.card-actions');
-            if (actDiv) {{
-              actDiv.innerHTML = `<span style="font-size: 11px; color: var(--success);">✓ Synced ${{escapeHtml(data.filename)}} (${{szKb}} KB)</span>`;
-            }}
-          }}
+          setCardStatus(cardId, `✓ Synced ${{escapeHtml(data.filename)}} (${{szKb}} KB)`, 'success');
           addChatMessage('System', `✓ Synced latest iPad screenshot: **${{escapeHtml(data.filename)}}** (${{szKb}} KB) to Mothership.`, false);
           playTone(1046.5, 'sine', 0.15);
         }} else {{
           const msg = data.message || "No recent screenshots found on iPad storage.";
-          if (cardEl) {{
-            const actDiv = cardEl.querySelector('.card-actions');
-            if (actDiv) {{
-              actDiv.innerHTML = `<span style="font-size: 11px; color: var(--warning);">${{escapeHtml(msg)}}</span>`;
-            }}
-          }}
-          addChatMessage('System', `⚠️ ${{escapeHtml(msg)}} Tip: Take an iPad screenshot (Top Button + Volume Up) or use 'Pick from Photos'.`, false);
+          setCardStatus(cardId, `⚠️ ${{escapeHtml(msg)}}`, 'warning');
+          addChatMessage('System', `⚠️ ${{escapeHtml(msg)}} Tip: Take an iPad screenshot (Top Button + Volume Up) or use 'Pick Screenshot (Photos)'.`, false);
         }}
       }} catch (err) {{
-        if (cardEl) {{
-          const actDiv = cardEl.querySelector('.card-actions');
-          if (actDiv) {{
-            actDiv.innerHTML = `<span style="font-size: 11px; color: var(--danger);">✗ Sync error: ${{escapeHtml(err.message)}}</span>`;
-          }}
-        }}
+        setCardStatus(cardId, `✗ Sync error: ${{escapeHtml(err.message)}}`, 'danger');
         addChatMessage('System', `✗ Screenshot sync error: ${{escapeHtml(err.message)}}`, false);
       }}
     }}
@@ -2268,11 +2311,7 @@ def get_wingman_html(
     async function uploadCapturedPhoto(cardId, dataUrl, method) {{
       const isScreen = (method === 'get_display_media' || method === 'ios_screenshot_picker' || method === 'screenshot');
       const label = isScreen ? 'screenshot' : 'screen-side camera photo';
-      const cardEl = document.getElementById('card-' + cardId);
-      if (cardEl) {{
-        const actDiv = cardEl.querySelector('.card-actions');
-        if (actDiv) actDiv.innerHTML = `<span style="font-size: 11px; color: var(--accent);">Transmitting ${{label}} to Mothership...</span>`;
-      }}
+      setCardStatus(cardId, `Transmitting ${{label}} to Mothership...`, 'accent');
       addChatMessage('System', `Transmitting ${{label}} to Mothership...`, false);
       try {{
         const res = await fetch('/applet/wingman/photo', {{
@@ -2294,19 +2333,11 @@ def get_wingman_html(
         const reply = await res.json();
         const szKb = Math.round((reply.size_bytes || 0) / 1024);
         const titleStr = isScreen ? 'Screenshot' : 'Screen-side photo';
-        if (cardEl) {{
-          const actDiv = cardEl.querySelector('.card-actions');
-          if (actDiv) {{
-            actDiv.innerHTML = `<span style="font-size: 11px; color: var(--success);">✓ ${{titleStr}} captured (${{szKb}} KB)</span>`;
-          }}
-        }}
+        setCardStatus(cardId, `✓ ${{titleStr}} captured (${{szKb}} KB) and synchronized`, 'success');
         addChatMessage('System', `✓ ${{titleStr}} captured (${{szKb}} KB) and synchronized with Mothership.`, false);
         playTone(1046.5, 'sine', 0.15);
       }} catch (err) {{
-        if (cardEl) {{
-          const actDiv = cardEl.querySelector('.card-actions');
-          if (actDiv) actDiv.innerHTML = `<span style="font-size: 11px; color: var(--danger);">✗ Upload failed: ${{escapeHtml(err.message)}}</span>`;
-        }}
+        setCardStatus(cardId, `✗ Upload failed: ${{escapeHtml(err.message)}}`, 'danger');
         addChatMessage('System', `✗ Upload failed: ${{escapeHtml(err.message)}}`, false);
       }}
     }}
@@ -2334,12 +2365,7 @@ def get_wingman_html(
           await handleSessionExpired(reply.message || "Session expired — awaiting mothership authorization...");
           return;
         }}
-        const cardEl = document.getElementById('card-' + cardId);
-        if (cardEl) {{
-          cardEl.style.opacity = '0.6';
-          const actDiv = cardEl.querySelector('.card-actions');
-          if (actDiv) actDiv.innerHTML = `<span style="font-size: 11px; color: var(--success);">✓ Responded: ${{action}}</span>`;
-        }}
+        setCardStatus(cardId, `✓ Responded: ${{action}}`, 'success');
       }} catch (err) {{}}
     }}
 

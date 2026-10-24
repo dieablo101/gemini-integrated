@@ -162,6 +162,8 @@ def find_node_screenshots(limit: int = 10) -> List[Dict[str, Any]]:
                 continue
             for item in cand.iterdir():
                 if item.is_file() and item.suffix.lower() in valid_exts:
+                    if item.name.startswith("wingman_camera_"):
+                        continue
                     try:
                         st = item.stat()
                         found_files.append({

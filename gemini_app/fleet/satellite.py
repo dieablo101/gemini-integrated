@@ -1775,7 +1775,9 @@ class SatelliteNode:
                     if custom_duck is not None:
                         duck_vol = int(custom_duck)
                     else:
-                        duck_vol = min(original_music_vol, max(2, int(original_music_vol * 0.25)))
+                        # 0.55 ducking ratio balances music attenuation without squashing TTS vocal gain
+                        duck_ratio = float(params.get("duck_ratio", 0.55))
+                        duck_vol = min(original_music_vol, max(4, int(original_music_vol * duck_ratio)))
                     try:
                         subprocess.run(["termux-volume", "music", str(duck_vol)], capture_output=True, text=True, timeout=3)
                         ducked = True
@@ -1807,8 +1809,11 @@ class SatelliteNode:
                     result_payload["status"] = "error"
                     result_payload["error"] = str(exc)
                 finally:
+                    # Restore music volume cleanly after speech completes
                     if ducked and original_music_vol is not None:
                         try:
+                            # Small rest to avoid abrupt volume pop
+                            time.sleep(0.3)
                             subprocess.run(["termux-volume", "music", str(original_music_vol)], capture_output=True, text=True, timeout=3)
                         except Exception:
                             pass

@@ -308,7 +308,10 @@ class ToolRegistry:
                 target = node_id or "android-termux-localhost"
                 from gemini_app.fleet.nodes import speak_node_tts
                 text_to_speak = command or host or "Bilateral audio ping."
-                return speak_node_tts(node_id=target, text=text_to_speak, duck=True)
+                duck_flag = True
+                if "no_duck" in params or "noduck" in params:
+                    duck_flag = False
+                return speak_node_tts(node_id=target, text=text_to_speak, duck=duck_flag)
             elif act in ("audio_info", "mic_info", "audio_status", "audio", "headphones"):
                 target = node_id or "android-termux-localhost"
                 from gemini_app.fleet.nodes import get_node_audio_info

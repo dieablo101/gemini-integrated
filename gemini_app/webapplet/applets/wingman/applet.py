@@ -478,10 +478,15 @@ class WingmanApplet:
         """Receives user chat message from Wingman UI and dispatches to listeners."""
         text = str(body.get("text", "")).strip()
         sender = str(body.get("sender", "operator")).strip()
+        attachment = body.get("attachment")
         now = time.time()
 
-        if not text:
+        if not text and not attachment:
             return {"status": "error", "message": "Empty message"}
+
+        if not text and attachment:
+            kind_label = "Screenshot" if (isinstance(attachment, dict) and "screen" in str(attachment.get("kind", ""))) else "Photo"
+            text = f"📷 [{kind_label}]"
 
         client_ip = handler.client_address[0] if hasattr(handler, "client_address") else "127.0.0.1"
         is_loopback = client_ip in ("127.0.0.1", "::1", "localhost")
@@ -496,6 +501,44 @@ class WingmanApplet:
             if not sess.is_unlocked:
                 return {"status": "error", "session_locked": True, "message": "Session is locked. Passkey unlock required."}
 
+        saved_attachment = None
+        if isinstance(attachment, dict) and attachment.get("data_b64"):
+            try:
+                import base64
+                from pathlib import Path
+                from gemini_app.config import GEMINI_HOME
+                raw_b64 = str(attachment["data_b64"])
+                if "," in raw_b64:
+                    raw_b64 = raw_b64.split(",", 1)[1]
+                raw_bytes = base64.b64decode(raw_b64)
+                kind = str(attachment.get("kind", "screenshot"))
+                prefix = "wingman_screenshot" if "screen" in kind else "wingman_photo"
+                dest_dir = GEMINI_HOME / "screenshots"
+                dest_dir.mkdir(parents=True, exist_ok=True)
+                fname = f"{prefix}_{self.node_id}_{int(now)}.jpg"
+                dest_file = dest_dir / fname
+                dest_file.write_bytes(raw_bytes)
+
+                ocr_text = ""
+                try:
+                    from gemini_app.fleet.media_ocr import extract_screen_text
+                    ocr_res = extract_screen_text(dest_file)
+                    ocr_text = ocr_res.get("raw_text", "") if isinstance(ocr_res, dict) else str(ocr_res)
+                except Exception:
+                    pass
+
+                saved_attachment = {
+                    "filename": fname,
+                    "original_name": attachment.get("filename", fname),
+                    "size_bytes": len(raw_bytes),
+                    "local_path": str(dest_file),
+                    "ocr_text": ocr_text,
+                    "data_b64": attachment.get("data_b64", ""),
+                    "kind": kind,
+                }
+            except Exception as exc:
+                logger.warning(f"Failed to process chat attachment: {exc}")
+
         msg_id_val = str(body.get("id") or body.get("msg_id") or f"msg-{secrets.token_hex(4)}-{int(now * 1000)}").strip()
         dev_id = str(body.get("device_id") or handler.headers.get("X-Wingman-Device", "")).strip()
         dev_label = str(body.get("device_label") or body.get("device_name") or "").strip()
@@ -507,6 +550,7 @@ class WingmanApplet:
             "is_user": True,
             "origin_device": dev_id,
             "origin_label": dev_label,
+            "attachment": saved_attachment or attachment,
         }
         if text.lower() == "/clear":
             self.clear_chat()
@@ -526,7 +570,7 @@ class WingmanApplet:
         with self._lock:
             for cb in self._chat_callbacks:
                 try:
-                    cb(sender, text, body)
+                    cb(sender, text, {**body, "attachment": saved_attachment or attachment})
                 except Exception:
                     pass
 
@@ -753,6 +797,7 @@ class WingmanApplet:
         timestamp: Optional[float] = None,
         origin_device: str = "",
         origin_label: str = "",
+        attachment: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Pushes a chat message bubble to all connected Wingman browsers in Chat mode."""
         msg_id_val = msg_id or f"msg-{secrets.token_hex(4)}-{int(time.time() * 1000)}"
@@ -765,6 +810,7 @@ class WingmanApplet:
             "is_user": is_user,
             "origin_device": origin_device,
             "origin_label": origin_label,
+            "attachment": attachment,
         }
         with self._lock:
             if not any(m.get("id") == msg_id_val for m in self._chat_history):

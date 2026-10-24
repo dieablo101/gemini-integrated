@@ -308,6 +308,48 @@ class TestWingmanSecurity(unittest.TestCase):
         finally:
             applet.stop()
 
+    def test_wingman_chat_staged_attachment(self) -> None:
+        """Verifies that an attachment staged with chat message transmits cleanly and is stored."""
+        import base64
+        applet = WingmanApplet(port=0, node_id="test-node", require_pairing=False)
+        self.assertTrue(applet.start())
+        try:
+            received_chat = []
+            applet.on_chat_message(lambda s, t, b: received_chat.append((s, t, b)))
+
+            mock_handler = MagicMock()
+            mock_handler.client_address = ("127.0.0.1", 52201)
+            mock_handler.headers = {}
+
+            dummy_b64 = "data:image/jpeg;base64," + base64.b64encode(b"fake_jpeg_data").decode("ascii")
+
+            # Post message with staged attachment and empty text (send attachment only)
+            res = applet._handle_chat(mock_handler, {}, {
+                "sender": "operator",
+                "text": "",
+                "attachment": {
+                    "data_b64": dummy_b64,
+                    "filename": "ipad_screen.jpg",
+                    "kind": "screenshot",
+                    "size_bytes": 14,
+                }
+            })
+            self.assertEqual(res["status"], "ok")
+            self.assertEqual(len(received_chat), 1)
+            sender, text, body = received_chat[0]
+            self.assertEqual(sender, "operator")
+            self.assertIn("attachment", body)
+            self.assertIsNotNone(body["attachment"])
+            self.assertEqual(body["attachment"]["original_name"], "ipad_screen.jpg")
+
+            # Verify history records attachment
+            hist = applet._handle_chat_history(mock_handler, {})
+            self.assertEqual(len(hist["history"]), 1)
+            self.assertIn("attachment", hist["history"][0])
+            self.assertEqual(hist["history"][0]["attachment"]["original_name"], "ipad_screen.jpg")
+        finally:
+            applet.stop()
+
     def test_wingman_pbkdf2_passkey_direct_auth(self) -> None:
         """Verifies direct passkey entry verifies PBKDF2 hash and unlocks session."""
         applet = WingmanApplet(port=0, node_id="test-node", require_pairing=True)
@@ -871,6 +913,73 @@ class TestWingmanSecurity(unittest.TestCase):
             self.assertEqual(hist_res["history"][-1]["text"], "Turn message 59")
             self.assertEqual(hist_res["history"][0]["text"], "Turn message 10")
             self.assertEqual(hist_res["history"][-1]["origin_label"], "Mothership")
+        finally:
+            applet.stop()
+
+    def test_wingman_chat_attachment_staged_flow(self) -> None:
+        """Verifies that screenshots/photos stage as attachments and transmit with chat message."""
+        import base64
+        from gemini_app.webapplet.applets.wingman.applet import WingmanApplet
+        from gemini_app.webapplet.applets.wingman.ui import get_wingman_html
+
+        html = get_wingman_html()
+        self.assertIn('chatAttachmentPreview', html)
+        self.assertIn('handleChatAttachmentSelect', html)
+        self.assertIn('clearStagedAttachment', html)
+
+        applet = WingmanApplet(port=0, node_id="test_node", require_pairing=False)
+        received_callbacks = []
+        applet.on_chat_message(lambda sender, text, body: received_callbacks.append((sender, text, body)))
+
+        try:
+            fake_img_bytes = b"GIF89a\x01\x00\x01\x00\x80\x00\x00\xff\xff\xff\x00\x00\x00!\xf9\x04\x01\x00\x00\x00\x00,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;"
+            fake_b64 = "data:image/gif;base64," + base64.b64encode(fake_img_bytes).decode("ascii")
+
+            mock_handler = MagicMock()
+            mock_handler.headers = {}
+            mock_handler.client_address = ("127.0.0.1", 12345)
+
+            # Test sending chat message WITH attachment
+            chat_body = {
+                "id": "msg-att-1",
+                "text": "Here is the error screenshot",
+                "sender": "Operator",
+                "attachment": {
+                    "data_b64": fake_b64,
+                    "filename": "error_screen.gif",
+                    "kind": "screenshot"
+                }
+            }
+            res = applet._handle_chat(mock_handler, {}, chat_body)
+            self.assertEqual(res["status"], "ok")
+
+            # Verify saved in applet chat history with attachment
+            self.assertEqual(len(applet._chat_history), 1)
+            saved = applet._chat_history[0]
+            self.assertEqual(saved["text"], "Here is the error screenshot")
+            self.assertIsNotNone(saved.get("attachment"))
+            self.assertEqual(saved["attachment"]["original_name"], "error_screen.gif")
+
+            # Verify callback received attachment
+            self.assertEqual(len(received_callbacks), 1)
+            self.assertEqual(received_callbacks[0][0], "Operator")
+            self.assertIn("attachment", received_callbacks[0][2])
+
+            # Test sending attachment with EMPTY text (user just hits send after picking screenshot)
+            chat_body_empty_text = {
+                "id": "msg-att-2",
+                "text": "",
+                "sender": "Operator",
+                "attachment": {
+                    "data_b64": fake_b64,
+                    "filename": "lone_screenshot.gif",
+                    "kind": "screenshot"
+                }
+            }
+            res2 = applet._handle_chat(mock_handler, {}, chat_body_empty_text)
+            self.assertEqual(res2["status"], "ok")
+            self.assertEqual(len(applet._chat_history), 2)
+            self.assertEqual(applet._chat_history[1]["attachment"]["original_name"], "lone_screenshot.gif")
         finally:
             applet.stop()
 

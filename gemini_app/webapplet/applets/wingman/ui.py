@@ -1030,35 +1030,48 @@ def get_wingman_html(
           <div>Bilateral chat stream connected. Messages sent here are validated through the node security gate and received directly by the Mothership.</div>
         </div>
       </div>
-      <div class="chat-input-container" id="chatContainer">
-        <label class="btn btn-secondary" id="chatCamBtn" title="Snap Front Camera Photo" style="min-width: 44px; min-height: 44px; padding: 0 10px; font-size: 18px; display: inline-flex; align-items: center; justify-content: center; touch-action: manipulation !important; cursor: pointer; position: relative; margin: 0;">
-          📸
-          <input type="file" accept="image/*" capture="user" style="position: absolute; inset: 0; opacity: 0; width: 100%; height: 100%; cursor: pointer;" onchange="handleDirectFileSelect(event, 'chat-camera', 'native_ios_front')">
-        </label>
-        <label class="btn btn-secondary" id="chatScreenBtn" title="Upload iPad Screenshot (Tap 'Photo Library')" style="min-width: 44px; min-height: 44px; padding: 0 10px; font-size: 18px; display: inline-flex; align-items: center; justify-content: center; touch-action: manipulation !important; cursor: pointer; position: relative; margin: 0;">
-          🖥️
-          <input type="file" accept="image/*" style="position: absolute; inset: 0; opacity: 0; width: 100%; height: 100%; cursor: pointer;" onchange="handleDirectFileSelect(event, 'chat-screen', 'ios_screenshot_picker')">
-        </label>
-        <textarea id="chatInput"
-                  name="chat_message"
-                  class="chat-input"
-                  rows="1"
-                  role="textbox"
-                  placeholder="Message Gemini on Mothership..."
-                  autocomplete="off"
-                  autocorrect="on"
-                  autocapitalize="sentences"
-                  spellcheck="true"
-                  enterkeyhint="send"
-                  inputmode="text"
-                  data-form-type="other"
-                  data-lpignore="true"
-                  data-1p-ignore="true"
-                  data-bwignore="true"
-                  data-protonpass-ignore="true"
-                  aria-autocomplete="none"
-                  onkeydown="handleChatKeyDown(event)"></textarea>
-        <button type="button" class="btn btn-primary" id="chatSendBtn" onclick="submitChatMessage()">Send ↵</button>
+      <div class="chat-input-wrapper" style="flex-shrink: 0; background: #0d121f; border-top: 1px solid var(--border);">
+        <!-- Staged Attachment Preview Bar (Appears when photo/screenshot selected) -->
+        <div id="chatAttachmentPreview" style="display: none; padding: 8px 14px 2px 14px; align-items: center; justify-content: space-between; gap: 10px;">
+          <div style="display: flex; align-items: center; gap: 10px; min-width: 0; overflow: hidden; background: #030712; padding: 5px 10px; border-radius: 6px; border: 1px solid var(--accent); flex: 1;">
+            <img id="chatAttachmentThumb" src="" alt="preview" style="width: 42px; height: 42px; object-fit: cover; border-radius: 4px; border: 1px solid var(--border); background: #000; flex-shrink: 0;" />
+            <div style="min-width: 0;">
+              <div id="chatAttachmentName" style="font-size: 11px; font-weight: 600; color: #fff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">screenshot.png</div>
+              <div id="chatAttachmentSize" style="font-size: 10px; color: var(--accent);">Ready to send • Tap Send ↵ to transmit</div>
+            </div>
+          </div>
+          <button type="button" class="btn btn-secondary" onclick="clearStagedAttachment()" title="Remove attachment" style="min-width: 32px; height: 32px; padding: 0 8px; font-size: 14px; border-radius: 6px; line-height: 1; cursor: pointer;">✕</button>
+        </div>
+        <div class="chat-input-container" id="chatContainer" style="border-top: none;">
+          <label class="btn btn-secondary" id="chatCamBtn" title="Snap Front Camera Photo" style="min-width: 44px; min-height: 44px; padding: 0 10px; font-size: 18px; display: inline-flex; align-items: center; justify-content: center; touch-action: manipulation !important; cursor: pointer; position: relative; margin: 0; overflow: hidden; -webkit-tap-highlight-color: transparent;">
+            📸
+            <input type="file" id="chatCamFileInput" accept="image/*" capture="user" style="position: absolute; inset: 0; opacity: 0.001; width: 100%; height: 100%; cursor: pointer; z-index: 10; display: block;" onchange="handleChatAttachmentSelect(event, 'camera')">
+          </label>
+          <label class="btn btn-secondary" id="chatScreenBtn" title="Attach Screenshot (Photo Library)" style="min-width: 44px; min-height: 44px; padding: 0 10px; font-size: 18px; display: inline-flex; align-items: center; justify-content: center; touch-action: manipulation !important; cursor: pointer; position: relative; margin: 0; overflow: hidden; -webkit-tap-highlight-color: transparent;">
+            🖥️
+            <input type="file" id="chatScreenFileInput" accept="image/*" style="position: absolute; inset: 0; opacity: 0.001; width: 100%; height: 100%; cursor: pointer; z-index: 10; display: block;" onchange="handleChatAttachmentSelect(event, 'screenshot')">
+          </label>
+          <textarea id="chatInput"
+                    name="chat_message"
+                    class="chat-input"
+                    rows="1"
+                    role="textbox"
+                    placeholder="Message Gemini on Mothership..."
+                    autocomplete="off"
+                    autocorrect="on"
+                    autocapitalize="sentences"
+                    spellcheck="true"
+                    enterkeyhint="send"
+                    inputmode="text"
+                    data-form-type="other"
+                    data-lpignore="true"
+                    data-1p-ignore="true"
+                    data-bwignore="true"
+                    data-protonpass-ignore="true"
+                    aria-autocomplete="none"
+                    onkeydown="handleChatKeyDown(event)"></textarea>
+          <button type="button" class="btn btn-primary" id="chatSendBtn" onclick="submitChatMessage()">Send ↵</button>
+        </div>
       </div>
     </div>
 
@@ -1630,6 +1643,7 @@ def get_wingman_html(
             id: m.id || ('msg-' + (m.timestamp || Math.random())),
             sender: m.sender || (m.is_user ? 'Operator' : 'Gemini Core'),
             text: m.text || '',
+            attachment: m.attachment || null,
             is_user: Boolean(m.is_user),
             origin_device: m.origin_device || '',
             origin_label: m.origin_label || '',
@@ -1912,7 +1926,8 @@ def get_wingman_html(
             mId,
             msg.timestamp,
             msg.origin_device || '',
-            msg.origin_label || ''
+            msg.origin_label || '',
+            msg.attachment || null
           );
           playTone(660, 'sine', 0.08);
         }} catch (err) {{}}
@@ -1961,7 +1976,7 @@ def get_wingman_html(
                   <input type="file"
                          accept="image/*"
                          style="position: absolute; inset: 0; opacity: 0; width: 100%; height: 100%; cursor: pointer;"
-                         onchange="handleDirectFileSelect(event, '${{card.id}}', 'ios_screenshot_picker')">
+                         onchange="handleCardAttachmentSelect(event, '${{card.id}}', 'screenshot')">
                 </label>
               `;
             }} else if (a.action === 'camera_native') {{
@@ -1973,7 +1988,7 @@ def get_wingman_html(
                          accept="image/*"
                          capture="user"
                          style="position: absolute; inset: 0; opacity: 0; width: 100%; height: 100%; cursor: pointer;"
-                         onchange="handleDirectFileSelect(event, '${{card.id}}', 'native_ios_front')">
+                         onchange="handleCardAttachmentSelect(event, '${{card.id}}', 'camera')">
                 </label>
               `;
             }}
@@ -2076,17 +2091,106 @@ def get_wingman_html(
       msgEl.innerHTML = message;
     }}
 
+    let stagedAttachment = null;
+
+    function showToast(msg, duration = 2500) {{
+      let t = document.getElementById('wingmanGlobalToast');
+      if (!t) {{
+        t = document.createElement('div');
+        t.id = 'wingmanGlobalToast';
+        t.style.cssText = 'position:fixed;bottom:76px;left:50%;transform:translateX(-50%);background:#10172a;color:#f8fafc;border:1px solid var(--accent);padding:8px 16px;border-radius:20px;font-size:12px;font-weight:600;z-index:9999;box-shadow:0 6px 20px rgba(0,0,0,0.6);pointer-events:none;transition:opacity 0.25s ease;opacity:0;white-space:nowrap;max-width:90vw;overflow:hidden;text-overflow:ellipsis;font-family:var(--font-mono);';
+        document.body.appendChild(t);
+      }}
+      t.textContent = msg;
+      t.style.opacity = '1';
+      clearTimeout(t._hideTimer);
+      t._hideTimer = setTimeout(() => {{ t.style.opacity = '0'; }}, duration);
+    }}
+
+    function handleChatAttachmentSelect(event, kind = 'screenshot') {{
+      const file = event.target.files && event.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (e) => {{
+        stageAttachment({{
+          data_b64: e.target.result,
+          filename: file.name || (kind === 'screenshot' ? 'screenshot.jpg' : 'photo.jpg'),
+          type: file.type || 'image/jpeg',
+          size_bytes: file.size,
+          kind: kind
+        }});
+        try {{ event.target.value = ''; }} catch (_) {{}}
+      }};
+      reader.readAsDataURL(file);
+    }}
+
+    function handleCardAttachmentSelect(event, cardId, kind = 'screenshot') {{
+      const file = event.target.files && event.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (e) => {{
+        stageAttachment({{
+          data_b64: e.target.result,
+          filename: file.name || (kind === 'screenshot' ? 'screenshot.jpg' : 'photo.jpg'),
+          type: file.type || 'image/jpeg',
+          size_bytes: file.size,
+          kind: kind
+        }});
+        try {{ event.target.value = ''; }} catch (_) {{}}
+        if (typeof selectMode === 'function') selectMode('chat');
+        showToast(`✓ ${{kind === 'screenshot' ? 'Screenshot' : 'Photo'}} staged. Tap Send ↵ to transmit!`);
+      }};
+      reader.readAsDataURL(file);
+    }}
+
+    function stageAttachment(att) {{
+      stagedAttachment = att;
+      const prevEl = document.getElementById('chatAttachmentPreview');
+      const thumbEl = document.getElementById('chatAttachmentThumb');
+      const nameEl = document.getElementById('chatAttachmentName');
+      const sizeEl = document.getElementById('chatAttachmentSize');
+      if (prevEl && thumbEl && nameEl && sizeEl) {{
+        thumbEl.src = att.data_b64;
+        nameEl.textContent = att.filename;
+        const szKb = Math.round((att.size_bytes || 0) / 1024);
+        sizeEl.textContent = `${{szKb > 0 ? szKb + ' KB' : 'Image'}} • Tap Send ↵ to transmit`;
+        prevEl.style.display = 'flex';
+      }}
+      const sendBtn = document.getElementById('chatSendBtn');
+      if (sendBtn) sendBtn.innerHTML = 'Send ↵ <span style="font-size: 11px; opacity: 0.85;">(1)</span>';
+      const input = document.getElementById('chatInput');
+      if (input) input.focus();
+    }}
+
+    function clearStagedAttachment() {{
+      stagedAttachment = null;
+      const prevEl = document.getElementById('chatAttachmentPreview');
+      if (prevEl) prevEl.style.display = 'none';
+      const sendBtn = document.getElementById('chatSendBtn');
+      if (sendBtn) sendBtn.textContent = 'Send ↵';
+      const screenInput = document.getElementById('chatScreenFileInput');
+      if (screenInput) screenInput.value = '';
+      const camInput = document.getElementById('chatCamFileInput');
+      if (camInput) camInput.value = '';
+    }}
+
     function handleDirectFileSelect(event, cardId, method) {{
       const file = event.target.files && event.target.files[0];
       if (!file) return;
       const isScreen = (method === 'ios_screenshot_picker' || method === 'screenshot');
-      const label = isScreen ? 'screenshot' : 'photo';
-      setCardStatus(cardId, `<span style="color: var(--accent);">Transmitting ${{label}} to Mothership...</span>`, 'accent');
-      addChatMessage('System', `Uploading selected ${{label}} (${{escapeHtml(file.name)}}) to Mothership...`, false);
+      const kind = isScreen ? 'screenshot' : 'camera';
       const reader = new FileReader();
-      reader.onload = async () => {{
-        await uploadCapturedPhoto(cardId, reader.result, method);
+      reader.onload = (e) => {{
+        stageAttachment({{
+          data_b64: e.target.result,
+          filename: file.name || (isScreen ? 'screenshot.png' : 'photo.jpg'),
+          type: file.type || 'image/jpeg',
+          size_bytes: file.size,
+          kind: kind
+        }});
         try {{ event.target.value = ''; }} catch (_) {{}}
+        if (typeof selectMode === 'function') selectMode('chat');
+        showToast(`✓ ${{isScreen ? 'Screenshot' : 'Photo'}} staged. Tap Send ↵ to transmit!`);
       }};
       reader.readAsDataURL(file);
     }}
@@ -2122,28 +2226,16 @@ def get_wingman_html(
       if (event) {{
         try {{ event.preventDefault(); event.stopPropagation(); }} catch (_) {{}}
       }}
-      setCardStatus(cardId, '<span style="font-size: 11px; color: var(--accent);">Initiating screen capture...</span>', 'accent');
-
-      const isApple = isAppleDevice();
-      const hasDisplayMedia = !!(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia);
-
-      // On iOS / iPadOS Safari, automated getDisplayMedia is restricted by Apple OS sandbox.
-      // Calling input.click() asynchronously after an await getDisplayMedia() failure is
-      // strictly blocked by Safari because the user-gesture token expires.
-      // Therefore, on Apple devices (or insecure HTTP contexts), synchronously trigger
-      // the screenshot picker in the direct user gesture tick!
-      if (isApple || !hasDisplayMedia) {{
-        addChatMessage('System', "📱 **iPadOS Screenshot**: Tap **'Photo Library'** -> select your screenshot to sync with Mothership.", false);
-        triggerScreenshotPicker(cardId);
-        return;
+      if (typeof selectMode === 'function') selectMode('chat');
+      const input = document.getElementById('chatScreenFileInput');
+      if (input) {{
+        try {{ input.click(); }} catch (_) {{}}
       }}
-
-      captureDisplayMediaDesktop(cardId);
+      showToast("Tap 🖥️ to attach screenshot, then hit Send ↵", 3000);
     }}
 
     async function syncLatestScreenshot(cardId = 'screen-capture-card') {{
       setCardStatus(cardId, '<span style="font-size: 11px; color: var(--accent);">Scanning iPad storage for screenshots...</span>', 'accent');
-      addChatMessage('System', '🔍 Scanning iPad storage (/mnt/ipad) for recent screenshots...', false);
       try {{
         const headers = {{
           'X-Wingman-Device': deviceId,
@@ -2155,16 +2247,25 @@ def get_wingman_html(
         if (data && data.status === 'ok') {{
           const szKb = Math.round((data.size_bytes || 0) / 1024);
           setCardStatus(cardId, `✓ Synced ${{escapeHtml(data.filename)}} (${{szKb}} KB)`, 'success');
-          addChatMessage('System', `✓ Synced latest iPad screenshot: **${{escapeHtml(data.filename)}}** (${{szKb}} KB) to Mothership.`, false);
           playTone(1046.5, 'sine', 0.15);
+          if (data.data_b64) {{
+            stageAttachment({{
+              data_b64: data.data_b64,
+              filename: data.filename || 'ipad_screenshot.jpg',
+              type: 'image/jpeg',
+              size_bytes: data.size_bytes || 0,
+              kind: 'screenshot'
+            }});
+            if (typeof selectMode === 'function') selectMode('chat');
+            showToast(`✓ Staged ${{data.filename || 'screenshot'}}. Tap Send ↵ to transmit!`, 3500);
+          }}
         }} else {{
           const msg = data.message || "No recent screenshots found on iPad storage.";
           setCardStatus(cardId, `⚠️ ${{escapeHtml(msg)}}`, 'warning');
-          addChatMessage('System', `⚠️ ${{escapeHtml(msg)}} Tip: Take an iPad screenshot (Top Button + Volume Up) or use 'Pick Screenshot (Photos)'.`, false);
+          showToast(`⚠️ ${{msg}}`, 3500);
         }}
       }} catch (err) {{
         setCardStatus(cardId, `✗ Sync error: ${{escapeHtml(err.message)}}`, 'danger');
-        addChatMessage('System', `✗ Screenshot sync error: ${{escapeHtml(err.message)}}`, false);
       }}
     }}
 
@@ -2379,7 +2480,7 @@ def get_wingman_html(
 
     function submitChatMessage() {{
       const text = chatInput.value.trim();
-      if (!text) return;
+      if (!text && !stagedAttachment) return;
 
       requireSessionUnlock('Homebase passkey required to send chat message to Gemini', () => {{
         executeSubmitChatMessage(text);
@@ -2417,19 +2518,32 @@ def get_wingman_html(
           }}
         }}
 
+        let attachmentHtml = '';
+        if (m.attachment && m.attachment.data_b64) {{
+          const isScr = (m.attachment.kind === 'screenshot' || (m.attachment.filename && m.attachment.filename.includes('screenshot')));
+          const attLabel = m.attachment.filename || (isScr ? 'Screenshot' : 'Photo');
+          attachmentHtml = `
+            <div style="margin-top: 8px; border-radius: 8px; overflow: hidden; max-width: 320px; border: 1px solid var(--border); background: #000;">
+              <img src="${{escapeHtml(m.attachment.data_b64)}}" alt="Attachment" style="width: 100%; display: block; max-height: 220px; object-fit: contain; background: #000;" />
+              <div style="font-size: 10px; color: var(--text-muted); padding: 4px 8px; background: rgba(0,0,0,0.55); font-family: var(--font-mono);">${{escapeHtml(attLabel)}}</div>
+            </div>
+          `;
+        }}
+
         bubble.innerHTML = `
           <div class="chat-meta">
             <span>${{escapeHtml(senderText)}}</span>
             <span>${{timeStr}}</span>
           </div>
-          <div style="white-space: pre-wrap; word-break: break-word;">${{formatMarkdown(m.text || '')}}</div>
+          ${{m.text ? `<div style="white-space: pre-wrap; word-break: break-word;">${{formatMarkdown(m.text)}}</div>` : ''}}
+          ${{attachmentHtml}}
         `;
         chatFeed.appendChild(bubble);
       }});
       chatFeed.scrollTop = chatFeed.scrollHeight;
     }}
 
-    function addChatMessage(sender, text, isUser = false, msgId = '', timestamp = null, originDevice = '', originLabel = '') {{
+    function addChatMessage(sender, text, isUser = false, msgId = '', timestamp = null, originDevice = '', originLabel = '', attachment = null) {{
       const mId = msgId || ('msg-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6));
       const ts = (typeof timestamp === 'number' && timestamp > 0) ? timestamp : ((Date.now() / 1000) + serverTimeOffset);
       const existingIdx = chatMessages.findIndex(m => m.id === mId);
@@ -2438,6 +2552,7 @@ def get_wingman_html(
           id: mId,
           sender,
           text,
+          attachment: attachment || chatMessages[existingIdx].attachment || null,
           is_user: isUser,
           timestamp: ts,
           origin_device: originDevice || chatMessages[existingIdx].origin_device || '',
@@ -2449,6 +2564,7 @@ def get_wingman_html(
           id: mId,
           sender,
           text,
+          attachment: attachment || null,
           is_user: isUser,
           timestamp: ts,
           origin_device: originDevice,
@@ -2467,11 +2583,15 @@ def get_wingman_html(
     }}
 
     async function executeSubmitChatMessage(text) {{
+      const currentAttachment = stagedAttachment ? {{ ...stagedAttachment }} : null;
+      clearStagedAttachment();
+
+      const effectiveText = (text && text.trim()) ? text.trim() : (currentAttachment ? (currentAttachment.kind === 'screenshot' ? '🖥️ [iPad Screenshot]' : '📸 [Camera Photo]') : '');
       const msgId = 'msg-wingman-' + Date.now() + '-' + Math.random().toString(36).substring(2, 7);
       const nowSec = (Date.now() / 1000) + serverTimeOffset;
       chatInput.value = '';
 
-      if (text.trim().toLowerCase() === '/clear') {{
+      if (effectiveText.toLowerCase() === '/clear') {{
         chatMessages = [];
         renderChatFeed();
         addChatMessage('Gemini Core', 'Clearing bilateral chat across all devices...', false);
@@ -2479,7 +2599,8 @@ def get_wingman_html(
         chatMessages.push({{
           id: msgId,
           sender: 'Operator',
-          text: text,
+          text: effectiveText,
+          attachment: currentAttachment,
           is_user: true,
           timestamp: nowSec,
           origin_device: deviceId,
@@ -2493,6 +2614,17 @@ def get_wingman_html(
       }}
 
       try {{
+        const reqPayload = {{
+          id: msgId,
+          text: effectiveText,
+          sender: 'Operator',
+          timestamp: nowSec,
+          device_id: deviceId,
+          device_label: deviceLabel,
+        }};
+        if (currentAttachment) {{
+          reqPayload.attachment = currentAttachment;
+        }}
         const res = await fetch('/applet/wingman/chat', {{
           method: 'POST',
           headers: {{
@@ -2500,14 +2632,7 @@ def get_wingman_html(
             'X-Wingman-Token': sessionToken,
             'X-Wingman-Device': deviceId
           }},
-          body: JSON.stringify({{
-            id: msgId,
-            text: text,
-            sender: 'Operator',
-            timestamp: nowSec,
-            device_id: deviceId,
-            device_label: deviceLabel
-          }})
+          body: JSON.stringify(reqPayload)
         }});
         const reply = await res.json();
         if (reply.session_locked && !reply.reauth_required) {{
@@ -2775,24 +2900,39 @@ def get_wingman_html(
     window.addEventListener('pageshow', onWakeOrVisibilityChange);
     window.addEventListener('focus', onWakeOrVisibilityChange);
 
-    // Attach direct touchend listeners to bottom bar action buttons
-    const camBtn = document.getElementById('chatCamBtn');
-    if (camBtn) {{
-      camBtn.addEventListener('touchend', (e) => {{
-        e.preventDefault();
-        triggerNativeCameraInput('chat-camera', e);
-      }}, {{ passive: false }});
-    }}
-    const scrBtn = document.getElementById('chatScreenBtn');
-    if (scrBtn) {{
-      scrBtn.addEventListener('touchend', (e) => {{
-        e.preventDefault();
-        captureScreenMedia('chat-screen', e);
-      }}, {{ passive: false }});
-    }}
-
     checkSession();
     loadCardsHistory();
+
+    // Clipboard paste support (iPad/Desktop: paste screenshot directly into chat)
+    const chatInputElem = document.getElementById('chatInput');
+    if (chatInputElem) {{
+      chatInputElem.addEventListener('paste', (e) => {{
+        const items = (e.clipboardData || window.clipboardData)?.items;
+        if (!items) return;
+        for (let i = 0; i < items.length; i++) {{
+          if (items[i].type.indexOf('image') !== -1) {{
+            const file = items[i].getAsFile();
+            if (file) {{
+              const reader = new FileReader();
+              reader.onload = (ev) => {{
+                stageAttachment({{
+                  data_b64: ev.target.result,
+                  filename: file.name || 'pasted_screenshot.png',
+                  type: file.type || 'image/png',
+                  size_bytes: file.size,
+                  kind: 'screenshot'
+                }});
+                showToast('✓ Screenshot pasted & staged. Tap Send ↵ to transmit!');
+              }};
+              reader.readAsDataURL(file);
+              e.preventDefault();
+              break;
+            }}
+          }}
+        }}
+      }});
+    }}
+
     connectSSE();
     pingInterval = setInterval(measurePing, 5000);
     measurePing();

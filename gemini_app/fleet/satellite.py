@@ -1163,18 +1163,22 @@ class SatelliteNode:
         if not self._running or not self.sock:
             return
         msg_id = body.get("id") or body.get("msg_id", "")
+        attachment = body.get("attachment")
         try:
+            payload = {
+                "event": "wingman_chat_message",
+                "node_id": self.node_id,
+                "sender": sender,
+                "text": text,
+                "id": msg_id,
+                "timestamp": time.time(),
+            }
+            if attachment:
+                payload["attachment"] = attachment
             ev = FleetMessage(
                 msg_type=FleetMessage.TYPE_EVENT,
                 node_id=self.node_id,
-                payload={
-                    "event": "wingman_chat_message",
-                    "node_id": self.node_id,
-                    "sender": sender,
-                    "text": text,
-                    "id": msg_id,
-                    "timestamp": time.time(),
-                },
+                payload=payload,
             )
             self.send_message(ev)
         except Exception:
@@ -2187,6 +2191,7 @@ class SatelliteNode:
                                             timestamp=msg.payload.get("timestamp"),
                                             origin_device=msg.payload.get("origin_device", ""),
                                             origin_label=msg.payload.get("origin_label", ""),
+                                            attachment=msg.payload.get("attachment"),
                                         )
                                     except Exception:
                                         pass

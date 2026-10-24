@@ -2025,8 +2025,28 @@ class ChatApp(App):
                 elif action == "wingman_chat":
                     text = payload.get("text", "")
                     sender = payload.get("sender", "operator")
-                    if text:
-                        self._handle_wingman_incoming_chat(sender, text)
+                    attachment = payload.get("attachment")
+                    meta = {
+                        "device_id": payload.get("device_id", ""),
+                        "device_label": payload.get("device_label", ""),
+                        "attachment": attachment,
+                    }
+                    if text or attachment:
+                        body_parts = []
+                        if text:
+                            body_parts.append(text)
+                        if isinstance(attachment, dict):
+                            att_name = attachment.get("filename") or attachment.get("original_name") or "screenshot"
+                            att_path = attachment.get("local_path", "")
+                            att_ocr = attachment.get("ocr_text", "")
+                            if att_path:
+                                body_parts.append(f"🖼️ **[Attached: {att_name}]** ({att_path})")
+                            else:
+                                body_parts.append(f"🖼️ **[Attached: {att_name}]**")
+                            if att_ocr and att_ocr.strip():
+                                body_parts.append(f"**[Screenshot OCR Text]**:\n```text\n{att_ocr.strip()}\n```")
+                        full_msg = "\n\n".join(body_parts) if body_parts else text
+                        self._handle_wingman_incoming_chat(sender, full_msg, meta)
                 elif action == "clear_chat":
                     def _do_clear():
                         try:

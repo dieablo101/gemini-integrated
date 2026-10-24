@@ -1044,6 +1044,37 @@ class MothershipServer:
                                         pass
                                     continue
 
+                                chat_attachment = msg.payload.get("attachment")
+                                if isinstance(chat_attachment, dict) and chat_attachment.get("data_b64"):
+                                    try:
+                                        import base64
+                                        from gemini_app.config import GEMINI_HOME
+                                        raw_b64 = str(chat_attachment["data_b64"])
+                                        if "," in raw_b64:
+                                            raw_b64 = raw_b64.split(",", 1)[1]
+                                        att_bytes = base64.b64decode(raw_b64)
+                                        dest_dir = GEMINI_HOME / "screenshots"
+                                        dest_dir.mkdir(parents=True, exist_ok=True)
+                                        att_name = chat_attachment.get("filename") or f"screenshot_{int(time.time())}.jpg"
+                                        dest_file = dest_dir / f"node_{node_id}_{att_name}"
+                                        dest_file.write_bytes(att_bytes)
+                                        chat_attachment["local_path"] = str(dest_file)
+
+                                        from gemini_app.fleet.media_ocr import extract_screen_text, parse_mobile_media
+                                        ocr_res = extract_screen_text(dest_file)
+                                        ocr_str = ocr_res.get("raw_text", "") if isinstance(ocr_res, dict) else str(ocr_res)
+                                        chat_attachment["ocr_text"] = ocr_str
+                                        with self.lock:
+                                            self.latest_node_media[node_id] = {
+                                                **parse_mobile_media(ocr_res, filename=dest_file.name),
+                                                "local_path": str(dest_file),
+                                                "filename": dest_file.name,
+                                                "timestamp": time.time(),
+                                                "is_screenshot": True,
+                                            }
+                                    except Exception as exc:
+                                        sys.stderr.write(f"[mothership] Error saving chat attachment: {exc}\n")
+
                                 # Broadcast user message to ALL OTHER connected satellites & local wingman
                                 self.broadcast_wingman_chat(
                                     sender=chat_sender,
@@ -1051,6 +1082,9 @@ class MothershipServer:
                                     is_user=True,
                                     msg_id=chat_msg_id,
                                     exclude_node_id=node_id,
+                                    origin_device=chat_origin_device,
+                                    origin_label=chat_origin_label,
+                                    attachment=chat_attachment,
                                 )
 
                                 if hasattr(self, "_wingman_chat_callbacks"):
@@ -1069,6 +1103,9 @@ class MothershipServer:
                                             "action": "wingman_chat",
                                             "sender": chat_entry["sender"],
                                             "text": chat_entry["text"],
+                                            "attachment": chat_attachment,
+                                            "device_id": node_id,
+                                            "device_label": chat_origin_label,
                                         }).encode("utf-8"))
                                         s_cli.close()
                                 except Exception:
@@ -1275,6 +1312,7 @@ class MothershipServer:
         exclude_node_id: Optional[str] = None,
         origin_device: str = "",
         origin_label: str = "",
+        attachment: Optional[Dict[str, Any]] = None,
     ) -> int:
         """Broadcasts a Wingman chat bubble across all connected satellites and local Wingman."""
         import secrets
@@ -1287,6 +1325,7 @@ class MothershipServer:
             "timestamp": time.time(),
             "origin_device": origin_device,
             "origin_label": origin_label,
+            "attachment": attachment,
         }
         with self.lock:
             if not any(m.get("id") == m_id for m in self.recent_wingman_chat):
@@ -1303,6 +1342,7 @@ class MothershipServer:
                     msg_id=m_id,
                     origin_device=origin_device,
                     origin_label=origin_label,
+                    attachment=attachment,
                 )
             except Exception:
                 pass
@@ -1319,6 +1359,7 @@ class MothershipServer:
                 "timestamp": chat_item["timestamp"],
                 "origin_device": origin_device,
                 "origin_label": origin_label,
+                "attachment": attachment,
             },
         )
         sent_count = 0

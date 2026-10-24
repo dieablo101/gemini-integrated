@@ -37,6 +37,18 @@ class WingmanApplet:
         self._biometric_results: Dict[str, Dict[str, Any]] = {}
         self._recent_cards: List[Dict[str, Any]] = [
             {
+                "id": "screen-capture-card",
+                "title": "🖥️ iPad Screen & Camera Capture",
+                "content": "Capture a live screenshot of the iPad display or front camera and sync with Mothership.",
+                "actions": [
+                    {"label": "🖥️ Capture Screen Frame", "action": "screen_capture", "style": "primary"},
+                    {"label": "📸 Snap Front Camera", "action": "camera_webrtc", "style": "secondary"},
+                    {"label": "📷 iOS Viewfinder", "action": "camera_native", "style": "secondary"},
+                ],
+                "accent": True,
+                "timestamp": time.time(),
+            },
+            {
                 "id": "camera-shutter",
                 "title": "📸 Screen-Side Camera Capture",
                 "content": "Capture a live photo from the iPad TrueDepth front camera.",
@@ -44,9 +56,9 @@ class WingmanApplet:
                     {"label": "📸 Snap Front Camera", "action": "camera_webrtc", "style": "primary"},
                     {"label": "📷 iOS Viewfinder Shutter", "action": "camera_native", "style": "secondary"},
                 ],
-                "accent": True,
+                "accent": False,
                 "timestamp": time.time(),
-            }
+            },
         ]
         self._chat_history: List[Dict[str, Any]] = []
         self._lock = threading.Lock()

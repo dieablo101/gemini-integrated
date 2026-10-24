@@ -1003,6 +1003,7 @@ def get_wingman_html(
       </div>
       <div class="chat-input-container" id="chatContainer">
         <button type="button" class="btn btn-secondary" id="chatCamBtn" title="Snap Front Camera Photo" onclick="triggerNativeCameraInput('chat-camera')" style="min-width: 44px; min-height: 44px; padding: 0 10px; font-size: 18px; display: inline-flex; align-items: center; justify-content: center;">📸</button>
+        <button type="button" class="btn btn-secondary" id="chatScreenBtn" title="Capture iPad Screen Frame" onclick="captureScreenMedia('chat-screen')" style="min-width: 44px; min-height: 44px; padding: 0 10px; font-size: 18px; display: inline-flex; align-items: center; justify-content: center;">🖥️</button>
         <textarea id="chatInput"
                   name="chat_message"
                   class="chat-input"
@@ -1965,10 +1966,56 @@ def get_wingman_html(
       }} else if (action === 'camera_native') {{
         triggerNativeCameraInput(cardId);
         return;
+      }} else if (action === 'screen_capture' || action === 'capture_screen') {{
+        captureScreenMedia(cardId);
+        return;
       }}
       requireSessionUnlock('Homebase passkey required to execute: ' + action, () => {{
         executeCardAction(cardId, action);
       }});
+    }}
+
+    async function captureScreenMedia(cardId = 'chat-screen') {{
+      const cardEl = document.getElementById('card-' + cardId);
+      if (cardEl) {{
+        const actDiv = cardEl.querySelector('.card-actions');
+        if (actDiv) actDiv.innerHTML = '<span style="font-size: 11px; color: var(--accent);">Requesting screen share permission...</span>';
+      }}
+      addChatMessage('System', 'Initiating iPad screen capture...', false);
+      if (navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {{
+        try {{
+          const stream = await navigator.mediaDevices.getDisplayMedia({{
+            video: {{ displaySurface: "browser" }}
+          }});
+          const video = document.createElement('video');
+          video.srcObject = stream;
+          video.setAttribute('playsinline', '');
+          video.muted = true;
+          await video.play();
+
+          // Wait a moment for frame render
+          await new Promise(r => setTimeout(r, 350));
+
+          const canvas = document.createElement('canvas');
+          canvas.width = video.videoWidth || window.innerWidth;
+          canvas.height = video.videoHeight || window.innerHeight;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+          stream.getTracks().forEach(t => t.stop());
+
+          const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
+          await uploadCapturedPhoto(cardId, dataUrl, 'get_display_media');
+          return;
+        }} catch (err) {{
+          console.warn('getDisplayMedia error / user cancelled:', err);
+          if (cardEl) {{
+            const actDiv = cardEl.querySelector('.card-actions');
+            if (actDiv) actDiv.innerHTML = '<span style="font-size: 11px; color: var(--warning);">Screen capture cancelled or not allowed</span>';
+          }}
+        }}
+      }}
+      addChatMessage('System', '💡 On iPad: Take a screenshot with Top Button + Volume Up (or Apple Pencil swipe). If saved to your mounted folder, it syncs automatically to Mothership!', false);
     }}
 
     async function captureWebRTCCamera(cardId) {{

@@ -360,11 +360,21 @@ class WingmanApplet:
         except Exception as exc:
             return {"status": "error", "message": f"Base64 decode failed: {exc}"}
 
-        fname = f"wingman_camera_{self.node_id}_{int(time.time())}.jpg"
+        method = body.get("method", "camera")
+        is_screen = ("screenshot" in method or method == "get_display_media")
+        prefix = "wingman_screenshot" if is_screen else "wingman_camera"
+        fname = f"{prefix}_{self.node_id}_{int(time.time())}.jpg"
         dest_dir = GEMINI_HOME / "screenshots"
         dest_dir.mkdir(parents=True, exist_ok=True)
         dest_file = dest_dir / fname
         dest_file.write_bytes(raw_bytes)
+
+        ocr_text = ""
+        try:
+            from gemini_app.fleet.media_ocr import extract_screen_text
+            ocr_text = extract_screen_text(dest_file)
+        except Exception:
+            pass
 
         card_id = body.get("card_id", "camera-shutter")
         with self._lock:
@@ -376,8 +386,9 @@ class WingmanApplet:
                         "size_bytes": len(raw_bytes),
                         "local_path": str(dest_file),
                         "node_id": self.node_id,
-                        "facing": body.get("facing", "user"),
-                        "method": body.get("method", "camera"),
+                        "facing": body.get("facing", "screen" if is_screen else "user"),
+                        "method": method,
+                        "ocr_text": ocr_text,
                     })
                 except Exception:
                     pass

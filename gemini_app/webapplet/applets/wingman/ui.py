@@ -2015,7 +2015,38 @@ def get_wingman_html(
           }}
         }}
       }}
-      addChatMessage('System', '💡 On iPad: Take a screenshot with Top Button + Volume Up (or Apple Pencil swipe). If saved to your mounted folder, it syncs automatically to Mothership!', false);
+      // iPadOS Safari restricts automated getDisplayMedia. Fall back to native Photo Library screenshot picker:
+      addChatMessage('System', '📱 iPadOS Safari blocks automated screen recording. Opening Photo Library to upload your screenshot...', false);
+      triggerScreenshotPicker(cardId);
+    }}
+
+    function triggerScreenshotPicker(cardId = 'chat-screen') {{
+      let input = document.getElementById('wingmanScreenshotInput');
+      if (!input) {{
+        input = document.createElement('input');
+        input.type = 'file';
+        input.id = 'wingmanScreenshotInput';
+        input.accept = 'image/*';
+        input.style.display = 'none';
+        document.body.appendChild(input);
+      }}
+      input.value = '';
+      input.onchange = async (e) => {{
+        const file = e.target.files && e.target.files[0];
+        if (!file) return;
+        const cardEl = document.getElementById('card-' + cardId);
+        if (cardEl) {{
+          const actDiv = cardEl.querySelector('.card-actions');
+          if (actDiv) actDiv.innerHTML = '<span style="font-size: 11px; color: var(--accent);">Transmitting screenshot...</span>';
+        }}
+        addChatMessage('System', 'Uploading selected screenshot to Mothership...', false);
+        const reader = new FileReader();
+        reader.onload = async () => {{
+          await uploadCapturedPhoto(cardId, reader.result, 'ios_screenshot_picker');
+        }};
+        reader.readAsDataURL(file);
+      }};
+      input.click();
     }}
 
     async function captureWebRTCCamera(cardId) {{
@@ -2082,12 +2113,14 @@ def get_wingman_html(
     }}
 
     async function uploadCapturedPhoto(cardId, dataUrl, method) {{
+      const isScreen = (method === 'get_display_media' || method === 'ios_screenshot_picker' || method === 'screenshot');
+      const label = isScreen ? 'screenshot' : 'screen-side camera photo';
       const cardEl = document.getElementById('card-' + cardId);
       if (cardEl) {{
         const actDiv = cardEl.querySelector('.card-actions');
-        if (actDiv) actDiv.innerHTML = '<span style="font-size: 11px; color: var(--accent);">Transmitting photo to Mothership...</span>';
+        if (actDiv) actDiv.innerHTML = `<span style="font-size: 11px; color: var(--accent);">Transmitting ${{label}} to Mothership...</span>`;
       }}
-      addChatMessage('System', 'Transmitting screen-side camera photo to Mothership...', false);
+      addChatMessage('System', `Transmitting ${{label}} to Mothership...`, false);
       try {{
         const res = await fetch('/applet/wingman/photo', {{
           method: 'POST',
@@ -2100,20 +2133,21 @@ def get_wingman_html(
             card_id: cardId,
             data_b64: dataUrl,
             method: method,
-            facing: 'user',
+            facing: isScreen ? 'screen' : 'user',
             device_id: deviceId,
             device_label: deviceLabel
           }})
         }});
         const reply = await res.json();
         const szKb = Math.round((reply.size_bytes || 0) / 1024);
+        const titleStr = isScreen ? 'Screenshot' : 'Screen-side photo';
         if (cardEl) {{
           const actDiv = cardEl.querySelector('.card-actions');
           if (actDiv) {{
-            actDiv.innerHTML = `<span style="font-size: 11px; color: var(--success);">✓ Screen-side photo captured (${{szKb}} KB)</span>`;
+            actDiv.innerHTML = `<span style="font-size: 11px; color: var(--success);">✓ ${{titleStr}} captured (${{szKb}} KB)</span>`;
           }}
         }}
-        addChatMessage('System', `✓ Screen-side photo captured (${{szKb}} KB) and synchronized with Mothership.`, false);
+        addChatMessage('System', `✓ ${{titleStr}} captured (${{szKb}} KB) and synchronized with Mothership.`, false);
         playTone(1046.5, 'sine', 0.15);
       }} catch (err) {{
         if (cardEl) {{

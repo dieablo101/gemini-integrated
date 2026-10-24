@@ -1032,7 +1032,7 @@ def get_wingman_html(
       </div>
       <div class="chat-input-container" id="chatContainer">
         <button type="button" class="btn btn-secondary" id="chatCamBtn" title="Snap Front Camera Photo" onclick="triggerNativeCameraInput('chat-camera', event)" style="min-width: 44px; min-height: 44px; padding: 0 10px; font-size: 18px; display: inline-flex; align-items: center; justify-content: center; touch-action: manipulation !important;">📸</button>
-        <button type="button" class="btn btn-secondary" id="chatScreenBtn" title="Capture iPad Screen Frame" onclick="captureScreenMedia('chat-screen', event)" style="min-width: 44px; min-height: 44px; padding: 0 10px; font-size: 18px; display: inline-flex; align-items: center; justify-content: center; touch-action: manipulation !important;">🖥️</button>
+        <button type="button" class="btn btn-secondary" id="chatScreenBtn" title="Upload iPad Screenshot (Tap 'Photo Library')" onclick="captureScreenMedia('chat-screen', event)" style="min-width: 44px; min-height: 44px; padding: 0 10px; font-size: 18px; display: inline-flex; align-items: center; justify-content: center; touch-action: manipulation !important;">🖥️</button>
         <textarea id="chatInput"
                   name="chat_message"
                   class="chat-input"
@@ -2043,6 +2043,9 @@ def get_wingman_html(
       }} else if (action === 'screen_capture' || action === 'capture_screen') {{
         captureScreenMedia(cardId, event);
         return;
+      }} else if (action === 'sync_latest_screenshot' || action === 'fetch_screenshot') {{
+        syncLatestScreenshot(cardId);
+        return;
       }}
       requireSessionUnlock('Homebase passkey required to execute: ' + action, () => {{
         executeCardAction(cardId, action);
@@ -2068,12 +2071,58 @@ def get_wingman_html(
       // Therefore, on Apple devices (or insecure HTTP contexts), synchronously trigger
       // the screenshot picker in the direct user gesture tick!
       if (isApple || !hasDisplayMedia) {{
-        addChatMessage('System', '📱 Opening iPad Photo Library to upload recent screenshot...', false);
+        addChatMessage('System', "📱 **iPadOS Screenshot**: Tap **'Photo Library'** -> select your screenshot to sync with Mothership.", false);
         triggerScreenshotPicker(cardId);
         return;
       }}
 
       captureDisplayMediaDesktop(cardId);
+    }}
+
+    async function syncLatestScreenshot(cardId = 'screen-capture-card') {{
+      const cardEl = document.getElementById('card-' + cardId);
+      if (cardEl) {{
+        const actDiv = cardEl.querySelector('.card-actions');
+        if (actDiv) actDiv.innerHTML = '<span style="font-size: 11px; color: var(--accent);">Scanning iPad storage for screenshots...</span>';
+      }}
+      addChatMessage('System', '🔍 Scanning iPad storage (/mnt/ipad) for recent screenshots...', false);
+      try {{
+        const headers = {{
+          'X-Wingman-Device': deviceId,
+          'X-Wingman-Session': sessionId
+        }};
+        if (sessionToken) headers['X-Wingman-Token'] = sessionToken;
+        const res = await fetch('/applet/wingman/latest_screenshot', {{ headers }});
+        const data = await res.json();
+        if (data && data.status === 'ok') {{
+          const szKb = Math.round((data.size_bytes || 0) / 1024);
+          if (cardEl) {{
+            const actDiv = cardEl.querySelector('.card-actions');
+            if (actDiv) {{
+              actDiv.innerHTML = `<span style="font-size: 11px; color: var(--success);">✓ Synced ${{escapeHtml(data.filename)}} (${{szKb}} KB)</span>`;
+            }}
+          }}
+          addChatMessage('System', `✓ Synced latest iPad screenshot: **${{escapeHtml(data.filename)}}** (${{szKb}} KB) to Mothership.`, false);
+          playTone(1046.5, 'sine', 0.15);
+        }} else {{
+          const msg = data.message || "No recent screenshots found on iPad storage.";
+          if (cardEl) {{
+            const actDiv = cardEl.querySelector('.card-actions');
+            if (actDiv) {{
+              actDiv.innerHTML = `<span style="font-size: 11px; color: var(--warning);">${{escapeHtml(msg)}}</span>`;
+            }}
+          }}
+          addChatMessage('System', `⚠️ ${{escapeHtml(msg)}} Tip: Take an iPad screenshot (Top Button + Volume Up) or use 'Pick from Photos'.`, false);
+        }}
+      }} catch (err) {{
+        if (cardEl) {{
+          const actDiv = cardEl.querySelector('.card-actions');
+          if (actDiv) {{
+            actDiv.innerHTML = `<span style="font-size: 11px; color: var(--danger);">✗ Sync error: ${{escapeHtml(err.message)}}</span>`;
+          }}
+        }}
+        addChatMessage('System', `✗ Screenshot sync error: ${{escapeHtml(err.message)}}`, false);
+      }}
     }}
 
     async function captureDisplayMediaDesktop(cardId) {{

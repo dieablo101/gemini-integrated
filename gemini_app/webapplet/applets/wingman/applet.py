@@ -39,11 +39,11 @@ class WingmanApplet:
             {
                 "id": "screen-capture-card",
                 "title": "🖥️ iPad Screen & Camera Capture",
-                "content": "Capture a live screenshot of the iPad display or front camera and sync with Mothership.",
+                "content": "On iPadOS, Apple requires selecting 'Photo Library' to pick a screenshot. Alternatively, take an iPad screenshot (Top Button + Volume Up) and tap 'Sync Latest Screenshot'.",
                 "actions": [
-                    {"label": "🖥️ Capture Screen Frame", "action": "screen_capture", "style": "primary"},
+                    {"label": "🖼️ Pick Screenshot (Photos)", "action": "screen_capture", "style": "primary"},
+                    {"label": "⚡ Sync Latest Saved Screenshot", "action": "sync_latest_screenshot", "style": "secondary"},
                     {"label": "📸 Snap Front Camera", "action": "camera_webrtc", "style": "secondary"},
-                    {"label": "📷 iOS Viewfinder", "action": "camera_native", "style": "secondary"},
                 ],
                 "accent": True,
                 "timestamp": time.time(),
@@ -121,6 +121,10 @@ class WingmanApplet:
 
         # Camera photo capture backhaul
         self.engine.register_post("/applet/wingman/photo", self._handle_photo)
+
+        # Screenshots discovery & direct sync
+        self.engine.register_get("/applet/wingman/latest_screenshot", self._handle_latest_screenshot)
+        self.engine.register_post("/applet/wingman/latest_screenshot", self._handle_latest_screenshot)
 
         # Bilateral Chat Stream
         self.engine.register_post("/applet/wingman/chat", self._handle_chat)
@@ -405,6 +409,69 @@ class WingmanApplet:
             "size_bytes": len(raw_bytes),
             "local_path": str(dest_file),
             "message": "Photo synchronized with node filesystem",
+        }
+
+    def _handle_latest_screenshot(self, handler: Any, query: Dict[str, List[str]], body: Any = None) -> Dict[str, Any]:
+        """Discovers and returns the latest screenshot from local node storage (/mnt/ipad, ~/.gemini/screenshots)."""
+        import base64
+        from pathlib import Path
+        from gemini_app.fleet.satellite import find_node_screenshots
+
+        screenshots = find_node_screenshots(limit=5)
+        if not screenshots:
+            return {
+                "status": "not_found",
+                "message": "No screenshots found on iPad storage yet. Take an iPad screenshot (Top Button + Volume Up) first!",
+            }
+
+        top = screenshots[0]
+        p = Path(top["path"])
+        if not p.exists() or not p.is_file():
+            return {"status": "error", "message": f"Screenshot file missing: {top.get('filename')}"}
+
+        try:
+            raw_bytes = p.read_bytes()
+        except Exception as exc:
+            return {"status": "error", "message": f"Failed to read screenshot: {exc}"}
+
+        ocr_text = ""
+        try:
+            from gemini_app.fleet.media_ocr import extract_screen_text
+            ocr_res = extract_screen_text(p)
+            ocr_text = ocr_res.get("raw_text", "") if isinstance(ocr_res, dict) else str(ocr_res)
+        except Exception:
+            pass
+
+        data_b64 = base64.b64encode(raw_bytes).decode("ascii")
+        ext = p.suffix.lower().lstrip(".") or "jpg"
+        mime = f"image/{ext}" if ext in ("png", "jpeg", "webp") else "image/jpeg"
+        data_uri = f"data:{mime};base64,{data_b64}"
+
+        card_id = "screen-capture-card"
+        with self._lock:
+            for cb in self._action_callbacks:
+                try:
+                    cb(card_id, "photo_captured", {
+                        "filename": p.name,
+                        "data_b64": data_b64,
+                        "size_bytes": len(raw_bytes),
+                        "local_path": str(p),
+                        "node_id": self.node_id,
+                        "facing": "screen",
+                        "method": "node_filesystem_sync",
+                        "ocr_text": ocr_text,
+                    })
+                except Exception:
+                    pass
+
+        return {
+            "status": "ok",
+            "filename": p.name,
+            "path": str(p),
+            "size_bytes": len(raw_bytes),
+            "mtime": top.get("mtime", 0.0),
+            "ocr_text": ocr_text,
+            "data_b64": data_uri,
         }
 
     def _handle_chat(self, handler: Any, query: Dict[str, List[str]], body: Any) -> Dict[str, Any]:

@@ -10,9 +10,9 @@
     "reverence_score": 0.95
   },
   "cognitive_metrics": {
-    "topics_indexed": 8,
-    "grounded_invariants": 2,
-    "synaptic_edges": 9,
+    "topics_indexed": 16,
+    "grounded_invariants": 4,
+    "synaptic_edges": 13,
     "active_epiphanies": 0,
     "hebbian_plasticity_active": true,
     "latency_tier": "reflex_tier (<1ms)",

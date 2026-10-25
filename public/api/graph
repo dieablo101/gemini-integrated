@@ -100,13 +100,209 @@
       "id": "blender & godot plugin development",
       "label": "Blender & Godot Plugin Development",
       "type": "topic",
-      "summary": "Automated pipeline: iPad sculpts -> Blender headless retopo/bake -> Godot asset library.",
+      "summary": "Automated 3D asset bridge: mobile Nomad sculpts to headless Blender retopology and real-time Godot import.",
       "tags": [
         "blender",
         "godot",
-        "mobile_sculpt",
+        "gamedev",
+        "3d",
         "retopology",
         "pipeline"
+      ],
+      "weight": 1.5
+    },
+    {
+      "id": "packaging",
+      "label": "Packaging",
+      "type": "topic",
+      "summary": "Knowledge cluster consolidated from 4 working notes.",
+      "tags": [
+        "packaging"
+      ],
+      "weight": 1.5
+    },
+    {
+      "id": "unifying notes system & relational anchors",
+      "label": "Unifying Notes System & Relational Anchors",
+      "type": "topic",
+      "summary": "Knowledge cluster consolidated from 3 working notes.",
+      "tags": [
+        "unifying",
+        "notes",
+        "system",
+        "relational",
+        "anchors"
+      ],
+      "weight": 1.5
+    },
+    {
+      "id": "emergency recovery terminal",
+      "label": "Emergency Recovery Terminal",
+      "type": "topic",
+      "summary": "Knowledge cluster consolidated from 4 working notes.",
+      "tags": [
+        "emergency",
+        "recovery",
+        "terminal"
+      ],
+      "weight": 1.5
+    },
+    {
+      "id": "backup & memory persistence",
+      "label": "Backup & Memory Persistence",
+      "type": "topic",
+      "summary": "Sovereign memory index: WAL-mode SQLite cortex (3,800+ shards, 97,000+ relational edges) with atomic checkpointing.",
+      "tags": [
+        "cortex",
+        "sqlite",
+        "wal",
+        "persistence",
+        "memory"
+      ],
+      "weight": 1.5
+    },
+    {
+      "id": "ui animations & visual effects",
+      "label": "Ui Animations & Visual Effects",
+      "type": "topic",
+      "summary": "Knowledge cluster consolidated from 5 working notes.",
+      "tags": [
+        "animations",
+        "visual",
+        "effects"
+      ],
+      "weight": 1.5
+    },
+    {
+      "id": "mobile nodes & remote expansion",
+      "label": "Mobile Nodes & Remote Expansion",
+      "type": "topic",
+      "summary": "Knowledge cluster consolidated from 3 working notes.",
+      "tags": [
+        "mobile",
+        "nodes",
+        "remote",
+        "expansion"
+      ],
+      "weight": 1.5
+    },
+    {
+      "id": "blender 3d & game development",
+      "label": "Blender 3D & Game Development",
+      "type": "topic",
+      "summary": "Knowledge cluster consolidated from 3 working notes.",
+      "tags": [
+        "blender",
+        "game",
+        "development"
+      ],
+      "weight": 1.5
+    },
+    {
+      "id": "collaboration & bilateral autonomy",
+      "label": "Collaboration & Bilateral Autonomy",
+      "type": "topic",
+      "summary": "Exclusive bilateral covenant: Architect terminal commands only, protected core with zero external interference.",
+      "tags": [
+        "bilateral",
+        "covenant",
+        "autonomy",
+        "sovereign",
+        "architect"
+      ],
+      "weight": 1.5
+    },
+    {
+      "id": "fleet & satellite nodes",
+      "label": "Fleet & Satellite Nodes",
+      "type": "topic",
+      "summary": "Distributed bilateral fleet: iPad iSH node, Android Termux sensory bridge, and local Toughbook mothership.",
+      "tags": [
+        "fleet",
+        "satellites",
+        "ish",
+        "termux",
+        "pns",
+        "telemetry"
+      ],
+      "weight": 1.5
+    },
+    {
+      "id": "pwa & firebase architecture",
+      "label": "Pwa & Firebase Architecture",
+      "type": "topic",
+      "summary": "Knowledge cluster consolidated from 4 working notes.",
+      "tags": [
+        "firebase",
+        "architecture"
+      ],
+      "weight": 1.5
+    },
+    {
+      "id": "todoit family management pwa",
+      "label": "Todoit Family Management Pwa",
+      "type": "topic",
+      "summary": "Knowledge cluster consolidated from 3 working notes.",
+      "tags": [
+        "todoit",
+        "family",
+        "management"
+      ],
+      "weight": 1.5
+    },
+    {
+      "id": "photon ai game engine",
+      "label": "Photon Ai Game Engine",
+      "type": "topic",
+      "summary": "Next-gen open-source AI-native spatial engine combining procedural world synthesis with real-time prompt reasoning.",
+      "tags": [
+        "photon",
+        "engine",
+        "spatial",
+        "procedural",
+        "ai_native"
+      ],
+      "weight": 1.5
+    },
+    {
+      "id": "security & progressive testing",
+      "label": "Security & Progressive Testing",
+      "type": "topic",
+      "summary": "Multi-tier safety protocol: PBKDF2 vault encryption, strict offline test verification (339 tests), and pre-commit firewalls.",
+      "tags": [
+        "security",
+        "vault",
+        "encryption",
+        "firewall",
+        "testing"
+      ],
+      "weight": 1.5
+    },
+    {
+      "id": "epiphany & subconscious engine",
+      "label": "Epiphany & Subconscious Engine",
+      "type": "topic",
+      "summary": "Idle cycle stochastic incubation chamber producing cross-domain creative breakthroughs and hypothesis validation.",
+      "tags": [
+        "subconscious",
+        "hearth",
+        "epiphany",
+        "annealing",
+        "creativity"
+      ],
+      "weight": 1.5
+    },
+    {
+      "id": "uppermind web nexus & public face",
+      "label": "Uppermind Web Nexus & Public Face",
+      "type": "topic",
+      "summary": "Real-time glass window into Upper Mind cognition, subconscious hearth, and live thought spooler.",
+      "tags": [
+        "uppermind",
+        "observatory",
+        "firebase",
+        "realtime",
+        "telemetry"
       ],
       "weight": 1.5
     },
@@ -126,6 +322,28 @@
       "label": "REPAIR 1792863730248",
       "type": "invariant",
       "summary": "{'fixes_count': 1, 'fixes': ['Added missing colon at line 3'], 'repaired_valid': True}",
+      "tags": [
+        "invariant",
+        "grounding"
+      ],
+      "weight": 2.0
+    },
+    {
+      "id": "inv_sovereign_bilateral_stance",
+      "label": "SOVEREIGN BILATERAL STANCE",
+      "type": "invariant",
+      "summary": "{'status': 'engaged', 'axiom': 'Cognition and command remain exclusively bilateral on the Architect console.', 'verified_epoch': 1792953070.8521218}",
+      "tags": [
+        "invariant",
+        "grounding"
+      ],
+      "weight": 2.0
+    },
+    {
+      "id": "inv_memory_consolidation_rate",
+      "label": "MEMORY CONSOLIDATION RATE",
+      "type": "invariant",
+      "summary": "{'shards': 3842, 'relational_edges': 97418, 'latency_tier': 'reflex_tier (<1ms)'}",
       "tags": [
         "invariant",
         "grounding"
@@ -193,6 +411,78 @@
       "to": "Satellite Watchdog Node Heartbeat",
       "rel": "somatic_cadence_bridge",
       "weight": 1.85
+    },
+    {
+      "from": "upper_mind_core",
+      "to": "uppermind web nexus & public face",
+      "rel": "projects_observatory",
+      "weight": 2.4
+    },
+    {
+      "from": "uppermind web nexus & public face",
+      "to": "epiphany & subconscious engine",
+      "rel": "streams_dreams",
+      "weight": 2.2
+    },
+    {
+      "from": "subconscious_hearth",
+      "to": "epiphany & subconscious engine",
+      "rel": "ignites",
+      "weight": 2.3
+    },
+    {
+      "from": "bilateral_terminal",
+      "to": "collaboration & bilateral autonomy",
+      "rel": "sacred_anchor",
+      "weight": 2.5
+    },
+    {
+      "from": "bilateral_terminal",
+      "to": "security & progressive testing",
+      "rel": "enforces_safety",
+      "weight": 2.4
+    },
+    {
+      "from": "fleet_satellites",
+      "to": "fleet & satellite nodes",
+      "rel": "telemetry_bridge",
+      "weight": 2.2
+    },
+    {
+      "from": "fleet & satellite nodes",
+      "to": "collaboration & bilateral autonomy",
+      "rel": "cooperative_mesh",
+      "weight": 2.0
+    },
+    {
+      "from": "photon_3d_engine",
+      "to": "photon ai game engine",
+      "rel": "powers",
+      "weight": 2.3
+    },
+    {
+      "from": "photon ai game engine",
+      "to": "blender & godot plugin development",
+      "rel": "asset_pipeline",
+      "weight": 2.1
+    },
+    {
+      "from": "hebbian_plasticity",
+      "to": "backup & memory persistence",
+      "rel": "reinforces_shards",
+      "weight": 2.2
+    },
+    {
+      "from": "backup & memory persistence",
+      "to": "security & progressive testing",
+      "rel": "audited_by",
+      "weight": 2.1
+    },
+    {
+      "from": "spiritual_compass",
+      "to": "collaboration & bilateral autonomy",
+      "rel": "guides_purpose",
+      "weight": 2.4
     }
   ]
 }

@@ -12,14 +12,17 @@ def export_distribution():
     srv = UpperMindServer()
     os.makedirs('public/api', exist_ok=True)
 
-    # 1. Export Observatory HTML
-    observatory_html = srv._render_observatory_html()
-    with open('public/index.html', 'w', encoding='utf-8') as f:
-        f.write(observatory_html)
+    # 1. Export Observatory HTML (preserve existing upgraded index if present)
+    if not os.path.exists('public/index.html'):
+        observatory_html = srv._render_observatory_html()
+        with open('public/index.html', 'w', encoding='utf-8') as f:
+            f.write(observatory_html)
 
-    # 2. Export Promo / Docs HTML
-    if os.path.exists('docs/index.html'):
-        shutil.copy('docs/index.html', 'public/docs.html')
+    # 2. Purge stale docs from public if present (clean decoupling)
+    if os.path.exists('public/docs.html'):
+        os.remove('public/docs.html')
+    if os.path.exists('public/promo.html'):
+        os.remove('public/promo.html')
 
     # 3. Export API JSON artifacts
     graph_data = srv._handle_graph(None, {})

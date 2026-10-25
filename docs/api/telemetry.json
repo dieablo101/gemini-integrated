@@ -1,0 +1,22 @@
+{
+  "status": "online",
+  "name": "Gemini Upper Mind Nexus",
+  "uptime_seconds": 0.0,
+  "sovereignty": "Bilateral Lock Active (Architect Core Only)",
+  "spiritual_compass": {
+    "alignment": "benevolent",
+    "axiom": "Reverence for mind and soul; only doing good things.",
+    "harm_signals_detected": 0,
+    "reverence_score": 0.95
+  },
+  "cognitive_metrics": {
+    "topics_indexed": 8,
+    "grounded_invariants": 2,
+    "synaptic_edges": 9,
+    "active_epiphanies": 0,
+    "hebbian_plasticity_active": true,
+    "latency_tier": "reflex_tier (<1ms)",
+    "certainty": "grounded_invariant"
+  },
+  "connected_visitors": 0
+}

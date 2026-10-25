@@ -39,14 +39,6 @@
       {
         "source": "/api/epiphanies",
         "destination": "/api/epiphanies.json"
-      },
-      {
-        "source": "/promo",
-        "destination": "/docs.html"
-      },
-      {
-        "source": "/docs",
-        "destination": "/docs.html"
       }
     ]
   }

@@ -41,6 +41,7 @@ pypi_token*
 *.pid
 
 # Ephemeral Backups & Compaction Archives
+.firebase/
 archive/
 quarantine/
 *.tar.gz

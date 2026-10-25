@@ -1754,11 +1754,16 @@ def get_wingman_html(
     }}
 
     /* Session & Auth Handlers */
+    let _maintenanceWatchdogTimer = null;
     function setMaintenanceLock(active, message = "") {{
       isMaintenanceMode = Boolean(active);
       const gateIcon = document.querySelector('.gate-icon');
       const gateTitle = document.querySelector('.gate-title');
       const gateDesc = document.querySelector('.gate-desc');
+      if (_maintenanceWatchdogTimer) {{
+        clearTimeout(_maintenanceWatchdogTimer);
+        _maintenanceWatchdogTimer = null;
+      }}
       if (active) {{
         if (authPollingInterval) clearInterval(authPollingInterval);
         securityGate.style.display = 'flex';
@@ -1768,6 +1773,13 @@ def get_wingman_html(
         gateStatusText.textContent = 'Maintenance in progress (reconnect paused)...';
         statusText.textContent = 'MAINTENANCE';
         statusDot.className = 'status-dot pending';
+        _maintenanceWatchdogTimer = setTimeout(() => {{
+          fetch('/applet/wingman/ping')
+            .then(r => r.json())
+            .then(d => {{
+              if (!d.maintenance) setMaintenanceLock(false);
+            }}).catch(() => {{}});
+        }}, 25000);
       }} else {{
         if (gateIcon) gateIcon.textContent = '🔒';
         if (gateTitle) gateTitle.textContent = 'Wingman Security Gate';
@@ -3051,10 +3063,11 @@ def get_wingman_html(
             const clientNow = Date.now() / 1000;
             serverTimeOffset = data.time - (clientNow - (rtt / 2000));
           }}
-          if (data && data.maintenance !== undefined) {{
-            if (data.maintenance && !isMaintenanceMode) {{
+          if (data) {{
+            const isMaint = Boolean(data.maintenance);
+            if (isMaint && !isMaintenanceMode) {{
               setMaintenanceLock(true, data.message || "Wingman maintenance in progress — Mothership updates underway. Reconnection paused until release.");
-            }} else if (!data.maintenance && isMaintenanceMode) {{
+            }} else if (!isMaint && isMaintenanceMode) {{
               setMaintenanceLock(false);
             }}
           }}

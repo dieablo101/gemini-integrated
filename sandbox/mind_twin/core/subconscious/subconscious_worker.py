@@ -5,6 +5,8 @@ Forked Subconscious Incubation Worker.
 Executes background stochastic graph diffusion and cross-domain apophenic collision
 scanning across latent, non-conscious hypergraph concepts.
 Gated by NoveltyDetector and verified by ConclusiveRealityProbe.
+Enhanced with AccretionHearth, Invariant Collision Lens, Resonance Gate,
+Thermodynamic Annealing, and Stillness Gate for authentic epiphany emergence.
 Hardened against race conditions, empty buckets, and thread faults.
 """
 
@@ -17,9 +19,15 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from sandbox.mind_twin.core.hypergraph import Hypergraph, Vertex
+from sandbox.mind_twin.core.subconscious.accretion_hearth import AccretionHearth, LatentSoilVault
+from sandbox.mind_twin.core.subconscious.annealing_engine import AnnealingDecision, AnnealingEngine
+from sandbox.mind_twin.core.subconscious.collision_lens import CollisionLens, CollisionMatrix
 from sandbox.mind_twin.core.subconscious.conclusive_probe import ConclusiveRealityProbe, RealityProbeResult
 from sandbox.mind_twin.core.subconscious.epiphany_channel import EpiphanyChannel, EpiphanyPacket
 from sandbox.mind_twin.core.subconscious.novelty_detector import NoveltyDetector, NoveltyEvaluation
+from sandbox.mind_twin.core.subconscious.resonance_gate import ResonanceGate, ResonanceResult
+from sandbox.mind_twin.core.subconscious.seed_packet import ObservationVector, SeedPacket
+from sandbox.mind_twin.core.subconscious.stillness_gate import ReceptivityStatus, StillnessGate
 
 
 @dataclass
@@ -38,9 +46,11 @@ class SubconsciousWorker:
     """
     Subconscious incubation engine.
     - Evaluates task novelty: stays dormant on familiar routine tasks.
-    - Runs stochastic graph walks over latent vertices when novel problems are detected.
-    - Probes reality testing via ConclusiveRealityProbe.
-    - Emits verified epiphanies into EpiphanyChannel.
+    - Accretes multi-plane observation vectors in the Accretion Hearth.
+    - Projects knots through the Invariant Collision Lens.
+    - Filters breakthrough candidates through the 3-stage Resonance Gate.
+    - Governs retries, perturbation micro-shifts, and dormancy via AnnealingEngine.
+    - Holds delivery until StillnessGate detects cognitive stillness.
     """
 
     def __init__(
@@ -49,12 +59,29 @@ class SubconsciousWorker:
         novelty_detector: Optional[NoveltyDetector] = None,
         reality_probe: Optional[ConclusiveRealityProbe] = None,
         epiphany_channel: Optional[EpiphanyChannel] = None,
+        hearth: Optional[AccretionHearth] = None,
+        collision_lens: Optional[CollisionLens] = None,
+        resonance_gate: Optional[ResonanceGate] = None,
+        annealing_engine: Optional[AnnealingEngine] = None,
+        stillness_gate: Optional[StillnessGate] = None,
         target_core_id: int = 1,
     ) -> None:
         self.graph = graph
         self.novelty_detector = novelty_detector if novelty_detector is not None else NoveltyDetector()
         self.reality_probe = reality_probe if reality_probe is not None else ConclusiveRealityProbe()
         self.channel = epiphany_channel if epiphany_channel is not None else EpiphanyChannel()
+
+        # Epiphany Subconscious Upgrades
+        self.hearth = hearth if hearth is not None else AccretionHearth()
+        self.collision_lens = collision_lens if collision_lens is not None else CollisionLens()
+        self.resonance_gate = resonance_gate if resonance_gate is not None else ResonanceGate()
+        self.annealing = (
+            annealing_engine
+            if annealing_engine is not None
+            else AnnealingEngine(hearth=self.hearth)
+        )
+        self.stillness_gate = stillness_gate if stillness_gate is not None else StillnessGate()
+
         self.target_core_id = target_core_id
         self.is_incubating: bool = False
         self.cycle_count: int = 0
@@ -72,6 +99,23 @@ class SubconsciousWorker:
             except Exception:
                 return False
         return False
+
+    def drop_seed(
+        self,
+        raw_thought: str,
+        conscious_context: str = "",
+        domain_hints: Optional[List[str]] = None,
+    ) -> SeedPacket:
+        """
+        Conscious Drop exit hatch: hands off an unresolved thought in < 1ms.
+        """
+        seed = self.hearth.drop_seed(
+            raw_thought=raw_thought,
+            conscious_context=conscious_context,
+            domain_hints=domain_hints,
+        )
+        self.is_incubating = True
+        return seed
 
     def check_and_ignite(
         self,
@@ -95,12 +139,7 @@ class SubconsciousWorker:
         t_now: Optional[float] = None,
     ) -> Optional[EpiphanyPacket]:
         """
-        Executes one step of subconscious incubation:
-        1. Checks if worker is active.
-        2. Selects latent vertices from disparate domains safely.
-        3. Scans for structural resonance or apophenic analogies.
-        4. Runs reality probe.
-        5. Pushes to channel if approved.
+        Executes one step of subconscious incubation across hypergraph concepts.
         """
         if not self.is_incubating:
             return None
@@ -162,10 +201,110 @@ class SubconsciousWorker:
                 return packet
 
             return None
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
+        except Exception:
             return None
+
+    def run_hearth_incubation_cycle(
+        self,
+        t_now: Optional[float] = None,
+    ) -> Optional[EpiphanyPacket]:
+        """
+        Executes one thermodynamic incubation step on dropped seeds in the Accretion Hearth:
+        1. Checks for seeds with critical mass (vector count & age).
+        2. Projects candidate through Invariant Collision Lens.
+        3. Evaluates synthesis via Resonance Gate.
+        4. Applies AnnealingEngine decisions (ignite, micro-shift perturbation, or latent soil).
+        5. Emits verified epiphany into channel upon ignition.
+        """
+        now = t_now or time.time()
+        ready_seeds = self.hearth.get_ready_seeds(t_now=now)
+        if not ready_seeds:
+            return None
+
+        seed = ready_seeds[0]
+        matrix: CollisionMatrix = self.collision_lens.project(seed)
+
+        # Synthesize candidate hypothesis across planes
+        candidate_summary, candidate_mechanism = self._synthesize_hearth_hypothesis(seed, matrix)
+
+        # Evaluate through 3-stage Resonance Gate
+        res_result: ResonanceResult = self.resonance_gate.evaluate(
+            candidate_summary=candidate_summary,
+            candidate_mechanism=candidate_mechanism,
+            seed=seed,
+        )
+
+        decision: AnnealingDecision = self.annealing.handle_attempt_result(
+            seed=seed,
+            resonance=res_result,
+            t_now=now,
+        )
+
+        if decision.action == "ignite":
+            packet = EpiphanyPacket(
+                packet_id=f"hearth_{seed.seed_id}_{int(now)}",
+                spark_name=res_result.spark_name,
+                domain_bridge=matrix.planes_collided,
+                feasibility_score=res_result.overall_resonance,
+                summary=res_result.invariant_summary,
+                mechanism=res_result.actionable_mechanism,
+                created_at=now,
+            )
+            self.channel.push(packet)
+            self.total_epiphanies_found += 1
+            # Remove from hearth upon successful emergence
+            with self.hearth._lock:
+                self.hearth._hearth.pop(seed.seed_id, None)
+            return packet
+
+        return None
+
+    def check_emergence_delivery(
+        self,
+        event_marker: Optional[str] = None,
+        override_idle_seconds: Optional[float] = None,
+    ) -> Optional[EpiphanyPacket]:
+        """
+        Checks StillnessGate: if the cognitive space is receptive and an epiphany is waiting,
+        pops and delivers it to consciousness.
+        """
+        receptivity: ReceptivityStatus = self.stillness_gate.evaluate_receptivity(
+            event_marker=event_marker,
+            override_idle_seconds=override_idle_seconds,
+        )
+
+        if receptivity.is_receptive and not self.channel.is_empty():
+            return self.channel.pop()
+
+        return None
+
+    def _synthesize_hearth_hypothesis(
+        self,
+        seed: SeedPacket,
+        matrix: CollisionMatrix,
+    ) -> Tuple[str, str]:
+        """
+        Synthesizes an invariant hypothesis across the collided planes.
+        """
+        behavioral_labels = [b.label for b in matrix.behavioral_plane]
+        artifact_labels = [a.label for a in matrix.artifact_plane]
+        relational_labels = [r.label for r in matrix.relational_plane]
+
+        planes_labels = [p[0] for p in [behavioral_labels, artifact_labels, relational_labels] if p]
+        if len(planes_labels) >= 2:
+            plane_phrase = " and ".join(planes_labels)
+        else:
+            plane_phrase = "Artifact and Intent"
+
+        summary = (
+            f"The invariant coupling {plane_phrase} "
+            f"converges the tension in {seed.raw_thought[:32]}."
+        )
+        mechanism = (
+            f"Bind and pipeline {plane_phrase} state changes directly into "
+            f"system topology to guarantee system autonomy."
+        )
+        return summary, mechanism
 
     def _synthesize_bridge(
         self,

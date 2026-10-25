@@ -474,7 +474,12 @@ def install_autostart(
                 f"cd {work_dir} && "
                 f"nohup {python_bin} {script_path} node --mothership {mothership} --interval {interval} > /var/log/gemini-satellite.log 2>&1 &"
             )
-            subprocess.Popen(["/bin/sh", "-c", launch_cmd], start_new_session=True)
+            subprocess.Popen(
+                ["/bin/sh", "-c", launch_cmd],
+                start_new_session=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
         except Exception:
             pass
 

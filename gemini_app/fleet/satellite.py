@@ -2797,6 +2797,8 @@ class SatelliteNode:
                 self.wingman_applet.stop()
             except Exception:
                 pass
+            if get_active_wingman() is self.wingman_applet:
+                set_active_wingman(None)
         if release_wake_lock and is_termux_platform():
             release_termux_wake_lock()
         if self._rendezvous_sock:

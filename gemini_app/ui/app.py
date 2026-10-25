@@ -351,6 +351,9 @@ class ChatApp(App):
         callback: Optional[Callable[[str], None]] = None,
     ) -> None:
         """Presents a zero-trust confirmation modal for an incoming Wingman browser connection request."""
+        node_id_check = str(auth_data.get("node_id", "")).strip().lower()
+        if node_id_check.startswith(("test-", "test_")) or node_id_check == "test":
+            return
         if not getattr(self, "_boot_complete", False) or any(s.__class__.__name__ == "BootScreen" for s in self.screen_stack):
             self._handle_wingman_auth_prompt(auth_data)
             return
@@ -448,6 +451,10 @@ class ChatApp(App):
         client_ip = auth_data.get("client_ip", "")
         node_id = auth_data.get("node_id", "")
         dev_id = auth_data.get("device_id", "")
+
+        node_id_check = str(node_id).strip().lower()
+        if node_id_check.startswith(("test-", "test_")) or node_id_check == "test":
+            return
 
         # Avoid duplicate modals in queue (by req_id or by device/client_ip/node_id)
         for queued in self._wingman_auth_queue:

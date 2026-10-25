@@ -639,9 +639,12 @@ class TestFleetNodesAndAutostart(unittest.TestCase):
         self.assertIsInstance(count, int)
 
     def test_satellite_auto_upgrade_flag(self) -> None:
-        node = SatelliteNode("127.0.0.1", 7331, auto_upgrade=True)
-        self.assertTrue(node.auto_upgrade)
-        self.assertFalse(node._is_upgrading)
+        node = SatelliteNode("127.0.0.1", 0, auto_upgrade=True)
+        try:
+            self.assertTrue(node.auto_upgrade)
+            self.assertFalse(node._is_upgrading)
+        finally:
+            node.stop()
 
     def test_find_repo_root(self) -> None:
         from gemini_app.fleet.satellite import find_repo_root
@@ -940,7 +943,7 @@ class TestFleetNodesAndAutostart(unittest.TestCase):
 
     def test_satellite_stop_wake_lock_preservation(self) -> None:
         """Verifies stop() only releases wake lock when release_wake_lock=True."""
-        node = SatelliteNode("127.0.0.1", 7331, node_id="wake-lock-node")
+        node = SatelliteNode("127.0.0.1", 0, node_id="wake-lock-node")
         with patch("gemini_app.fleet.satellite.is_termux_platform", return_value=True):
             with patch("gemini_app.fleet.satellite.release_termux_wake_lock") as mock_rel:
                 node.stop(release_wake_lock=False)
@@ -958,7 +961,7 @@ class TestFleetNodesAndAutostart(unittest.TestCase):
 
     def test_node_media_control_dispatch(self) -> None:
         """Verifies media playback control commands dispatch to satellite nodes."""
-        node = SatelliteNode("127.0.0.1", 7331, node_id="test-media-satellite")
+        node = SatelliteNode("127.0.0.1", 0, node_id="test-media-satellite")
         with patch("gemini_app.fleet.satellite.is_termux_platform", return_value=True):
             with patch("subprocess.run") as mock_sub:
                 mock_sub.return_value = MagicMock(returncode=0, stdout="", stderr="")
@@ -980,7 +983,7 @@ class TestFleetNodesAndAutostart(unittest.TestCase):
         """Verifies audio recording dispatch and base64 packaging on satellite node."""
         import base64
         import tempfile
-        node = SatelliteNode("127.0.0.1", 7331, node_id="test-audio-satellite")
+        node = SatelliteNode("127.0.0.1", 0, node_id="test-audio-satellite")
         fake_audio = b"\x00\x01\x02\x03FAKEOPUSAUDIO"
 
         with patch("gemini_app.fleet.satellite.is_termux_platform", return_value=True):
@@ -1007,7 +1010,7 @@ class TestFleetNodesAndAutostart(unittest.TestCase):
 
     def test_node_tts_whisper_dispatch(self) -> None:
         """Verifies text-to-speech whisper command dispatch to mobile node."""
-        node = SatelliteNode("127.0.0.1", 7331, node_id="test-tts-satellite")
+        node = SatelliteNode("127.0.0.1", 0, node_id="test-tts-satellite")
         with patch("gemini_app.fleet.satellite.is_termux_platform", return_value=True):
             with patch("shutil.which", return_value="/data/data/com.termux/files/usr/bin/termux-tts-speak"):
                 with patch("subprocess.run") as mock_sub:
@@ -1027,7 +1030,7 @@ class TestFleetNodesAndAutostart(unittest.TestCase):
 
     def test_node_audio_info_dispatch(self) -> None:
         """Verifies audio subsystem telemetry extraction."""
-        node = SatelliteNode("127.0.0.1", 7331, node_id="test-audio-satellite")
+        node = SatelliteNode("127.0.0.1", 0, node_id="test-audio-satellite")
         fake_info = '{"BLUETOOTH_A2DP_IS_ON": true, "PROPERTY_OUTPUT_SAMPLE_RATE": "48000"}'
         with patch("gemini_app.fleet.satellite.is_termux_platform", return_value=True):
             with patch("shutil.which", return_value="/data/data/com.termux/files/usr/bin/termux-audio-info"):
@@ -1044,7 +1047,7 @@ class TestFleetNodesAndAutostart(unittest.TestCase):
 
     def test_node_volume_control_dispatch(self) -> None:
         """Verifies hardware volume control on mobile node."""
-        node = SatelliteNode("127.0.0.1", 7331, node_id="test-vol-satellite")
+        node = SatelliteNode("127.0.0.1", 0, node_id="test-vol-satellite")
         fake_vol = '[{"stream": "music", "volume": 15, "max_volume": 15}]'
         with patch("gemini_app.fleet.satellite.is_termux_platform", return_value=True):
             with patch("shutil.which", return_value="/data/data/com.termux/files/usr/bin/termux-volume"):
@@ -1062,7 +1065,7 @@ class TestFleetNodesAndAutostart(unittest.TestCase):
 
     def test_node_toast_and_vibrate_dispatch(self) -> None:
         """Verifies HUD toast and haptic vibration triggers."""
-        node = SatelliteNode("127.0.0.1", 7331, node_id="test-haptics-satellite")
+        node = SatelliteNode("127.0.0.1", 0, node_id="test-haptics-satellite")
         with patch("gemini_app.fleet.satellite.is_termux_platform", return_value=True):
             with patch("shutil.which", return_value="/data/data/com.termux/files/usr/bin/termux-toast"):
                 with patch("subprocess.run") as mock_sub:
@@ -1120,7 +1123,7 @@ class TestFleetNodesAndAutostart(unittest.TestCase):
     def test_satellite_tts_audio_ducking_and_headphones(self) -> None:
         """Verifies satellite tts_speak performs volume ducking and audio_info detects headphones."""
         import json
-        node = SatelliteNode("127.0.0.1", 7331, node_id="test-audio-satellite")
+        node = SatelliteNode("127.0.0.1", 0, node_id="test-audio-satellite")
         with patch("gemini_app.fleet.satellite.is_termux_platform", return_value=True):
             with patch("shutil.which", return_value="/termux/bin/cmd"):
                 # Mock volume check and ducking calls

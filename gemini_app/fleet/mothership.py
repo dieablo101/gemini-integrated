@@ -1481,6 +1481,11 @@ class MothershipServer:
                 cb(dict(auth_entry))
             except Exception:
                 pass
+        if self.port == 0:
+            return
+        nid_raw = str(nid).strip().lower()
+        if nid_raw.startswith(("test-", "test_")) or nid_raw == "test":
+            return
         try:
             from gemini_app.config import SOCKET_PATH
             if SOCKET_PATH.exists():

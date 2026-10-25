@@ -38,6 +38,8 @@ class TestWingmanSecurity(unittest.TestCase):
         self.sec_vault_patch.start()
 
     def tearDown(self) -> None:
+        from gemini_app.fleet.satellite import set_active_wingman
+        set_active_wingman(None)
         self.sec_vault_patch.stop()
         self.file_patch.stop()
         self.vault_patch.stop()

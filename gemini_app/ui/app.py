@@ -1651,14 +1651,18 @@ class ChatApp(App):
         asyncio.create_task(asyncio.to_thread(self._check_daily_backup))
         asyncio.create_task(asyncio.to_thread(install_systemd_backup_timer))
 
-        # Release any pre-reboot Wingman maintenance lockout
+        # Ensure fresh Wingman epoch on console boot so all fleet nodes require fresh authorization
         try:
+            import secrets
             from gemini_app.fleet.nodes import send_mothership_command
+            send_mothership_command("reset_wingman_epoch", timeout=1.0)
             send_mothership_command("set_wingman_maintenance", {"active": False}, timeout=1.0)
         except Exception:
             pass
         if getattr(self, "wingman_applet", None):
             try:
+                import secrets
+                self.wingman_applet.on_mothership_reboot(secrets.token_hex(8))
                 self.wingman_applet.set_maintenance_mode(False)
             except Exception:
                 pass
@@ -3866,9 +3870,11 @@ class ChatApp(App):
             delay = max(0.5, float(delay_seconds))
             report = status_report.strip() if status_report else "✓ Reboot complete: Console reloaded, session restored, UI operational."
 
-            # Engage targeted Wingman maintenance lockout so open devices pause reconnection during reboot
+            # Reset Wingman epoch and engage targeted maintenance lockout so open devices pause & require fresh auth
             try:
+                import secrets
                 from gemini_app.fleet.nodes import send_mothership_command
+                send_mothership_command("reset_wingman_epoch", timeout=1.0)
                 send_mothership_command(
                     "set_wingman_maintenance",
                     {"active": True, "reason": "Mothership console reboot underway. Reconnection paused until release."},
@@ -3878,6 +3884,8 @@ class ChatApp(App):
                 pass
             if getattr(self, "wingman_applet", None):
                 try:
+                    import secrets
+                    self.wingman_applet.on_mothership_reboot(secrets.token_hex(8))
                     self.wingman_applet.set_maintenance_mode(
                         True,
                         reason="Mothership console reboot underway. Reconnection paused until release.",

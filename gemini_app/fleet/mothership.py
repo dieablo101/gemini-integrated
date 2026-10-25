@@ -906,6 +906,10 @@ class MothershipServer:
                                 resp_payload["status"] = "ok"
                                 resp_payload["active"] = active
                                 resp_payload["boot_id"] = self.mothership_boot_id
+                            elif action in ("reset_wingman_epoch", "reset_epoch", "mothership_reboot"):
+                                new_id = self.reset_wingman_epoch()
+                                resp_payload["status"] = "ok"
+                                resp_payload["mothership_boot_id"] = new_id
                             elif action == "get_mothership_boot_id":
                                 resp_payload["status"] = "ok"
                                 resp_payload["boot_id"] = self.mothership_boot_id
@@ -1244,6 +1248,30 @@ class MothershipServer:
                 self.local_wingman.set_maintenance_mode(active, reason=reason)
             except Exception:
                 pass
+
+    def reset_wingman_epoch(self, new_boot_id: Optional[str] = None) -> str:
+        """Resets the Mothership boot ID epoch and broadcasts session invalidation to all fleet satellites."""
+        self.mothership_boot_id = new_boot_id or secrets.token_hex(8)
+        with self.lock:
+            self.pending_wingman_auth_requests.clear()
+        if self.local_wingman and hasattr(self.local_wingman, "on_mothership_reboot"):
+            try:
+                self.local_wingman.on_mothership_reboot(self.mothership_boot_id)
+            except Exception:
+                pass
+        msg = FleetMessage(
+            msg_type=FleetMessage.TYPE_EVENT,
+            node_id="mothership",
+            payload={
+                "event": "mothership_rebooted",
+                "mothership_boot_id": self.mothership_boot_id,
+                "timestamp": time.time(),
+            },
+        )
+        self.broadcast(msg)
+        self.broadcast_telemetry()
+        sys.stdout.write(f"[mothership] Reset Wingman epoch to {self.mothership_boot_id} and broadcasted to fleet.\n")
+        return self.mothership_boot_id
 
     def push_cognitive_event(self, event_text: str, details: Optional[Dict[str, Any]] = None) -> int:
         """Pushes an event toast/log entry across the fleet."""

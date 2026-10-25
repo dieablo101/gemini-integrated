@@ -93,6 +93,13 @@ class WingmanApplet:
         now = time.time()
         with self.security._lock:
             for s in list(self.security.sessions.values()):
+                if not getattr(s, "is_paired", False):
+                    s.status = "pending"
+                    if s.token:
+                        self.security.tokens_to_session.pop(s.token, None)
+                        s.token = ""
+                    s.is_unlocked = False
+                s.mothership_boot_id = new_boot_id
                 if s.status == "pending":
                     s._last_notified = now
                     for cb in list(self.security._on_pending_session_callbacks):
@@ -284,6 +291,7 @@ class WingmanApplet:
             existing_session_id=session_id,
             is_loopback=is_loopback,
         )
+        session.mothership_boot_id = self.mothership_boot_id
 
         from gemini_app.fleet.telemetry import get_local_lan_ip
         device_ip = client_ip if not is_loopback else (get_local_lan_ip() or "127.0.0.1")
@@ -753,17 +761,16 @@ class WingmanApplet:
         req_id = query.get("req_id", [""])[0] or query.get("session_id", [""])[0]
         dev_id = query.get("device_id", [""])[0] or (handler.headers.get("X-Wingman-Device", "") if hasattr(handler, "headers") else "")
         sess = self.security.get_session(req_id)
-        # If the requested session is not authorized, but an authorized session exists for this device, prefer it!
+        # Allow device_id continuity strictly for the current active mothership epoch and recent activity (< 15s)
         if (not sess or sess.status != "authorized") and dev_id:
+            now_t = time.time()
             for s in list(self.security.sessions.values()):
                 if s.device_id == dev_id and s.status == "authorized":
-                    sess = s
-                    break
-        if not sess and dev_id:
-            for s in list(self.security.sessions.values()):
-                if s.device_id == dev_id and s.status in ("authorized", "pending"):
-                    sess = s
-                    break
+                    epoch_match = (not self.mothership_boot_id or getattr(s, "mothership_boot_id", "") == self.mothership_boot_id)
+                    recent_match = (now_t - getattr(s, "last_seen", 0.0) < 15.0)
+                    if epoch_match and recent_match:
+                        sess = s
+                        break
         if not sess and req_id:
             for s in list(self.security.sessions.values()):
                 if s.session_id.startswith(req_id) or req_id.startswith(s.session_id):

@@ -1939,40 +1939,46 @@ def get_wingman_html(
         }}
 
         if (data.mothership_boot_id) {{
-          if (currentMothershipBootId && currentMothershipBootId !== data.mothership_boot_id) {{
+          const storedMsBoot = sessionStorage.getItem('wingman_ms_boot_id') || currentMothershipBootId;
+          if (storedMsBoot && storedMsBoot !== data.mothership_boot_id) {{
             // Mothership console rebooted!
+            sessionStorage.setItem('wingman_ms_boot_id', data.mothership_boot_id);
             currentMothershipBootId = data.mothership_boot_id;
             isSessionUnlocked = false;
-            if (!isPairedDevice) {{
-              sessionToken = '';
-              sessionStorage.removeItem('wingman_token');
-              localStorage.removeItem('wingman_token');
-              localStorage.removeItem('wingman_paired');
-              generateFreshSessionId();
-              lockUI("Mothership console rebooted — awaiting new authorization...");
-              requestGateAccess(true);
-              return;
-            }}
+            sessionToken = '';
+            sessionStorage.removeItem('wingman_token');
+            sessionStorage.removeItem('wingman_session_id');
+            localStorage.removeItem('wingman_token');
+            localStorage.removeItem('wingman_paired');
+            isPairedDevice = false;
+            generateFreshSessionId();
+            lockUI("Mothership console rebooted — awaiting new authorization...");
+            requestGateAccess(true);
+            return;
           }}
+          sessionStorage.setItem('wingman_ms_boot_id', data.mothership_boot_id);
           currentMothershipBootId = data.mothership_boot_id;
         }}
 
         if (data.boot_id) {{
-          if (currentBootId && currentBootId !== data.boot_id) {{
+          const storedBoot = sessionStorage.getItem('wingman_node_boot_id') || currentBootId;
+          if (storedBoot && storedBoot !== data.boot_id) {{
             // Server rebooted! Invalidate credentials, lock UI, and re-authenticate
+            sessionStorage.setItem('wingman_node_boot_id', data.boot_id);
             isSessionUnlocked = false;
-            if (!isPairedDevice) {{
-              sessionToken = '';
-              sessionStorage.removeItem('wingman_token');
-              localStorage.removeItem('wingman_token');
-              localStorage.removeItem('wingman_paired');
-              currentBootId = data.boot_id;
-              generateFreshSessionId();
-              lockUI("Wingman node restarted — awaiting new authorization...");
-              requestGateAccess(true);
-              return;
-            }}
+            sessionToken = '';
+            sessionStorage.removeItem('wingman_token');
+            sessionStorage.removeItem('wingman_session_id');
+            localStorage.removeItem('wingman_token');
+            localStorage.removeItem('wingman_paired');
+            isPairedDevice = false;
+            currentBootId = data.boot_id;
+            generateFreshSessionId();
+            lockUI("Wingman node restarted — awaiting new authorization...");
+            requestGateAccess(true);
+            return;
           }}
+          sessionStorage.setItem('wingman_node_boot_id', data.boot_id);
           currentBootId = data.boot_id;
         }}
         if (data.authenticated) {{
@@ -2159,9 +2165,17 @@ def get_wingman_html(
         try {{
           const payload = JSON.parse(e.data);
           currentMothershipBootId = payload.mothership_boot_id || payload.boot_id;
-          if (!isPairedDevice) {{
-            handleSessionExpired("Mothership console rebooted — awaiting new authorization...");
+          if (currentMothershipBootId) {{
+            sessionStorage.setItem('wingman_ms_boot_id', currentMothershipBootId);
           }}
+          sessionToken = '';
+          sessionStorage.removeItem('wingman_token');
+          sessionStorage.removeItem('wingman_session_id');
+          localStorage.removeItem('wingman_token');
+          localStorage.removeItem('wingman_paired');
+          isPairedDevice = false;
+          generateFreshSessionId();
+          handleSessionExpired("Mothership console rebooted — awaiting new authorization...");
         }} catch (err) {{}}
       }});
 

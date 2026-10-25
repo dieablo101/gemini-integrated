@@ -2328,6 +2328,14 @@ class SatelliteNode:
                                             for sess in list(self.wingman_applet.security.sessions.values()):
                                                 if getattr(sess, "status", "") == "pending":
                                                     self._on_wingman_pending_session(sess)
+                            elif ev in ("mothership_rebooted", "mothership_restart"):
+                                ms_boot = msg.payload.get("mothership_boot_id") or ""
+                                self.mothership_boot_id = ms_boot
+                                if self.wingman_applet and hasattr(self.wingman_applet, "on_mothership_reboot"):
+                                    try:
+                                        self.wingman_applet.on_mothership_reboot(ms_boot)
+                                    except Exception:
+                                        pass
                             if self.hud:
                                 self.hud.log_event(ev or "Event received")
                     except Exception as err:

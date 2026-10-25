@@ -1296,6 +1296,42 @@ class TestWingmanSecurity(unittest.TestCase):
         finally:
             applet.stop()
 
+    def test_reboot_epoch_reset_prevents_free_entry_on_all_devices(self) -> None:
+        """Verifies that console reboot epoch reset revokes all unpaired sessions and prevents free entry."""
+        from unittest.mock import MagicMock
+        applet = WingmanApplet(port=0, node_id="test-node-reboot-gate", require_pairing=True)
+        try:
+            # 1. Device connects and is authorized with one-time approval
+            s1 = applet.security.create_or_resume_session(client_ip="192.168.1.179", device_id="dev-phone-gate")
+            applet.authorize_session(s1.session_id, accepted=True, trust_device=False, device_id="dev-phone-gate")
+            self.assertEqual(s1.status, "authorized")
+
+            mock_h = MagicMock()
+            mock_h.headers = {"X-Wingman-Device": "dev-phone-gate"}
+            res_before = applet._handle_auth_status(mock_h, {"req_id": [s1.session_id], "device_id": ["dev-phone-gate"]})
+            self.assertEqual(res_before["status"], "approved")
+
+            # 2. Console/Mothership reboot occurs: epoch reset to new_boot_id
+            applet.on_mothership_reboot("epoch-fresh-999")
+            self.assertEqual(applet.mothership_boot_id, "epoch-fresh-999")
+
+            # 3. Old session MUST be downgraded to pending
+            self.assertEqual(s1.status, "pending")
+            self.assertEqual(s1.token, "")
+
+            # 4. Old session polling must NOT be approved
+            res_after_old = applet._handle_auth_status(mock_h, {"req_id": [s1.session_id], "device_id": ["dev-phone-gate"]})
+            self.assertEqual(res_after_old["status"], "pending")
+
+            # 5. New session created on refresh must NOT inherit old authorization; free entry blocked!
+            s2 = applet.security.create_or_resume_session(client_ip="192.168.1.179", device_id="dev-phone-gate", existing_session_id="sess-new-refresh")
+            self.assertEqual(s2.status, "pending")
+            res_after_new = applet._handle_auth_status(mock_h, {"req_id": [s2.session_id], "device_id": ["dev-phone-gate"]})
+            self.assertEqual(res_after_new["status"], "pending")
+            self.assertEqual(res_after_new.get("token", ""), "")
+        finally:
+            applet.stop()
+
 
 if __name__ == "__main__":
     unittest.main()

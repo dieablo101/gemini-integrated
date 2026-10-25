@@ -87,8 +87,19 @@ class WingmanApplet:
     def on_mothership_reboot(self, new_boot_id: str) -> None:
         """Handles Mothership restart by invalidating all one-time (unpaired) sessions and resetting epoch."""
         self.mothership_boot_id = new_boot_id
-        # Purge all unpaired / accepted sessions so they cannot bypass security gate
-        self.security.prune_stale_sessions(max_pending_age=0.0, invalidate_unpaired=True)
+        # Invalidate unpaired sessions while keeping active gate connections in pending state
+        self.security.prune_stale_sessions(max_pending_age=45.0, invalidate_unpaired=True)
+        # Immediately re-notify any active pending sessions so Mothership receives prompt without user reload
+        now = time.time()
+        with self.security._lock:
+            for s in list(self.security.sessions.values()):
+                if s.status == "pending":
+                    s._last_notified = now
+                    for cb in list(self.security._on_pending_session_callbacks):
+                        try:
+                            cb(s)
+                        except Exception:
+                            pass
         self.engine.broadcast_event("mothership_rebooted", {
             "mothership_boot_id": new_boot_id,
             "timestamp": time.time(),
@@ -753,7 +764,17 @@ class WingmanApplet:
                     sess = s
                     break
         if sess:
-            sess.last_seen = time.time()
+            now = time.time()
+            sess.last_seen = now
+            if sess.status == "pending":
+                should_notify = (now - getattr(sess, "_last_notified", 0.0)) > 4.0
+                if should_notify:
+                    sess._last_notified = now
+                    for cb in list(self.security._on_pending_session_callbacks):
+                        try:
+                            cb(sess)
+                        except Exception:
+                            pass
             is_trusted = bool(sess.device_id) and self.security.is_device_trusted(sess.device_id)
             is_paired = is_trusted or getattr(sess, "is_paired", False)
             return {

@@ -1221,6 +1221,56 @@ class TestWingmanSecurity(unittest.TestCase):
             applet.stop()
             ms.stop()
 
+    def test_auth_status_polling_re_notifies_pending_session(self) -> None:
+        """Verifies that polling _handle_auth_status periodically invokes pending callbacks without page reload."""
+        applet = WingmanApplet(port=0, node_id="test-node-poll", require_pairing=True)
+        notifications = []
+        applet.on_auth_request(lambda r: notifications.append(r))
+        try:
+            sess = applet.security.create_or_resume_session(client_ip="192.168.1.77", device_id="dev-gate-poll")
+            self.assertEqual(sess.status, "pending")
+            self.assertEqual(len(notifications), 1)
+
+            # Polling immediately within throttle window should not re-notify
+            mock_handler = MagicMock()
+            mock_handler.headers = {}
+            status_res = applet._handle_auth_status(mock_handler, {"req_id": [sess.session_id]})
+            self.assertEqual(status_res["status"], "pending")
+            self.assertEqual(len(notifications), 1)
+
+            # After 4.1 seconds of polling while sitting on the gate, callback is re-invoked
+            sess._last_notified = time.time() - 4.5
+            status_res2 = applet._handle_auth_status(mock_handler, {"req_id": [sess.session_id]})
+            self.assertEqual(status_res2["status"], "pending")
+            self.assertEqual(len(notifications), 2)
+            self.assertEqual(notifications[1]["auth_req_id"], sess.session_id)
+        finally:
+            applet.stop()
+
+    def test_active_session_downgraded_to_pending_on_mothership_reboot(self) -> None:
+        """Verifies that on mothership restart, active unpaired sessions are downgraded to pending and re-advertised."""
+        applet = WingmanApplet(port=0, node_id="test-node-reboot", require_pairing=True)
+        notifications = []
+        applet.on_auth_request(lambda r: notifications.append(r))
+        try:
+            sess = applet.security.create_or_resume_session(client_ip="192.168.1.88", device_id="dev-active-reboot")
+            applet.authorize_session(sess.session_id, accepted=True, trust_device=False)
+            self.assertEqual(sess.status, "authorized")
+
+            # Mothership reboot occurs
+            notifications.clear()
+            applet.on_mothership_reboot("epoch-new-12345")
+            self.assertEqual(applet.mothership_boot_id, "epoch-new-12345")
+
+            # Session must now be pending (not deleted!) and must have notified Mothership
+            re_sess = applet.security.get_session(sess.session_id)
+            self.assertIsNotNone(re_sess)
+            self.assertEqual(re_sess.status, "pending")
+            self.assertEqual(len(notifications), 1)
+            self.assertEqual(notifications[0]["auth_req_id"], sess.session_id)
+        finally:
+            applet.stop()
+
 
 if __name__ == "__main__":
     unittest.main()

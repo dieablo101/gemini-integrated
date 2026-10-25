@@ -359,7 +359,19 @@ class WingmanSecurity:
                 elif not is_paired:
                     # Unpaired accepted sessions: expire if browser closed or inactive > 180s
                     age = now - getattr(sess, "last_seen", sess.created_at)
-                    if invalidate_unpaired or age > 180.0:
+                    if invalidate_unpaired:
+                        # If browser is still actively connected (polling within 45s),
+                        # downgrade to pending rather than destroying the session
+                        if age < 45.0:
+                            sess.status = "pending"
+                            if sess.token:
+                                self.tokens_to_session.pop(sess.token, None)
+                                sess.token = ""
+                            sess.is_unlocked = False
+                            sess._last_notified = 0.0
+                        else:
+                            to_remove.append(sid)
+                    elif age > 180.0:
                         to_remove.append(sid)
                 else:
                     # Permanently paired sessions: persist up to max_inactive_age (e.g. 24h)

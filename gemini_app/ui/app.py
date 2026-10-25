@@ -438,7 +438,7 @@ class ChatApp(App):
             return
         handled_times = getattr(self, "_handled_wingman_auth_times", {})
         if req_id in handled_times:
-            if (time.time() - handled_times[req_id]) < 45.0:
+            if (time.time() - handled_times[req_id]) < 5.0:
                 return
             handled_times.pop(req_id, None)
 
@@ -509,7 +509,7 @@ class ChatApp(App):
             self._process_next_wingman_auth()
             return
         handled_times = getattr(self, "_handled_wingman_auth_times", {})
-        if req_id in handled_times and (time.time() - handled_times[req_id]) < 45.0:
+        if req_id in handled_times and (time.time() - handled_times[req_id]) < 5.0:
             self._process_next_wingman_auth()
             return
 

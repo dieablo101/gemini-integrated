@@ -1103,6 +1103,12 @@ def get_wingman_html(
           <div class="radar-pulse"></div>
           <span id="gateStatusText">Awaiting mothership console authorization...</span>
         </div>
+
+        <div style="margin-top: 14px; width: 100%; display: flex; flex-direction: column; gap: 8px;">
+          <button type="button" class="btn btn-primary" id="gateResendBtn" onclick="requestGateAccess(true)" style="width: 100%; justify-content: center; padding: 10px 14px; font-size: 13px; font-weight: 600; cursor: pointer; touch-action: manipulation;">
+            ⚡ Resend Authorization Request
+          </button>
+        </div>
       </div>
     </div>
 
@@ -1434,6 +1440,51 @@ def get_wingman_html(
       sessionStorage.removeItem('wingman_token');
       localStorage.removeItem('wingman_token');
       localStorage.removeItem('wingman_paired');
+    }}
+
+    function generateFreshSessionId() {{
+      sessionId = 'sess-' + Math.random().toString(36).substring(2, 10);
+      if (isPairedDevice) {{
+        localStorage.setItem('wingman_session_id', sessionId);
+      }} else {{
+        sessionStorage.setItem('wingman_session_id', sessionId);
+      }}
+      return sessionId;
+    }}
+
+    async function requestGateAccess(forceNew = false) {{
+      if (forceNew || !isPairedDevice) {{
+        generateFreshSessionId();
+      }}
+      const gateBtn = document.getElementById('gateResendBtn');
+      if (gateBtn) {{
+        gateBtn.textContent = '⏳ Dispatching Request to Mothership...';
+        gateBtn.style.opacity = '0.7';
+        gateBtn.disabled = true;
+      }}
+      if (gateStatusText) {{
+        gateStatusText.textContent = 'Contacting Mothership console...';
+      }}
+      try {{
+        await checkSession();
+        startAuthPolling();
+        if (gateBtn) {{
+          gateBtn.textContent = '✓ Request Active on Console';
+          setTimeout(() => {{
+            if (gateBtn) {{
+              gateBtn.textContent = '⚡ Resend Authorization Request';
+              gateBtn.style.opacity = '1';
+              gateBtn.disabled = false;
+            }}
+          }}, 4000);
+        }}
+      }} catch (e) {{
+        if (gateBtn) {{
+          gateBtn.textContent = '⚡ Retry Access Request';
+          gateBtn.style.opacity = '1';
+          gateBtn.disabled = false;
+        }}
+      }}
     }}
 
     /* First-action session passkey state (resets every session/refresh) */
@@ -1822,6 +1873,7 @@ def get_wingman_html(
       const gateTitle = document.querySelector('.gate-title');
       const gateDesc = document.querySelector('.gate-desc');
       if (_maintenanceWatchdogTimer) {{
+        clearInterval(_maintenanceWatchdogTimer);
         clearTimeout(_maintenanceWatchdogTimer);
         _maintenanceWatchdogTimer = null;
       }}
@@ -1834,13 +1886,15 @@ def get_wingman_html(
         gateStatusText.textContent = 'Maintenance in progress (reconnect paused)...';
         statusText.textContent = 'MAINTENANCE';
         statusDot.className = 'status-dot pending';
-        _maintenanceWatchdogTimer = setTimeout(() => {{
-          fetch('/applet/wingman/ping')
-            .then(r => r.json())
-            .then(d => {{
-              if (!d.maintenance) setMaintenanceLock(false);
-            }}).catch(() => {{}});
-        }}, 25000);
+        _maintenanceWatchdogTimer = setInterval(async () => {{
+          try {{
+            const r = await fetch('/applet/wingman/ping');
+            const d = await r.json();
+            if (!d.maintenance) {{
+              setMaintenanceLock(false);
+            }}
+          }} catch (e) {{}}
+        }}, 1500);
       }} else {{
         if (gateIcon) gateIcon.textContent = '🔒';
         if (gateTitle) gateTitle.textContent = 'Wingman Security Gate';
@@ -1848,6 +1902,7 @@ def get_wingman_html(
         const devIpEl = document.getElementById('gateDeviceIp');
         if (devIpEl) devIpEl.textContent = '{effective_device_ip}';
         checkSession();
+        startAuthPolling();
       }}
     }}
 
@@ -1893,8 +1948,9 @@ def get_wingman_html(
               sessionStorage.removeItem('wingman_token');
               localStorage.removeItem('wingman_token');
               localStorage.removeItem('wingman_paired');
+              generateFreshSessionId();
               lockUI("Mothership console rebooted — awaiting new authorization...");
-              startAuthPolling();
+              requestGateAccess(true);
               return;
             }}
           }}
@@ -1911,8 +1967,9 @@ def get_wingman_html(
               localStorage.removeItem('wingman_token');
               localStorage.removeItem('wingman_paired');
               currentBootId = data.boot_id;
-              lockUI("Mothership console rebooted — awaiting new authorization...");
-              startAuthPolling();
+              generateFreshSessionId();
+              lockUI("Wingman node restarted — awaiting new authorization...");
+              requestGateAccess(true);
               return;
             }}
           }}
@@ -1949,6 +2006,9 @@ def get_wingman_html(
       localStorage.removeItem('wingman_token');
       localStorage.removeItem('wingman_paired');
       isSessionUnlocked = false;
+      if (!isPairedDevice) {{
+        generateFreshSessionId();
+      }}
       lockUI(reason);
       await checkSession();
       startAuthPolling();
@@ -1957,8 +2017,28 @@ def get_wingman_html(
     function startAuthPolling() {{
       if (authPollingInterval) clearInterval(authPollingInterval);
       if (isMaintenanceMode) return;
+      let pollCount = 0;
+      let pendingTicks = 0;
       authPollingInterval = setInterval(async () => {{
         if (isMaintenanceMode) return;
+        pollCount++;
+        if (securityGate && securityGate.style.display !== 'none') {{
+          pendingTicks++;
+          // If sitting on gate unanswered for > 15 seconds, rotate session ID and re-dispatch
+          if (pendingTicks >= 15 && !isPairedDevice) {{
+            pendingTicks = 0;
+            generateFreshSessionId();
+            try {{
+              await checkSession();
+            }} catch (e) {{}}
+          }} else if (pollCount % 4 === 0) {{
+            try {{
+              await checkSession();
+            }} catch (e) {{}}
+          }}
+        }} else {{
+          pendingTicks = 0;
+        }}
         try {{
           const res = await fetch('/applet/wingman/auth_status?req_id=' + encodeURIComponent(sessionId) + '&device_id=' + encodeURIComponent(deviceId));
           const data = await res.json();
@@ -3192,8 +3272,9 @@ def get_wingman_html(
     /* Immediate wake-up & visibility sync for mobile / screen-off devices */
     async function onWakeOrVisibilityChange() {{
       if (document.visibilityState === 'visible') {{
+        // On wake or tab focus, immediately perform session check and auth check
+        await checkSession();
         if (securityGate && securityGate.style.display !== 'none') {{
-          // If sitting on the gate awaiting authorization, immediately poll auth_status!
           try {{
             const res = await fetch('/applet/wingman/auth_status?req_id=' + encodeURIComponent(sessionId) + '&device_id=' + encodeURIComponent(deviceId));
             const data = await res.json();
@@ -3210,8 +3291,6 @@ def get_wingman_html(
               unlockUI(data.token, Boolean(data.is_paired));
             }}
           }} catch (e) {{}}
-        }} else {{
-          await checkSession();
         }}
         measurePing();
         // Check if SSE stream disconnected or stalled while screen was off

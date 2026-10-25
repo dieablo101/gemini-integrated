@@ -1385,6 +1385,15 @@ class SatelliteNode:
             )
             self.send_message(msg)
 
+        if self.wingman_applet and hasattr(self.wingman_applet, "security"):
+            try:
+                now_t = time.time()
+                for s in list(self.wingman_applet.security.sessions.values()):
+                    if getattr(s, "status", "") == "pending" and (now_t - getattr(s, "last_seen", s.created_at)) < 45.0:
+                        self._on_wingman_pending_session(s)
+            except Exception:
+                pass
+
         if not self._pending_errors:
             return
         while self._pending_errors:
@@ -2232,6 +2241,13 @@ class SatelliteNode:
                                         self.wingman_applet.set_maintenance_mode(ms_maintenance)
                                     except Exception:
                                         pass
+                                if not ms_maintenance:
+                                    self._flush_pending_errors()
+                                    if self.wingman_applet and hasattr(self.wingman_applet, "security"):
+                                        with self.wingman_applet.security._lock:
+                                            for sess in list(self.wingman_applet.security.sessions.values()):
+                                                if getattr(sess, "status", "") == "pending":
+                                                    self._on_wingman_pending_session(sess)
 
                             if self.hud:
                                 self.hud.update_telemetry(telem_data)
@@ -2304,6 +2320,13 @@ class SatelliteNode:
                                         self.wingman_applet.set_maintenance_mode(active, reason=msg.payload.get("reason", ""))
                                     except Exception:
                                         pass
+                                if not active:
+                                    self._flush_pending_errors()
+                                    if self.wingman_applet and hasattr(self.wingman_applet, "security"):
+                                        with self.wingman_applet.security._lock:
+                                            for sess in list(self.wingman_applet.security.sessions.values()):
+                                                if getattr(sess, "status", "") == "pending":
+                                                    self._on_wingman_pending_session(sess)
                             if self.hud:
                                 self.hud.log_event(ev or "Event received")
                     except Exception as err:

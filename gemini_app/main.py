@@ -14,12 +14,24 @@ from gemini_app.ui.app import ChatApp
 
 def start_app() -> None:
     """Instantiates and executes the ChatApp Textual application."""
+    try:
+        from gemini_app.system_priority import elevate_system_priority
+        elevate_system_priority(target_nice=-10)
+    except Exception:
+        pass
     app = ChatApp()
     app.run()
 
 
 def main() -> None:
     """Launches the console application protected by the autonomous crash guardian."""
+    # Autonomously elevate system scheduling priority (nice & ionice)
+    try:
+        from gemini_app.system_priority import elevate_system_priority
+        elevate_system_priority(target_nice=-10)
+    except Exception:
+        pass
+
     # 0. Explicit Safe Mode boot flag check
     import os
     if "--safe-mode" in sys.argv or os.environ.get("GEMINI_SAFE_MODE") == "1":

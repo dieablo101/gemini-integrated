@@ -2351,6 +2351,13 @@ class ChatApp(App):
                         reboot_argv[0] = cand
                         break
 
+        # Elevate priority immediately before execv so re-execed process starts at top priority
+        try:
+            from gemini_app.system_priority import elevate_system_priority
+            elevate_system_priority(target_nice=-10)
+        except Exception:
+            pass
+
         try:
             os.execv(sys.executable, [sys.executable] + reboot_argv)
         except Exception:
@@ -3390,6 +3397,21 @@ class ChatApp(App):
             self.action_reboot(status_report=report)
             return True
 
+        elif verb in ("priority", "nice"):
+            from gemini_app.system_priority import elevate_system_priority, format_priority_summary, get_system_priority
+            sub = (arg or "").strip().lower()
+            if sub in ("elevate", "boost", "high", "max"):
+                res = elevate_system_priority(target_nice=-10)
+                summary = format_priority_summary()
+                self.notify(f"⚡ System Priority Boosted: {summary}", timeout=4.5)
+                self.call_after_refresh(lambda: self.append_to_feed("system", f"### ⚡ Process Scheduling Priority\n- **Status:** `{res.get('status')}`\n- **Nice Level:** `{res.get('current_nice')}` (target: {res.get('target_nice')})\n- **Elevation Method:** `{res.get('nice_method')}`\n- **I/O Priority:** `{res.get('ioprio_class')}` level `{res.get('ioprio_level')}` via `{res.get('ioprio_method')}`\n\nConsole is prioritized ahead of concurrent game and compiler threads.", jump_to_start=False))
+            else:
+                p = get_system_priority()
+                summary = format_priority_summary()
+                self.notify(summary, timeout=4.0)
+                self.call_after_refresh(lambda: self.append_to_feed("system", f"### ⚙ Process Scheduling Priority\n- **Summary:** {summary}\n- **Nice Value:** `{p.get('nice')}`\n- **I/O Scheduling:** `{p.get('ioprio')}`\n- **High Priority Active:** `{'Yes (nice < 0)' if p.get('is_high_priority') else 'No (nice 0)'}`\n\nRun `/priority boost` to force-elevate priority at any time.", jump_to_start=False))
+            return True
+
         elif verb in ("rollback", "revert"):
             success, msg = perform_git_rollback()
             if success:
@@ -3817,6 +3839,7 @@ class ChatApp(App):
                 "- `/snapshots`: View count and list of held snapshots\n"
                 "- `/diff`: Preview uncommitted git changes\n"
                 "- `/tokens`: Inspect approximate token count and session stats\n"
+                "- `/priority [boost]`: Inspect or elevate console CPU & I/O priority against concurrent workloads\n"
                 "- `/clear`: Clear active chat feed\n"
                 "- `/reboot`: Perform a clean in-place app reboot\n"
                 "- `/help`: Show this command reference"

@@ -169,6 +169,13 @@ General Options:
 
 
 if __name__ == "__main__":
+    # Autonomously elevate system scheduling priority (nice & ionice) to prevent lag during concurrent workloads
+    try:
+        from gemini_app.system_priority import elevate_system_priority
+        elevate_system_priority(target_nice=-10)
+    except Exception:
+        pass
+
     # 1. First parse high-level flags and subcommands before touching venv or packages
     argv_set = set(sys.argv[1:])
 

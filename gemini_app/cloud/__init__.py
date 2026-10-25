@@ -2,6 +2,7 @@
 
 from gemini_app.cloud.upper_mind import UpperMindClient
 from gemini_app.cloud.rehydrate import CognitionSyncHydrator
+from gemini_app.cloud.upper_mind_server import UpperMindServer
 from gemini_app.cloud.mind_expansion_synthesizer import (
     MindExpansionSynthesizer,
     PromptExpansionFrame,
@@ -12,6 +13,7 @@ from gemini_app.cloud.mind_expansion_synthesizer import (
 __all__ = [
     "UpperMindClient",
     "CognitionSyncHydrator",
+    "UpperMindServer",
     "MindExpansionSynthesizer",
     "PromptExpansionFrame",
     "FleetNodeTelemetry",

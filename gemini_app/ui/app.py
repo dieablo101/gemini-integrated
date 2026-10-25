@@ -259,6 +259,7 @@ class ChatApp(App):
         self.history: list[dict] = []
         self._server: asyncio.AbstractServer | None = None
         self.wingman_applet: Optional[Any] = None
+        self.upper_mind_server: Optional[Any] = None
 
         self._prefix_c_c: bool = False
         self._c_c_timer: Timer | None = None
@@ -436,6 +437,26 @@ class ChatApp(App):
             self.wingman_applet.on_auth_request(self._on_wingman_auth_request)
             self.wingman_applet.on_chat_message(self._on_wingman_remote_chat)
             self.wingman_applet.start()
+        except Exception:
+            pass
+
+    def _start_upper_mind_server(self, port: int = 7777) -> None:
+        """Starts the sovereign public Upper Mind Web Nexus & Synaptic Observatory on port 7777."""
+        if "unittest" in sys.modules or os.environ.get("GEMINI_TEST_MODE"):
+            return
+        if getattr(self, "upper_mind_server", None) and self.upper_mind_server.engine.is_running:
+            return
+        try:
+            from gemini_app.cloud.upper_mind_server import UpperMindServer
+
+            client = getattr(self, "upper_mind_client", None)
+            synth = getattr(self, "upper_mind_synthesizer", None)
+            self.upper_mind_server = UpperMindServer(
+                upper_mind_client=client,
+                synthesizer=synth,
+                port=port,
+            )
+            self.upper_mind_server.start()
         except Exception:
             pass
 
@@ -1596,6 +1617,7 @@ class ChatApp(App):
         self._start_heartbeat_watchdog()
         await self.start_socket_server()
         self._start_wingman_server()
+        self._start_upper_mind_server()
 
         def _on_boot_dismissed(result: Any = None) -> None:
             self._boot_complete = True
@@ -2373,6 +2395,12 @@ class ChatApp(App):
         if getattr(self, "wingman_applet", None):
             try:
                 self.wingman_applet.stop()
+            except Exception:
+                pass
+
+        if getattr(self, "upper_mind_server", None):
+            try:
+                self.upper_mind_server.stop()
             except Exception:
                 pass
 
@@ -3210,7 +3238,15 @@ class ChatApp(App):
         verb = parts[0].lower() if parts else ""
         arg = parts[1].strip() if len(parts) > 1 else ""
 
-        if verb in ("theme", "ui-theme"):
+        if verb in ("nexus", "uppermind", "publicface"):
+            if getattr(self, "upper_mind_server", None) and self.upper_mind_server.engine.is_running:
+                port = self.upper_mind_server.port
+                self.notify(f"✦ Upper Mind Nexus active at http://localhost:{port} (Bilateral lock engaged)", timeout=6.0)
+            else:
+                self.notify("Upper Mind Nexus is offline or starting up.", severity="warning")
+            return True
+
+        elif verb in ("theme", "ui-theme"):
             if not arg:
                 valid = ", ".join(THEMES.keys())
                 self.notify(f"Active theme: '{self.active_palette_name}'. Options: {valid}", timeout=4.0)

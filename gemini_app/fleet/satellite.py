@@ -384,6 +384,27 @@ def get_local_route_info() -> Dict[str, Any]:
     }
 
 
+_SATELLITE_START_TIME = time.time()
+
+
+def get_system_uptime() -> float:
+    """Reads system uptime in seconds from /proc/uptime with fallback to process start time."""
+    try:
+        if os.path.exists("/proc/uptime"):
+            with open("/proc/uptime", "r", encoding="utf-8") as f:
+                content = f.read().strip()
+                if content:
+                    return float(content.split()[0])
+    except Exception:
+        pass
+    try:
+        import psutil
+        return max(0.0, time.time() - psutil.boot_time())
+    except Exception:
+        pass
+    return max(0.0, time.time() - _SATELLITE_START_TIME)
+
+
 def collect_telemetry() -> Dict[str, Any]:
     """Collects system capabilities and status using standard library only."""
     uname = platform.uname()
@@ -457,6 +478,7 @@ def collect_telemetry() -> Dict[str, Any]:
         "machine": uname.machine,
         "python": platform.python_version(),
         "pid": os.getpid(),
+        "uptime_seconds": round(get_system_uptime(), 1),
         "disk_free_gb": round(free_b / (1024 ** 3), 2),
         "disk_total_gb": round(total_b / (1024 ** 3), 2),
         "has_ipad_mount": has_ipad_mount,
@@ -2394,6 +2416,18 @@ class SatelliteNode:
             )
             if not self.send_message(hb):
                 break
+            # Also measure latency to Mothership if interactive HUD loop is not actively doing so
+            if not self.hud:
+                try:
+                    self._pending_ping_t0 = time.perf_counter()
+                    ping_msg = FleetMessage(
+                        msg_type=FleetMessage.TYPE_COMMAND,
+                        node_id=self.node_id,
+                        payload={"action": "ping"},
+                    )
+                    self.send_message(ping_msg)
+                except Exception:
+                    pass
             time.sleep(self.heartbeat_interval)
 
     def _start_screenshot_watcher(self) -> None:

@@ -20,6 +20,25 @@ from typing import Any, Dict, List, Optional
 
 # Module-level cache for instantaneous /proc/stat CPU calculation
 _LAST_CPU_STAT = {"idle": 0.0, "total": 0.0, "time": 0.0}
+_PROCESS_START_TIME = time.time()
+
+
+def get_system_uptime() -> float:
+    """Reads system uptime in seconds from /proc/uptime with fallback to process start time."""
+    try:
+        if os.path.exists("/proc/uptime"):
+            with open("/proc/uptime", "r", encoding="utf-8") as f:
+                content = f.read().strip()
+                if content:
+                    return float(content.split()[0])
+    except Exception:
+        pass
+    try:
+        import psutil
+        return max(0.0, time.time() - psutil.boot_time())
+    except Exception:
+        pass
+    return max(0.0, time.time() - _PROCESS_START_TIME)
 
 
 def get_cpu_and_mem_vitals() -> Dict[str, Any]:
@@ -404,6 +423,7 @@ def collect_mothership_telemetry(
         "python": platform.python_version(),
         "timestamp": time.time(),
         "time_str": time.strftime("%H:%M:%S"),
+        "uptime_seconds": round(get_system_uptime(), 1),
         "network": {
             "lan_ip": get_local_lan_ip(),
             "wan_ip": get_public_wan_ip(),

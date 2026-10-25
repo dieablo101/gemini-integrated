@@ -328,6 +328,23 @@ class SatelliteHUD:
             bat_color = GREEN if bat_pct > 30 else (YELLOW if bat_pct > 15 else RED)
             bat_str = f"  {BOLD}Bat:{RESET} {bat_color}{bat_pct}{chg_icon}{RESET}"
 
+        up_sec = self.local_vitals.get("uptime_seconds") or self.mothership_data.get("uptime_seconds")
+        up_disp = ""
+        if up_sec:
+            s_up = int(round(up_sec))
+            d_up = s_up // 86400
+            h_up = (s_up % 86400) // 3600
+            m_up = (s_up % 3600) // 60
+            if d_up > 0:
+                up_formatted = f"{d_up}d {h_up}h"
+            elif h_up > 0:
+                up_formatted = f"{h_up}h {m_up}m"
+            elif m_up > 0:
+                up_formatted = f"{m_up}m {s_up % 60}s"
+            else:
+                up_formatted = f"{s_up}s"
+            up_disp = f"  {BOLD}Up:{RESET} {GRAY}{up_formatted}{RESET}"
+
         if term_lines <= 11:
             compact_line = (
                 f"{BOLD}Host:{RESET} {WHITE}{clip_str(host_name, 12)}{RESET}  "
@@ -338,7 +355,7 @@ class SatelliteHUD:
         else:
             line1 = (
                 f"{BOLD}Host:{RESET} {WHITE}{host_name}{RESET} ({GRAY}{platform_info}{RESET})  "
-                f"{BOLD}Node:{RESET} {CYAN}{self.node_id}{RESET}"
+                f"{BOLD}Node:{RESET} {CYAN}{self.node_id}{RESET}{up_disp}"
             )
             lines.append(self._format_box_line(b_v, line1, w))
             line2 = (

@@ -1177,8 +1177,8 @@ def get_wingman_html(
           <span id="hudStatusLabel">MOTHERSHIP LINKED</span>
         </div>
         <div class="hud-meta-chips">
-          <div class="hud-chip">PING: <span id="hudPingMs" style="color: var(--accent);">-- ms</span></div>
-          <div class="hud-chip">UPTIME: <span id="hudUptime">--</span></div>
+          <div class="hud-chip" title="Mesh Link Ping between this Node and Mothership">LINK PING: <span id="hudPingMs" style="color: var(--accent);">-- ms</span></div>
+          <div class="hud-chip" title="System Uptime">UPTIME: <span id="hudUptime">--</span></div>
           <div class="hud-chip">NODE: <span id="hudNodeId" style="color: #fff;">{node_id}</span></div>
         </div>
       </div>
@@ -1349,7 +1349,7 @@ def get_wingman_html(
   <!-- Live Footer Telemetry -->
   <footer>
     <span id="footerHost">node:{node_id}:{port}</span>
-    <span id="footerPing">PING: --ms</span>
+    <span id="footerPing" title="Local Browser-to-Applet HTTP Ping">WEB: --ms</span>
   </footer>
 
   <script>
@@ -1635,14 +1635,32 @@ def get_wingman_html(
           hudDot.className = 'status-dot ' + (isOnline ? '' : 'offline');
           hudLabel.textContent = isOnline ? 'MOTHERSHIP LINKED' : 'DISCONNECTED';
         }}
-        const pingMs = t.ping_ms || (footerPing.textContent.match(/\\d+/) ? footerPing.textContent.match(/\\d+/)[0] : null);
         const pingEl = document.getElementById('hudPingMs');
-        if (pingEl && pingMs) pingEl.textContent = pingMs + ' ms';
+        if (pingEl) {{
+          if (t.node_id === 'mothership') {{
+            pingEl.textContent = '0 ms (hub)';
+          }} else if (t.ping_ms !== undefined && t.ping_ms !== null) {{
+            pingEl.textContent = Math.round(t.ping_ms) + ' ms';
+          }} else {{
+            pingEl.textContent = '-- ms';
+          }}
+        }}
         const upEl = document.getElementById('hudUptime');
-        if (upEl && t.uptime_seconds) {{
+        if (upEl && t.uptime_seconds !== undefined && t.uptime_seconds !== null) {{
           const s = Math.round(t.uptime_seconds);
-          const m = Math.floor(s / 60);
-          upEl.textContent = m > 60 ? (Math.floor(m / 60) + 'h ' + (m % 60) + 'm') : (m + 'm ' + (s % 60) + 's');
+          const days = Math.floor(s / 86400);
+          const hours = Math.floor((s % 86400) / 3600);
+          const mins = Math.floor((s % 3600) / 60);
+          const secs = s % 60;
+          if (days > 0) {{
+            upEl.textContent = days + 'd ' + hours + 'h';
+          }} else if (hours > 0) {{
+            upEl.textContent = hours + 'h ' + mins + 'm';
+          }} else if (mins > 0) {{
+            upEl.textContent = mins + 'm ' + secs + 's';
+          }} else {{
+            upEl.textContent = secs + 's';
+          }}
         }}
 
         const cog = t.cognitive || {{}};
@@ -3096,7 +3114,7 @@ def get_wingman_html(
         .then(res => res.json())
         .then(data => {{
           const rtt = Math.round(performance.now() - t0);
-          footerPing.textContent = 'PING: ' + rtt + 'ms';
+          footerPing.textContent = 'WEB: ' + rtt + 'ms';
           if (data && typeof data.time === 'number') {{
             const clientNow = Date.now() / 1000;
             serverTimeOffset = data.time - (clientNow - (rtt / 2000));
@@ -3123,7 +3141,7 @@ def get_wingman_html(
           }}
         }})
         .catch(() => {{
-          footerPing.textContent = 'PING: ERR';
+          footerPing.textContent = 'WEB: ERR';
         }});
     }}
 

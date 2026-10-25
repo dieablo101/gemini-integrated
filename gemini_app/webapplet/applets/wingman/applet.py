@@ -190,6 +190,12 @@ class WingmanApplet:
             return get_wingman_html(port=self.engine.port, node_id=self.node_id)
 
     def _handle_ping(self, handler: Any, query: Dict[str, List[str]]) -> Dict[str, Any]:
+        uptime_sec = 0.0
+        try:
+            from gemini_app.fleet.telemetry import get_system_uptime
+            uptime_sec = round(get_system_uptime(), 1)
+        except Exception:
+            pass
         return {
             "status": "pong",
             "time": time.time(),
@@ -199,6 +205,7 @@ class WingmanApplet:
             "mothership_boot_id": self.mothership_boot_id,
             "maintenance": self.maintenance_mode,
             "client_count": self.client_count,
+            "uptime_seconds": uptime_sec,
         }
 
     def _extract_token_and_device(self, handler: Any, query: Dict[str, List[str]]) -> tuple[str, str, str]:
@@ -407,6 +414,23 @@ class WingmanApplet:
 
         if "nodes" not in telem and "satellites" in telem:
             telem["nodes"] = telem["satellites"]
+
+        # Ensure uptime_seconds is present
+        if "uptime_seconds" not in telem:
+            if "uptime_seconds" in local_v:
+                telem["uptime_seconds"] = local_v["uptime_seconds"]
+            else:
+                try:
+                    from gemini_app.fleet.telemetry import get_system_uptime
+                    telem["uptime_seconds"] = round(get_system_uptime(), 1)
+                except Exception:
+                    telem["uptime_seconds"] = 0.0
+
+        if "ping_ms" not in telem:
+            if self.node_id == "mothership":
+                telem["ping_ms"] = 0.0
+            elif "ping_ms" in local_v:
+                telem["ping_ms"] = local_v.get("ping_ms")
 
         return {"status": "ok", "telemetry": telem, "timestamp": time.time()}
 

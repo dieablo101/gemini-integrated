@@ -1,0 +1,16 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Temporary and test database artifacts
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+mind_twin/data/test_*
+mind_twin/data/*.db
+
+# Temporary buffers
+*.tmp
+*.bak

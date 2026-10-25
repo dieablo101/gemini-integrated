@@ -197,6 +197,13 @@ class TestFleetTelemetryAndHUD(unittest.TestCase):
         self.assertIn("port", telem["network"])
         self.assertIn("cpu_pct", telem["vitals"])
         self.assertIn("branch", telem["git"])
+        self.assertIn("uptime_seconds", telem)
+        self.assertGreaterEqual(telem["uptime_seconds"], 0)
+
+        from gemini_app.fleet.satellite import collect_telemetry as sat_collect
+        sat_telem = sat_collect()
+        self.assertIn("uptime_seconds", sat_telem)
+        self.assertGreaterEqual(sat_telem["uptime_seconds"], 0)
 
     def test_dual_ip_persistence_and_lan_detection(self) -> None:
         from gemini_app.fleet.satellite import (

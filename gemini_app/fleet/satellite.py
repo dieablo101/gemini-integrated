@@ -1122,6 +1122,10 @@ class SatelliteNode:
             self.wingman_applet.on_chat_message(self._on_wingman_chat_message)
             self.wingman_applet._chat_history_fetcher = self.fetch_chat_history_from_mothership
             self.wingman_applet.security.on_pending_session(self._on_wingman_pending_session)
+            try:
+                self.wingman_applet.update_local_vitals(collect_telemetry())
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -2378,6 +2382,11 @@ class SatelliteNode:
             telem = collect_telemetry()
             if self.hud:
                 self.hud.local_vitals = telem
+            if self.wingman_applet and hasattr(self.wingman_applet, "update_local_vitals"):
+                try:
+                    self.wingman_applet.update_local_vitals(telem)
+                except Exception:
+                    pass
             hb = FleetMessage(
                 msg_type=FleetMessage.TYPE_HEARTBEAT,
                 node_id=self.node_id,

@@ -1657,25 +1657,33 @@ def get_wingman_html(
         const turnBadge = document.getElementById('hudTurnBadge');
         if (turnBadge && cog.turn_number) turnBadge.textContent = 'TURN #' + cog.turn_number;
 
-        const memAvail = t.mem_avail_mb || 0;
-        const memTotal = t.mem_total_mb || 1;
-        const memUsed = Math.max(0, memTotal - memAvail);
-        const memPct = Math.min(100, Math.round((memUsed / memTotal) * 100));
+        const vSrc = t.local_vitals || t;
+        const vMothership = t.vitals || {{}};
+
+        // RAM
+        let memAvail = vSrc.mem_avail_mb !== undefined && vSrc.mem_avail_mb !== null ? vSrc.mem_avail_mb : (vMothership.mem_total_mb && vMothership.mem_used_mb ? (vMothership.mem_total_mb - vMothership.mem_used_mb) : 0);
+        let memTotal = vSrc.mem_total_mb !== undefined && vSrc.mem_total_mb !== null ? vSrc.mem_total_mb : (vMothership.mem_total_mb || 1);
+        let memUsed = Math.max(0, memTotal - memAvail);
+        let memPct = memTotal > 1 ? Math.min(100, Math.round((memUsed / memTotal) * 100)) : (vMothership.mem_pct || 0);
+
         const memText = document.getElementById('hudMemText');
-        if (memText && memTotal > 1) memText.textContent = memUsed + ' / ' + memTotal + ' MB (' + memPct + '%)';
+        if (memText && memTotal > 1) memText.textContent = Math.round(memUsed) + ' / ' + Math.round(memTotal) + ' MB (' + memPct + '%)';
         const memBar = document.getElementById('hudMemBar');
         if (memBar && memTotal > 1) memBar.style.width = memPct + '%';
 
-        const diskFree = t.disk_free_gb || 0;
-        const diskTotal = t.disk_total_gb || 1;
-        const diskUsed = Math.max(0, diskTotal - diskFree);
-        const diskPct = Math.min(100, Math.round((diskUsed / diskTotal) * 100));
+        // DISK
+        let diskFree = vSrc.disk_free_gb !== undefined && vSrc.disk_free_gb !== null ? vSrc.disk_free_gb : (vMothership.disk_free_gb !== undefined ? vMothership.disk_free_gb : 0);
+        let diskTotal = vSrc.disk_total_gb !== undefined && vSrc.disk_total_gb !== null ? vSrc.disk_total_gb : (vMothership.disk_total_gb || 1);
+        let diskUsed = Math.max(0, diskTotal - diskFree);
+        let diskPct = diskTotal > 1 ? Math.min(100, Math.round((diskUsed / diskTotal) * 100)) : (vMothership.disk_pct || 0);
+
         const diskText = document.getElementById('hudDiskText');
         if (diskText && diskTotal > 1) diskText.textContent = diskFree + ' GB Free / ' + diskTotal + ' GB';
         const diskBar = document.getElementById('hudDiskBar');
         if (diskBar && diskTotal > 1) diskBar.style.width = diskPct + '%';
 
-        const batt = t.battery || {{}};
+        // BATTERY
+        const batt = vSrc.battery || t.battery || {{}};
         const battText = document.getElementById('hudBatteryText');
         if (battText) {{
           if (batt.percentage !== null && batt.percentage !== undefined) {{
@@ -1689,13 +1697,43 @@ def get_wingman_html(
           }}
         }}
 
+        // GIT COMMIT
+        const commitSha = vSrc.git_commit || (t.git ? t.git.commit : '') || t.git_commit || '';
+        const commitBranch = vSrc.git_branch || (t.git ? t.git.branch : '') || t.git_branch || '';
         const commitText = document.getElementById('hudCommitText');
-        if (commitText && t.git_commit) commitText.textContent = t.git_commit.substring(0, 7) + (t.git_branch ? ' (' + t.git_branch + ')' : '');
+        if (commitText && commitSha) commitText.textContent = commitSha.substring(0, 7) + (commitBranch ? ' (' + commitBranch + ')' : '');
 
+        // PLATFORM CHIP
+        const chip = document.getElementById('hudPlatformChip');
+        if (chip) {{
+          if (vSrc.is_ish) {{
+            chip.textContent = 'iPad Pro / Alpine';
+          }} else if (vSrc.is_termux) {{
+            chip.textContent = 'Android / Termux';
+          }} else if (vSrc.platform || vSrc.system) {{
+            chip.textContent = (vSrc.system || '') + (vSrc.machine ? ' ' + vSrc.machine : '');
+          }} else if (t.platform) {{
+            chip.textContent = t.platform;
+          }}
+        }}
+
+        // FLEET MESH
         const nodesList = document.getElementById('hudNodesList');
-        if (nodesList && Array.isArray(t.nodes)) {{
-          nodesList.innerHTML = t.nodes.map(n => {{
-            const isNOnline = n.status === 'online' || (n.last_seen !== undefined && n.last_seen < 30);
+        const nodesData = t.nodes || t.satellites || [];
+        if (nodesList && Array.isArray(nodesData)) {{
+          const msNode = t.host ? [{{
+            node_id: 'mothership (' + (t.platform || 'Host') + ')',
+            host: (t.network ? t.network.lan_ip : '') + (t.network && t.network.port ? ':' + t.network.port : ''),
+            system: t.platform || 'Host',
+            status: 'online'
+          }}] : [];
+          const allNodes = msNode.concat(nodesData);
+          const nodesCountEl = document.getElementById('hudNodesCount');
+          if (nodesCountEl) {{
+            nodesCountEl.textContent = allNodes.length + (allNodes.length === 1 ? ' NODE' : ' NODES');
+          }}
+          nodesList.innerHTML = allNodes.map(n => {{
+            const isNOnline = n.status === 'online' || (n.last_seen !== undefined && n.last_seen < 30) || (n.last_seen_seconds_ago !== undefined && n.last_seen_seconds_ago < 30);
             return `
               <div class="node-card">
                 <div class="node-card-header">
@@ -1703,7 +1741,7 @@ def get_wingman_html(
                   <span class="status-dot ${{isNOnline ? '' : 'offline'}}"></span>
                 </div>
                 <div style="font-size: 11px; color: var(--text-muted); font-family: var(--font-mono);">
-                  ${{n.host || n.address || ''}} · ${{n.system || ''}}
+                  ${{n.host || n.address || ''}} · ${{n.system || (n.telemetry ? n.telemetry.system : '') || ''}}
                 </div>
               </div>
             `;

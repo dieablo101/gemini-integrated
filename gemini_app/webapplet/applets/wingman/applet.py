@@ -61,6 +61,7 @@ class WingmanApplet:
             },
         ]
         self._chat_history: List[Dict[str, Any]] = []
+        self._local_vitals: Dict[str, Any] = {}
         self._lock = threading.Lock()
         self._passkey_verifier: Optional[Callable[[str], bool]] = None
         self._chat_history_fetcher: Optional[Callable[[], List[Dict[str, Any]]]] = None
@@ -340,16 +341,73 @@ class WingmanApplet:
             if isinstance(telemetry, dict):
                 self._telemetry.update(telemetry)
 
+    def update_local_vitals(self, vitals: Dict[str, Any]) -> None:
+        """Updates local hardware vitals directly from satellite node telemetry."""
+        with self._lock:
+            if not hasattr(self, "_local_vitals"):
+                self._local_vitals = {}
+            if isinstance(vitals, dict):
+                self._local_vitals.update(vitals)
+
     def _handle_telemetry(self, handler: Any, query: Dict[str, List[str]]) -> Dict[str, Any]:
         """Returns live cognitive telemetry and vitals for Wingman HUD view."""
         with self._lock:
             telem = dict(getattr(self, "_telemetry", {}))
+            local_v = dict(getattr(self, "_local_vitals", {}))
+
+        if not local_v:
+            try:
+                from gemini_app.fleet.satellite import collect_telemetry as sat_collect
+                local_v = sat_collect()
+            except Exception:
+                pass
+
         if not telem:
             try:
-                from gemini_app.fleet.telemetry import collect_telemetry
-                telem = collect_telemetry()
+                from gemini_app.fleet.telemetry import collect_mothership_telemetry
+                telem = collect_mothership_telemetry()
             except Exception:
                 telem = {}
+
+        # Merge local vitals so that HUD cards always have access to node vitals
+        if local_v:
+            telem["local_vitals"] = local_v
+            # If root vitals are missing, populate from local vitals
+            if "mem_total_mb" not in telem and "mem_total_mb" in local_v:
+                telem["mem_total_mb"] = local_v.get("mem_total_mb")
+                telem["mem_avail_mb"] = local_v.get("mem_avail_mb")
+            if "disk_free_gb" not in telem and "disk_free_gb" in local_v:
+                telem["disk_free_gb"] = local_v.get("disk_free_gb")
+                telem["disk_total_gb"] = local_v.get("disk_total_gb")
+            if "git_commit" not in telem and "git_commit" in local_v:
+                telem["git_commit"] = local_v.get("git_commit")
+                telem["git_branch"] = local_v.get("git_branch")
+            if "battery" not in telem and "battery" in local_v:
+                telem["battery"] = local_v.get("battery")
+            if "is_ish" in local_v:
+                telem["is_ish"] = local_v["is_ish"]
+            if "is_termux" in local_v:
+                telem["is_termux"] = local_v["is_termux"]
+
+        # Ensure root vitals/git fallback from mothership vitals/git if present
+        mv = telem.get("vitals")
+        if isinstance(mv, dict):
+            if "mem_total_mb" not in telem and "mem_total_mb" in mv:
+                telem["mem_total_mb"] = mv["mem_total_mb"]
+                telem["mem_avail_mb"] = max(0, mv["mem_total_mb"] - mv.get("mem_used_mb", 0))
+            if "disk_free_gb" not in telem and "disk_free_gb" in mv:
+                telem["disk_free_gb"] = mv["disk_free_gb"]
+                telem["disk_total_gb"] = mv.get("disk_total_gb", 1)
+        mg = telem.get("git")
+        if isinstance(mg, dict):
+            if "git_commit" not in telem and "commit" in mg:
+                telem["git_commit"] = mg["commit"]
+            if "git_branch" not in telem and "branch" in mg:
+                telem["git_branch"] = mg["branch"]
+
+        if "nodes" not in telem and "satellites" in telem:
+            telem["nodes"] = telem["satellites"]
+
         return {"status": "ok", "telemetry": telem, "timestamp": time.time()}
 
     def _handle_photo(self, handler: Any, query: Dict[str, List[str]], body: Any) -> Dict[str, Any]:

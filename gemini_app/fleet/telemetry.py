@@ -416,3 +416,8 @@ def collect_mothership_telemetry(
         "satellites_count": len(satellites_info) if satellites_info else 0,
         "satellites": satellites_info or [],
     }
+
+
+# Backwards compatibility alias
+collect_telemetry = collect_mothership_telemetry
+

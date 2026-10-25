@@ -143,6 +143,21 @@ def create_safety_checkpoint(label: str = "auto", cwd: Path | str | None = None)
     # Keep last 10 checkpoints
     state["safety_checkpoints"] = checkpoints[-10:]
     write_state(state)
+
+    # Automatically trigger Upper Mind shadow graph and git sync
+    try:
+        if "unittest" not in sys.modules and not os.environ.get("GEMINI_TEST_MODE"):
+            from gemini_app.cloud.auto_sync import sync_milestone_and_shadow_graph
+            import threading
+            threading.Thread(
+                target=sync_milestone_and_shadow_graph,
+                kwargs={"reason": f"checkpoint_{label}", "deploy_hosting": True, "push_git": True, "async_deploy": True},
+                daemon=True,
+                name="milestone-sync-checkpoint",
+            ).start()
+    except Exception:
+        pass
+
     return checkpoint
 
 

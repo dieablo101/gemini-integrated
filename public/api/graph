@@ -319,6 +319,44 @@
       "weight": 1.5
     },
     {
+      "id": "lancelotcp freelancer client portal",
+      "label": "Lancelotcp Freelancer Client Portal",
+      "type": "topic",
+      "summary": "Knowledge cluster consolidated from 2 working notes.",
+      "tags": [
+        "lancelotcp",
+        "freelancer",
+        "client",
+        "portal"
+      ],
+      "weight": 1.5
+    },
+    {
+      "id": "reconnect timer & adaptive api throttling",
+      "label": "Reconnect Timer & Adaptive Api Throttling",
+      "type": "topic",
+      "summary": "Knowledge cluster consolidated from 2 working notes.",
+      "tags": [
+        "reconnect",
+        "timer",
+        "adaptive",
+        "throttling"
+      ],
+      "weight": 1.5
+    },
+    {
+      "id": "reaper & audio automation",
+      "label": "Reaper & Audio Automation",
+      "type": "topic",
+      "summary": "Knowledge cluster consolidated from 2 working notes.",
+      "tags": [
+        "reaper",
+        "audio",
+        "automation"
+      ],
+      "weight": 1.5
+    },
+    {
       "id": "inv_pipeline_intent_disambiguation",
       "label": "PIPELINE INTENT DISAMBIGUATION",
       "type": "invariant",
@@ -356,6 +394,17 @@
       "label": "MEMORY CONSOLIDATION RATE",
       "type": "invariant",
       "summary": "{'shards': 3842, 'relational_edges': 97418, 'latency_tier': 'reflex_tier (<1ms)'}",
+      "tags": [
+        "invariant",
+        "grounding"
+      ],
+      "weight": 2.0
+    },
+    {
+      "id": "inv_last_milestone_checkpoint",
+      "label": "LAST MILESTONE CHECKPOINT",
+      "type": "invariant",
+      "summary": "{'reason': 'unit_test_milestone', 'timestamp': 1792960999.7447655, 'topics_indexed': 32}",
       "tags": [
         "invariant",
         "grounding"

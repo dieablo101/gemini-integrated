@@ -9,6 +9,10 @@ from gemini_app.cloud.mind_expansion_synthesizer import (
     FleetNodeTelemetry,
     SpiritualCompassGate,
 )
+from gemini_app.cloud.auto_sync import (
+    sync_milestone_and_shadow_graph,
+    start_auto_sync_watcher,
+)
 
 __all__ = [
     "UpperMindClient",
@@ -18,4 +22,6 @@ __all__ = [
     "PromptExpansionFrame",
     "FleetNodeTelemetry",
     "SpiritualCompassGate",
+    "sync_milestone_and_shadow_graph",
+    "start_auto_sync_watcher",
 ]

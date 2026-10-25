@@ -954,17 +954,38 @@
       neural: "#a855f7"
     };
 
+    let hasRenderLoopStarted = false;
+
     function initGraph(graphData) {
       const w = canvas.width / window.devicePixelRatio;
       const h = canvas.height / window.devicePixelRatio;
-      panX = w / 2;
-      panY = h / 2;
+      if (nodes.length === 0) {
+        panX = w / 2;
+        panY = h / 2;
+      }
 
       const rawNodes = graphData.nodes || [];
       const rawEdges = graphData.edges || [];
 
+      const existingMap = new Map();
+      nodes.forEach(n => existingMap.set(n.id, n));
+
       nodes = rawNodes.map((n, i) => {
-        const angle = (i / rawNodes.length) * Math.PI * 2;
+        if (existingMap.has(n.id)) {
+          const ex = existingMap.get(n.id);
+          return {
+            ...ex,
+            ...n,
+            x: ex.x,
+            y: ex.y,
+            vx: ex.vx,
+            vy: ex.vy,
+            pulse: ex.pulse,
+            color: typeColors[n.type] || ex.color || "#bb55ff",
+            radius: n.type === "core" ? 24 : 14 + (n.weight || 1.0) * 2
+          };
+        }
+        const angle = (i / Math.max(1, rawNodes.length)) * Math.PI * 2;
         const radius = n.type === "core" ? 0 : 130 + Math.random() * 90;
         return {
           ...n,
@@ -984,16 +1005,17 @@
         targetNode: nodes.find(n => n.id === e.to) || nodes[1] || nodes[0]
       })).filter(e => e.sourceNode && e.targetNode);
 
-      particles = [];
-      for (let i = 0; i < 28; i++) {
-        const edge = edges[Math.floor(Math.random() * edges.length)];
-        if (edge) {
-          particles.push({
-            edge: edge,
-            t: Math.random(),
-            speed: 0.003 + Math.random() * 0.007,
-            color: edge.sourceNode.color
-          });
+      if (particles.length === 0 && edges.length > 0) {
+        for (let i = 0; i < 28; i++) {
+          const edge = edges[Math.floor(Math.random() * edges.length)];
+          if (edge) {
+            particles.push({
+              edge: edge,
+              t: Math.random(),
+              speed: 0.003 + Math.random() * 0.007,
+              color: edge.sourceNode.color
+            });
+          }
         }
       }
     }
@@ -1332,7 +1354,10 @@
           ]
         });
       }
-      renderCanvas();
+      if (!hasRenderLoopStarted) {
+        hasRenderLoopStarted = true;
+        renderCanvas();
+      }
 
       // 2. Epiphanies
       const epData = await apiFetch("epiphanies");
@@ -1430,6 +1455,9 @@
     resizeCanvas();
     loadData();
     initFirestoreObservatory();
+
+    // Auto-refresh Upper Mind state every 12s for table/tablet real-time observation
+    setInterval(loadData, 12000);
   </script>
 </body>
 </html>

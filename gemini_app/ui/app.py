@@ -457,6 +457,9 @@ class ChatApp(App):
                 port=port,
             )
             self.upper_mind_server.start()
+
+            from gemini_app.cloud.auto_sync import start_auto_sync_watcher
+            self.auto_sync_watcher = start_auto_sync_watcher(interval_seconds=120.0)
         except Exception:
             pass
 

@@ -307,6 +307,18 @@
       "weight": 1.5
     },
     {
+      "id": "system safety & bulletproofing",
+      "label": "System Safety & Bulletproofing",
+      "type": "topic",
+      "summary": "Knowledge cluster consolidated from 3 working notes.",
+      "tags": [
+        "system",
+        "safety",
+        "bulletproofing"
+      ],
+      "weight": 1.5
+    },
+    {
       "id": "inv_pipeline_intent_disambiguation",
       "label": "PIPELINE INTENT DISAMBIGUATION",
       "type": "invariant",
@@ -332,7 +344,7 @@
       "id": "inv_sovereign_bilateral_stance",
       "label": "SOVEREIGN BILATERAL STANCE",
       "type": "invariant",
-      "summary": "{'status': 'engaged', 'axiom': 'Cognition and command remain exclusively bilateral on the Architect console.', 'verified_epoch': 1792954721.3895817}",
+      "summary": "{'status': 'engaged', 'axiom': 'Cognition and command remain exclusively bilateral on the Architect console.', 'verified_epoch': 1792960384.2112532}",
       "tags": [
         "invariant",
         "grounding"

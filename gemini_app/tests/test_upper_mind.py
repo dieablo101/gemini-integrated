@@ -82,6 +82,12 @@ class TestUpperMindAndShadowGraph(unittest.TestCase):
         self.assertEqual(len(shadow_data["recent_checkpoints"]), 1)
         self.assertEqual(shadow_data["recent_checkpoints"][0]["session_id"], "test_sess_01")
 
+    def test_sync_milestone_distribution_hook(self):
+        """Verifies automated milestone sync runs without crash when hosting deploy is disabled."""
+        client = UpperMindClient(gemini_home=self.home, offline_mode=True)
+        res = client.sync_milestone_distribution(deploy_hosting=False)
+        self.assertEqual(res.get("status"), "ok")
+
     def test_mocked_cloud_sync_and_epiphany_harvest(self):
         """Tests cloud boundary operations with a mocked Firestore interface."""
         mock_db = MagicMock()

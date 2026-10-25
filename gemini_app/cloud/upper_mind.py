@@ -242,6 +242,38 @@ class UpperMindClient:
                 "error": str(e),
             }
 
+    def sync_milestone_distribution(self, deploy_hosting: bool = True) -> Dict[str, Any]:
+        """Automated milestone sync hook.
+        
+        Exports the current shadow graph, active topics, invariants, and subconscious
+        state into public/api/ distribution and optionally deploys to Firebase Hosting.
+        """
+        results: Dict[str, Any] = {"status": "ok", "timestamp": time.time()}
+        try:
+            from scripts.export_public_nexus import export_distribution
+            export_distribution()
+            results["export"] = "success"
+        except Exception as e:
+            logger.warning(f"Failed to export public distribution: {e}")
+            results["export"] = f"error: {e}"
+
+        if deploy_hosting:
+            try:
+                import subprocess
+                res = subprocess.run(
+                    ["firebase", "deploy", "--only", "hosting"],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                results["hosting_deploy"] = "success" if res.returncode == 0 else "failed"
+                results["deploy_output"] = res.stdout[-200:] if res.stdout else res.stderr[-200:]
+            except Exception as e:
+                logger.warning(f"Firebase hosting deploy failed during milestone sync: {e}")
+                results["hosting_deploy"] = f"error: {e}"
+
+        return results
+
     def sync_invariants_to_cloud(self) -> Dict[str, Any]:
         """Pushes local shadow invariants to Firestore Bedrock Ledger."""
         if self.offline_mode or not self.db:

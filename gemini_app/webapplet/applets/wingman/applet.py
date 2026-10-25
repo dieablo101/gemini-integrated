@@ -862,7 +862,15 @@ class WingmanApplet:
 
     def is_browser_open(self) -> bool:
         """Returns True if a browser tab is currently open and connected to Wingman."""
-        return self.engine.is_client_active(window_seconds=15.0)
+        if self.engine.is_client_active(window_seconds=25.0):
+            return True
+        now = time.time()
+        if hasattr(self, "security"):
+            with self.security._lock:
+                for s in self.security.sessions.values():
+                    if (now - getattr(s, "last_seen", 0.0)) < 30.0:
+                        return True
+        return False
 
     @property
     def client_count(self) -> int:

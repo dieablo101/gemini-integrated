@@ -1158,6 +1158,69 @@ class TestWingmanSecurity(unittest.TestCase):
         self.assertIn("gateDeviceIp", html)
         self.assertIn("192.168.1.179", html)
 
+    def test_reboot_preserves_and_advertises_pending_auth_to_mothership(self) -> None:
+        """Verifies that after a node reboots, an active pending session on the security gate is advertised in telemetry and picked up by Mothership."""
+        from gemini_app.fleet.satellite import set_active_wingman, collect_telemetry
+        from gemini_app.fleet.mothership import MothershipServer, ConnectedSatellite
+        from gemini_app.fleet.protocol import FleetMessage
+
+        applet = WingmanApplet(port=0, node_id="test-node-gate", require_pairing=True)
+        set_active_wingman(applet)
+        ms = MothershipServer(host="127.0.0.1", port=0, auto_broadcast_telemetry=False)
+        try:
+            # 1. Browser on phone/iPad hits Wingman and sits on security gate (status: pending)
+            sess = applet.security.create_or_resume_session(
+                client_ip="192.168.1.38",
+                device_id="dev-ipad-browser",
+                existing_session_id="sess-ipad-gate-1",
+            )
+            self.assertEqual(sess.status, "pending")
+
+            # 2. is_browser_open() must return True even if no SSE client is connected yet
+            self.assertTrue(applet.is_browser_open())
+
+            # 3. collect_telemetry() must include pending_auth and report wingman_active: True
+            telem = collect_telemetry()
+            webapplet_telem = telem.get("webapplet", {})
+            self.assertTrue(webapplet_telem.get("wingman_active"))
+            pending_list = webapplet_telem.get("pending_auth", [])
+            self.assertEqual(len(pending_list), 1)
+            self.assertEqual(pending_list[0]["auth_req_id"], "sess-ipad-gate-1")
+            self.assertEqual(pending_list[0]["client_ip"], "192.168.1.38")
+
+            # 4. Mothership receives heartbeat telemetry from node
+            sat = ConnectedSatellite("test-node-gate", MagicMock(), ("192.168.1.38", 50000))
+            sat.telemetry = telem
+            ms.nodes["test-node-gate"] = sat
+
+            # Simulate heartbeat processing
+            ms._prune_pending_wingman_requests()
+            for p in sat.telemetry.get("webapplet", {}).get("pending_auth", []):
+                rid = p.get("auth_req_id")
+                entry = dict(p)
+                entry["node_id"] = "test-node-gate"
+                ms.pending_wingman_auth_requests[rid] = entry
+
+            # 5. Mothership must have pending auth request and not prune it
+            ms._prune_pending_wingman_requests()
+            self.assertIn("sess-ipad-gate-1", ms.pending_wingman_auth_requests)
+
+            # Even if wingman_active is temporarily reported False, pending_auth in telemetry prevents pruning!
+            sat.telemetry = {"webapplet": {"wingman_active": False, "pending_auth": pending_list}}
+            ms._prune_pending_wingman_requests()
+            self.assertIn("sess-ipad-gate-1", ms.pending_wingman_auth_requests)
+
+            # 6. Wingman access request event arrives
+            notified_list = []
+            ms.on_wingman_auth(lambda req: notified_list.append(req))
+            ms._notify_wingman_auth(ms.pending_wingman_auth_requests["sess-ipad-gate-1"])
+            self.assertEqual(len(notified_list), 1)
+            self.assertEqual(notified_list[0]["auth_req_id"], "sess-ipad-gate-1")
+        finally:
+            set_active_wingman(None)
+            applet.stop()
+            ms.stop()
+
 
 if __name__ == "__main__":
     unittest.main()

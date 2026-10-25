@@ -456,19 +456,19 @@ def collect_telemetry() -> Dict[str, Any]:
 
     if wingman and hasattr(wingman, "security"):
         try:
-            # Prune stale or abandoned sessions older than 30s
+            # Prune stale or abandoned sessions older than 45s
             if hasattr(wingman.security, "prune_stale_sessions"):
-                wingman.security.prune_stale_sessions(max_pending_age=30.0)
+                wingman.security.prune_stale_sessions(max_pending_age=45.0)
 
-            # ONLY advertise pending auth requests if a browser is actively connected to Wingman and NOT in maintenance mode!
+            # Advertise pending auth requests if not in maintenance mode
             is_maint = getattr(wingman, "maintenance_mode", False)
-            if is_active_browser and not is_maint:
+            if not is_maint:
                 now = time.time()
                 node_lan_ip = route_info.get("local_ip") or get_local_lan_ip() or "127.0.0.1"
                 for sess in list(wingman.security.sessions.values()):
                     if getattr(sess, "status", "") == "pending":
                         age = now - getattr(sess, "last_seen", sess.created_at)
-                        if age < 30.0:
+                        if age < 45.0:
                             cip = getattr(sess, "client_ip", "")
                             if cip in ("127.0.0.1", "::1", "localhost", ""):
                                 cip = node_lan_ip
@@ -480,6 +480,8 @@ def collect_telemetry() -> Dict[str, Any]:
                                 "device_id": getattr(sess, "device_id", ""),
                                 "timestamp": getattr(sess, "last_seen", now),
                             })
+                if pending_auth_list:
+                    is_active_browser = True
         except Exception:
             pass
 
@@ -1204,8 +1206,6 @@ class SatelliteNode:
 
     def _on_wingman_pending_session(self, session: Any) -> None:
         """Dispatches an authorization request event to the Mothership."""
-        if not self._running or not self.sock or self.wingman_maintenance:
-            return
         device_ip = getattr(session, "client_ip", "127.0.0.1")
         if device_ip in ("127.0.0.1", "::1", "localhost", ""):
             route = get_local_route_info()
@@ -1213,20 +1213,29 @@ class SatelliteNode:
 
         if self.hud:
             self.hud.show_toast(f"Wingman access requested from {device_ip}...", duration=5.0)
+
+        ev_entry = {
+            "event": "wingman_access_request",
+            "session_id": session.session_id,
+            "auth_req_id": session.session_id,
+            "node_id": self.node_id,
+            "client_ip": device_ip,
+            "user_agent": getattr(session, "user_agent", ""),
+            "device_id": getattr(session, "device_id", ""),
+            "timestamp": time.time(),
+        }
+
+        if not self._running or not self.sock or self.wingman_maintenance:
+            if not hasattr(self, "_queued_auth_events"):
+                self._queued_auth_events = []
+            self._queued_auth_events.append(ev_entry)
+            return
+
         try:
             ev = FleetMessage(
                 msg_type=FleetMessage.TYPE_EVENT,
                 node_id=self.node_id,
-                payload={
-                    "event": "wingman_access_request",
-                    "session_id": session.session_id,
-                    "auth_req_id": session.session_id,
-                    "node_id": self.node_id,
-                    "client_ip": device_ip,
-                    "user_agent": getattr(session, "user_agent", ""),
-                    "device_id": getattr(session, "device_id", ""),
-                    "timestamp": time.time(),
-                },
+                payload=ev_entry,
             )
             self.send_message(ev)
         except Exception:
@@ -1311,7 +1320,7 @@ class SatelliteNode:
         """Notifies Mothership immediately when user opens or closes Wingman on localhost."""
         if not is_active and self.wingman_applet and hasattr(self.wingman_applet, "security"):
             try:
-                self.wingman_applet.security.prune_stale_sessions(max_pending_age=0.0, invalidate_unpaired=True)
+                self.wingman_applet.security.prune_stale_sessions(max_pending_age=45.0, invalidate_unpaired=False)
             except Exception:
                 pass
 
@@ -1364,8 +1373,19 @@ class SatelliteNode:
         return err_data
 
     def _flush_pending_errors(self) -> None:
-        """Sends queued errors to Mothership once connection is established."""
-        if not self._running or not self.sock or not self._pending_errors:
+        """Sends queued errors and pending auth requests to Mothership once connection is established."""
+        if not self._running or not self.sock:
+            return
+        while getattr(self, "_queued_auth_events", None):
+            ev_data = self._queued_auth_events.pop(0)
+            msg = FleetMessage(
+                msg_type=FleetMessage.TYPE_EVENT,
+                node_id=self.node_id,
+                payload=ev_data,
+            )
+            self.send_message(msg)
+
+        if not self._pending_errors:
             return
         while self._pending_errors:
             err = self._pending_errors.pop(0)

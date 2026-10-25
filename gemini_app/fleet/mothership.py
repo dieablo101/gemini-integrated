@@ -482,7 +482,7 @@ class MothershipServer:
                                         self._prune_pending_wingman_requests()
                                         pending_list = sat.telemetry.get("webapplet", {}).get("pending_auth", [])
                                         is_w_active = sat.telemetry.get("webapplet", {}).get("wingman_active", False)
-                                        if is_w_active:
+                                        if is_w_active or pending_list:
                                             for p in pending_list:
                                                 rid = p.get("auth_req_id") or p.get("session_id")
                                                 dev_id = p.get("device_id", "")
@@ -878,8 +878,10 @@ class MothershipServer:
                                     reqs = dict(self.pending_wingman_auth_requests)
                                     now_t = time.time()
                                     for nid, sat in self.nodes.items():
-                                        if sat.telemetry.get("webapplet", {}).get("wingman_active", False):
-                                            for p in sat.telemetry.get("webapplet", {}).get("pending_auth", []):
+                                        pending_items = sat.telemetry.get("webapplet", {}).get("pending_auth", [])
+                                        is_act = sat.telemetry.get("webapplet", {}).get("wingman_active", False)
+                                        if is_act or pending_items:
+                                            for p in pending_items:
                                                 rid = p.get("auth_req_id") or p.get("session_id")
                                                 p_ts = p.get("timestamp", now_t)
                                                 if rid and (now_t - p_ts <= 45.0) and rid not in reqs:
@@ -1429,8 +1431,9 @@ class MothershipServer:
             nid = req.get("node_id")
             if nid and nid in self.nodes:
                 telem = self.nodes[nid].telemetry or {}
-                # If node explicitly reports wingman browser is not open, discard pending auth!
-                if telem.get("webapplet", {}).get("wingman_active") is False:
+                # Only prune if node explicitly reports wingman browser is not open AND node has no pending auth in telemetry
+                pending_on_node = telem.get("webapplet", {}).get("pending_auth", [])
+                if telem.get("webapplet", {}).get("wingman_active") is False and not pending_on_node:
                     to_remove.append(rid)
         for rid in to_remove:
             self.pending_wingman_auth_requests.pop(rid, None)

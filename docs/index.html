@@ -1029,10 +1029,25 @@
     }
 
     // --- 2. REST & SSE Live Data Fetching ---
+    async function apiFetch(endpoint) {
+      const basePath = window.location.pathname.endsWith('/') 
+        ? window.location.pathname 
+        : window.location.pathname.substring(0, window.location.pathname.lastIndexOf('/') + 1);
+      try {
+        const r1 = await fetch(basePath + "api/" + endpoint + ".json");
+        if (r1.ok) return await r1.json();
+      } catch (_) {}
+      try {
+        const r2 = await fetch(basePath + "api/" + endpoint);
+        if (r2.ok) return await r2.json();
+      } catch (_) {}
+      const r3 = await fetch("/api/" + endpoint);
+      return await r3.json();
+    }
+
     async function fetchGraph() {
       try {
-        const res = await fetch("/api/graph");
-        const data = await res.json();
+        const data = await apiFetch("graph");
         initGraph(data);
       } catch (err) {
         console.error("Failed to fetch synaptic graph:", err);
@@ -1041,8 +1056,7 @@
 
     async function fetchTelemetry() {
       try {
-        const res = await fetch("/api/telemetry");
-        const data = await res.json();
+        const data = await apiFetch("telemetry");
         document.getElementById("mTopics").textContent = data.cognitive_metrics.topics_indexed;
         document.getElementById("mInvariants").textContent = data.cognitive_metrics.grounded_invariants;
         document.getElementById("mEdges").textContent = data.cognitive_metrics.synaptic_edges;
@@ -1055,8 +1069,7 @@
 
     async function fetchEpiphanies() {
       try {
-        const res = await fetch("/api/epiphanies");
-        const data = await res.json();
+        const data = await apiFetch("epiphanies");
         const feed = document.getElementById("epiphanyFeed");
         const epList = data.epiphanies || [];
         document.getElementById("epiphanyCount").textContent = `${epList.length} epiphanies`;

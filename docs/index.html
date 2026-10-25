@@ -2,9 +2,10 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>Gemini Source — Sovereign Cloud Upper Mind & Subconscious Hearth</title>
   <meta name="description" content="Gemini Source: A persistent cognitive nervous system bridging local terminal iron, mobile satellites, and Google Cloud Firebase subconscious reasoning.">
+  <meta name="theme-color" content="#05040a">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Plus+Jakarta+Sans:wght@300;400;600;700;800&display=swap" rel="stylesheet">
@@ -53,12 +54,14 @@
       top: 0;
       z-index: 100;
       backdrop-filter: blur(18px);
-      background: rgba(6, 4, 12, 0.82);
+      background: rgba(6, 4, 12, 0.88);
       border-bottom: 1px solid var(--border-subtle);
-      padding: 16px 36px;
+      padding: 14px 32px;
+      padding-top: max(14px, env(safe-area-inset-top));
       display: flex;
       align-items: center;
       justify-content: space-between;
+      gap: 16px;
     }
 
     .nav-brand {
@@ -67,6 +70,7 @@
       gap: 14px;
       text-decoration: none;
       color: inherit;
+      flex-shrink: 0;
     }
 
     .brand-orb {
@@ -80,6 +84,7 @@
       justify-content: center;
       font-size: 19px;
       animation: breatheOrb 4s ease-in-out infinite;
+      flex-shrink: 0;
     }
 
     @keyframes breatheOrb {
@@ -95,6 +100,7 @@
       background: linear-gradient(90deg, #ffffff, var(--accent-violet), var(--accent-cyan));
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
+      line-height: 1.2;
     }
 
     .brand-text p {
@@ -102,6 +108,44 @@
       font-size: 0.7rem;
       color: var(--text-dim);
       letter-spacing: 0.5px;
+      line-height: 1.2;
+    }
+
+    /* Mobile Menu Hamburger Button */
+    .mobile-menu-btn {
+      display: none;
+      flex-direction: column;
+      justify-content: space-around;
+      width: 38px;
+      height: 38px;
+      background: rgba(187, 85, 255, 0.12);
+      border: 1px solid var(--border-subtle);
+      border-radius: 10px;
+      padding: 9px;
+      cursor: pointer;
+      z-index: 101;
+      transition: all 0.25s ease;
+    }
+
+    .mobile-menu-btn span {
+      display: block;
+      width: 100%;
+      height: 2px;
+      background: var(--text-main);
+      border-radius: 2px;
+      transition: all 0.3s ease;
+    }
+
+    .mobile-menu-btn.active span:nth-child(1) {
+      transform: translateY(6px) rotate(45deg);
+    }
+
+    .mobile-menu-btn.active span:nth-child(2) {
+      opacity: 0;
+    }
+
+    .mobile-menu-btn.active span:nth-child(3) {
+      transform: translateY(-6px) rotate(-45deg);
     }
 
     .nav-links {
@@ -137,6 +181,7 @@
       gap: 8px;
       text-decoration: none;
       transition: all 0.25s ease;
+      touch-action: manipulation;
     }
 
     .nav-btn:hover {
@@ -156,6 +201,44 @@
     .nav-btn.primary:hover {
       box-shadow: 0 0 24px var(--accent-violet);
       transform: translateY(-2px);
+    }
+
+    @media (max-width: 860px) {
+      nav {
+        padding: 12px 18px;
+      }
+      .mobile-menu-btn {
+        display: flex;
+      }
+      .nav-links {
+        position: fixed;
+        top: 64px;
+        left: 0;
+        right: 0;
+        background: rgba(8, 6, 16, 0.97);
+        backdrop-filter: blur(24px);
+        -webkit-backdrop-filter: blur(24px);
+        border-bottom: 1px solid var(--border-subtle);
+        flex-direction: column;
+        align-items: stretch;
+        padding: 22px 24px;
+        gap: 16px;
+        display: none;
+        box-shadow: 0 16px 36px rgba(0, 0, 0, 0.75);
+      }
+      .nav-links.open {
+        display: flex;
+      }
+      .nav-link {
+        font-size: 0.95rem;
+        padding: 10px 0;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      }
+      .nav-btn {
+        justify-content: center;
+        padding: 12px 20px;
+        font-size: 0.88rem;
+      }
     }
 
     /* Hero Section */
@@ -320,6 +403,7 @@
       overflow: hidden;
       height: 560px;
       box-shadow: inset 0 0 40px rgba(0,0,0,0.8), 0 12px 48px rgba(0,0,0,0.5);
+      touch-action: none;
     }
 
     #constellationCanvas {
@@ -327,6 +411,7 @@
       height: 100%;
       display: block;
       cursor: grab;
+      touch-action: none;
     }
 
     #constellationCanvas:active {
@@ -341,6 +426,7 @@
       display: flex;
       flex-direction: column;
       gap: 6px;
+      z-index: 5;
     }
 
     .canvas-overlay-hud h3 {
@@ -360,15 +446,18 @@
       position: absolute;
       bottom: 24px;
       right: 28px;
-      background: rgba(14, 11, 26, 0.94);
+      background: rgba(14, 11, 26, 0.96);
       border: 1px solid var(--accent-violet);
       border-radius: 14px;
       padding: 18px 24px;
       width: 340px;
+      max-width: calc(100% - 32px);
       backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
       box-shadow: 0 12px 36px rgba(0,0,0,0.6);
       transition: opacity 0.3s ease, transform 0.3s ease;
       pointer-events: auto;
+      z-index: 20;
     }
 
     .node-card-tooltip.hidden {
@@ -381,7 +470,35 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
+      gap: 10px;
       margin-bottom: 8px;
+    }
+
+    .tooltip-header-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .tooltip-close {
+      background: rgba(255, 255, 255, 0.08);
+      border: none;
+      color: var(--text-dim);
+      font-size: 1.2rem;
+      line-height: 1;
+      width: 26px;
+      height: 26px;
+      border-radius: 50%;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.2s ease;
+    }
+
+    .tooltip-close:hover {
+      color: #fff;
+      background: rgba(255, 255, 255, 0.2);
     }
 
     .tooltip-title {
@@ -469,10 +586,180 @@
         grid-template-columns: 1fr;
       }
       .hero h2 {
-        font-size: 2.3rem;
+        font-size: 2.5rem;
       }
       .canvas-container {
-        height: 420px;
+        height: 440px;
+      }
+    }
+
+    @media (max-width: 768px) {
+      .hero {
+        padding: 44px 16px 28px;
+      }
+      .badge-capsule {
+        font-size: 0.68rem;
+        padding: 5px 12px;
+        text-align: center;
+        line-height: 1.35;
+      }
+      .hero h2 {
+        font-size: 1.95rem;
+        letter-spacing: -0.5px;
+        line-height: 1.25;
+      }
+      .hero p {
+        font-size: 0.96rem;
+        margin-bottom: 24px;
+        line-height: 1.55;
+      }
+      .hero-actions {
+        flex-direction: column;
+        width: 100%;
+        gap: 12px;
+        margin-bottom: 32px;
+      }
+      .btn-large {
+        width: 100%;
+        justify-content: center;
+        padding: 13px 20px;
+        font-size: 0.9rem;
+      }
+      .telemetry-ticker {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 8px;
+        padding: 14px 18px;
+        border-radius: 16px;
+        width: 100%;
+      }
+      .ticker-item {
+        justify-content: space-between;
+        width: 100%;
+        font-size: 0.74rem;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+        padding-bottom: 6px;
+      }
+      .ticker-item:last-child {
+        border-bottom: none;
+        padding-bottom: 0;
+      }
+      .observatory-section {
+        padding: 0 16px;
+        margin-bottom: 54px;
+      }
+      .canvas-container {
+        height: 360px;
+        border-radius: 18px;
+      }
+      .canvas-overlay-hud {
+        top: 14px;
+        left: 14px;
+      }
+      .canvas-overlay-hud h3 {
+        font-size: 0.76rem;
+      }
+      .canvas-overlay-hud p {
+        font-size: 0.68rem;
+      }
+      .node-card-tooltip {
+        left: 12px;
+        right: 12px;
+        bottom: 12px;
+        width: auto;
+        max-width: none;
+        padding: 14px 16px;
+        border-radius: 14px;
+      }
+      .pillars-section,
+      .hearth-section,
+      .covenant-section,
+      .cta-dual-section {
+        padding: 0 16px;
+        margin-bottom: 54px;
+      }
+      .section-header {
+        margin-bottom: 32px;
+      }
+      .section-title {
+        font-size: 1.7rem;
+      }
+      .section-subtitle {
+        font-size: 0.9rem;
+      }
+      .pillar-card {
+        padding: 22px 18px;
+        border-radius: 16px;
+      }
+      .hearth-grid {
+        grid-template-columns: 1fr;
+        padding: 22px 16px;
+        border-radius: 18px;
+        gap: 24px;
+      }
+      .hearth-left h3 {
+        font-size: 1.45rem;
+      }
+      .epiphany-card {
+        padding: 14px 16px;
+      }
+      .epiphany-footer {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 4px;
+      }
+      .covenant-card {
+        padding: 28px 18px;
+        border-radius: 18px;
+      }
+      .covenant-card h3 {
+        font-size: 1.5rem;
+      }
+      .covenant-card p {
+        font-size: 0.92rem;
+      }
+      .covenant-rule-pill {
+        padding: 8px 14px;
+        font-size: 0.72rem;
+        flex-direction: column;
+        text-align: center;
+      }
+      .cta-dual-grid {
+        grid-template-columns: 1fr;
+        gap: 18px;
+      }
+      .cta-card {
+        padding: 24px 18px;
+        border-radius: 16px;
+      }
+      footer {
+        padding: 24px 16px;
+        flex-direction: column;
+        text-align: center;
+        gap: 14px;
+      }
+    }
+
+    @media (max-width: 480px) {
+      .brand-text h1 {
+        font-size: 0.95rem;
+      }
+      .brand-orb {
+        width: 32px;
+        height: 32px;
+        font-size: 16px;
+      }
+      .hero h2 {
+        font-size: 1.65rem;
+      }
+      .canvas-container {
+        height: 310px;
+      }
+      .section-title {
+        font-size: 1.45rem;
+      }
+      .pillar-card h3 {
+        font-size: 1.15rem;
       }
     }
 
@@ -860,7 +1147,12 @@
         <p>Firebase Cloud Upper Mind & Hearth</p>
       </div>
     </a>
-    <div class="nav-links">
+    <button id="mobileMenuBtn" class="mobile-menu-btn" aria-label="Toggle navigation">
+      <span></span>
+      <span></span>
+      <span></span>
+    </button>
+    <div id="navLinks" class="nav-links">
       <a href="#architecture" class="nav-link">Architecture</a>
       <a href="#hearth" class="nav-link">Subconscious Hearth</a>
       <a href="#constellation" class="nav-link">Constellation</a>
@@ -934,7 +1226,10 @@
       <div id="tooltipCard" class="node-card-tooltip hidden">
         <div class="tooltip-header">
           <span id="ttTitle" class="tooltip-title">Node Title</span>
-          <span id="ttType" class="tooltip-tag">Core</span>
+          <div class="tooltip-header-actions">
+            <span id="ttType" class="tooltip-tag">Core</span>
+            <button id="ttCloseBtn" class="tooltip-close" aria-label="Close details">&times;</button>
+          </div>
         </div>
         <p id="ttDesc" class="tooltip-desc">Description</p>
         <div id="ttTags" class="tooltip-tags"></div>
@@ -1433,6 +1728,95 @@
     resizeCanvas();
     initPhysics();
     renderConstellation();
+
+    // Mobile Menu Navigation Toggle
+    const mobileMenuBtn = document.getElementById("mobileMenuBtn");
+    const navLinks = document.getElementById("navLinks");
+    if (mobileMenuBtn && navLinks) {
+      mobileMenuBtn.addEventListener("click", () => {
+        const isOpen = navLinks.classList.toggle("open");
+        mobileMenuBtn.classList.toggle("active", isOpen);
+      });
+      navLinks.querySelectorAll("a, button").forEach(item => {
+        item.addEventListener("click", () => {
+          navLinks.classList.remove("open");
+          mobileMenuBtn.classList.remove("active");
+        });
+      });
+    }
+
+    // Tooltip Close Button
+    const ttCloseBtn = document.getElementById("ttCloseBtn");
+    if (ttCloseBtn) {
+      ttCloseBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        tooltip.classList.add("hidden");
+        hoveredNode = null;
+      });
+    }
+
+    // Touch Gestures for Canvas (Pan, Tap-to-Inspect, Pinch-to-Zoom)
+    let touchStartDist = 0;
+    let touchStartTime = 0;
+    let touchMoved = false;
+
+    canvas.addEventListener("touchstart", (e) => {
+      touchStartTime = Date.now();
+      touchMoved = false;
+      if (e.touches.length === 1) {
+        isDragging = true;
+        startDragX = e.touches[0].clientX - panX;
+        startDragY = e.touches[0].clientY - panY;
+      } else if (e.touches.length === 2) {
+        isDragging = false;
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        touchStartDist = Math.sqrt(dx * dx + dy * dy);
+      }
+    }, { passive: true });
+
+    canvas.addEventListener("touchmove", (e) => {
+      touchMoved = true;
+      if (e.touches.length === 1 && isDragging) {
+        panX = e.touches[0].clientX - startDragX;
+        panY = e.touches[0].clientY - startDragY;
+      } else if (e.touches.length === 2) {
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (touchStartDist > 0) {
+          const factor = dist / touchStartDist;
+          zoom = Math.max(0.4, Math.min(2.5, zoom * (factor > 1 ? 1.03 : 0.97)));
+          touchStartDist = dist;
+        }
+      }
+    }, { passive: true });
+
+    canvas.addEventListener("touchend", (e) => {
+      isDragging = false;
+      if (!touchMoved && (Date.now() - touchStartTime < 350) && e.changedTouches.length > 0) {
+        const touch = e.changedTouches[0];
+        const rect = canvas.getBoundingClientRect();
+        const touchX = (touch.clientX - rect.left - panX) / zoom;
+        const touchY = (touch.clientY - rect.top - panY) / zoom;
+        let found = null;
+        for (const n of graphNodes) {
+          const dx = touchX - n.x;
+          const dy = touchY - n.y;
+          if (Math.sqrt(dx * dx + dy * dy) < n.radius + 14) {
+            found = n;
+            break;
+          }
+        }
+        if (found) {
+          hoveredNode = found;
+          showTooltip(found);
+        } else {
+          tooltip.classList.add("hidden");
+          hoveredNode = null;
+        }
+      }
+    }, { passive: true });
   </script>
 </body>
 </html>

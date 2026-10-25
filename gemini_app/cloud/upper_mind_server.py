@@ -344,8 +344,9 @@ class UpperMindServer:
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>Upper Mind Nexus — Sovereign Synaptic Observatory</title>
+  <meta name="theme-color" content="#06050b">
   <style>
     :root {
       --bg-deep: #06050b;
@@ -520,6 +521,7 @@ class UpperMindServer:
       height: 100%;
       display: block;
       cursor: grab;
+      touch-action: none;
     }
 
     #synapseCanvas:active {
@@ -611,6 +613,15 @@ class UpperMindServer:
       color: var(--accent-cyan);
     }
 
+    .inspector-close-hint {
+      margin-top: 8px;
+      font-family: var(--font-mono);
+      font-size: 0.62rem;
+      color: var(--text-dim);
+      text-align: right;
+      opacity: 0.7;
+    }
+
     /* Lower Tri-Column Dashboard */
     .dashboard-grid {
       display: grid;
@@ -624,6 +635,93 @@ class UpperMindServer:
       }
       .canvas-card {
         height: 400px;
+      }
+    }
+
+    @media (max-width: 768px) {
+      header {
+        flex-direction: column;
+        align-items: stretch;
+        padding: 14px 16px;
+        gap: 12px;
+      }
+      .brand {
+        gap: 12px;
+      }
+      .insignia {
+        width: 32px;
+        height: 32px;
+        font-size: 16px;
+        flex-shrink: 0;
+      }
+      .title-group h1 {
+        font-size: 1.05rem;
+        letter-spacing: 1px;
+      }
+      .title-group p {
+        font-size: 0.65rem;
+      }
+      .header-actions {
+        width: 100%;
+        justify-content: space-between;
+        gap: 8px;
+      }
+      .status-badge {
+        font-size: 0.68rem;
+        padding: 5px 10px;
+      }
+      .audio-btn {
+        font-size: 0.68rem;
+        padding: 5px 12px;
+      }
+      main {
+        padding: 16px 12px;
+        gap: 16px;
+      }
+      .canvas-card {
+        height: 340px;
+        border-radius: 14px;
+      }
+      .canvas-hud {
+        top: 12px;
+        left: 12px;
+        right: 12px;
+      }
+      .hud-title {
+        font-size: 0.75rem;
+      }
+      .hud-hint {
+        font-size: 0.65rem;
+      }
+      .node-inspector {
+        left: 10px;
+        right: 10px;
+        bottom: 10px;
+        width: auto;
+        padding: 12px 14px;
+        border-radius: 10px;
+      }
+      .glass-card {
+        padding: 18px 14px;
+        border-radius: 14px;
+      }
+      footer {
+        flex-direction: column;
+        align-items: flex-start;
+        padding: 18px 16px;
+        gap: 10px;
+      }
+    }
+
+    @media (max-width: 480px) {
+      .canvas-card {
+        height: 300px;
+      }
+      .card-header h2 {
+        font-size: 0.88rem;
+      }
+      .metric-row {
+        font-size: 0.78rem;
       }
     }
 
@@ -822,18 +920,19 @@ class UpperMindServer:
     <div class="canvas-card">
       <div class="canvas-hud">
         <div class="hud-title">Living Synaptic Constellation</div>
-        <div class="hud-hint">Drag to Pan • Wheel to Zoom • Hover or Click Nodes to Inspect</div>
+        <div class="hud-hint">Drag to Pan • Wheel/Pinch to Zoom • Tap/Click Nodes to Inspect</div>
       </div>
 
       <canvas id="synapseCanvas"></canvas>
 
-      <div id="inspector" class="node-inspector hidden">
+      <div id="inspector" class="node-inspector hidden" title="Tap to dismiss">
         <h3>
           <span id="inspLabel">Node</span>
           <span id="inspType" class="node-type-tag">Core</span>
         </h3>
         <p id="inspSummary">Summary</p>
         <div id="inspTags" class="node-tags"></div>
+        <div class="inspector-close-hint">tap to dismiss ×</div>
       </div>
     </div>
 
@@ -1188,6 +1287,73 @@ class UpperMindServer:
       e.preventDefault();
       const zoomFactor = e.deltaY < 0 ? 1.1 : 0.9;
       zoom = Math.max(0.4, Math.min(2.5, zoom * zoomFactor));
+    }, { passive: false });
+
+    // Mobile / Tablet Touch Gestures
+    let touchStartDist = 0;
+    let isTouchDragging = false;
+    let lastTapTime = 0;
+
+    canvas.addEventListener("touchstart", (e) => {
+      if (e.touches.length === 1) {
+        const touch = e.touches[0];
+        isTouchDragging = true;
+        dragStartX = touch.clientX - panX;
+        dragStartY = touch.clientY - panY;
+
+        const rect = canvas.getBoundingClientRect();
+        const touchX = (touch.clientX - rect.left - panX) / zoom;
+        const touchY = (touch.clientY - rect.top - panY) / zoom;
+        let tapped = null;
+        for (const n of nodes) {
+          const dx = touchX - n.x;
+          const dy = touchY - n.y;
+          if (Math.sqrt(dx * dx + dy * dy) < n.radius + 14) {
+            tapped = n;
+            break;
+          }
+        }
+        if (tapped) {
+          hoveredNode = tapped;
+          showInspector(tapped);
+        }
+      } else if (e.touches.length === 2) {
+        isTouchDragging = false;
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        touchStartDist = Math.hypot(dx, dy);
+      }
+    }, { passive: true });
+
+    canvas.addEventListener("touchmove", (e) => {
+      if (e.touches.length === 1 && isTouchDragging) {
+        panX = e.touches[0].clientX - dragStartX;
+        panY = e.touches[0].clientY - dragStartY;
+      } else if (e.touches.length === 2 && touchStartDist > 0) {
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        const currentDist = Math.hypot(dx, dy);
+        const factor = currentDist / touchStartDist;
+        zoom = Math.max(0.35, Math.min(2.5, zoom * (1 + (factor - 1) * 0.05)));
+        touchStartDist = currentDist;
+      }
+    }, { passive: true });
+
+    canvas.addEventListener("touchend", () => {
+      isTouchDragging = false;
+      touchStartDist = 0;
+      const now = Date.now();
+      if (now - lastTapTime < 300) {
+        // Double tap resets view
+        panX = 0;
+        panY = 0;
+        zoom = 1;
+      }
+      lastTapTime = now;
+    });
+
+    inspector.addEventListener("click", () => {
+      inspector.classList.add("hidden");
     });
 
     function showInspector(node) {

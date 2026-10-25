@@ -1,0 +1,53 @@
+{
+  "hosting": {
+    "public": "public",
+    "ignore": [
+      "firebase.json",
+      "**/.*",
+      "**/node_modules/**"
+    ],
+    "cleanUrls": true,
+    "headers": [
+      {
+        "source": "**",
+        "headers": [
+          {
+            "key": "Access-Control-Allow-Origin",
+            "value": "*"
+          }
+        ]
+      },
+      {
+        "source": "/api/**",
+        "headers": [
+          {
+            "key": "Content-Type",
+            "value": "application/json; charset=utf-8"
+          }
+        ]
+      }
+    ],
+    "rewrites": [
+      {
+        "source": "/api/graph",
+        "destination": "/api/graph.json"
+      },
+      {
+        "source": "/api/telemetry",
+        "destination": "/api/telemetry.json"
+      },
+      {
+        "source": "/api/epiphanies",
+        "destination": "/api/epiphanies.json"
+      },
+      {
+        "source": "/promo",
+        "destination": "/docs.html"
+      },
+      {
+        "source": "/docs",
+        "destination": "/docs.html"
+      }
+    ]
+  }
+}

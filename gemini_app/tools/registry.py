@@ -377,6 +377,23 @@ class ToolRegistry:
                 target = node_id or "satellite-ipad"
                 res_act = "restart" if act == "rescue" else act
                 return execute_ssh_rescue(node_id=target, action=res_act, custom_cmd=command)
+            elif act in ("sketches", "list_sketches", "sketch_list"):
+                from gemini_app.fleet.sketch_pipeline import list_sketches
+                return {"status": "success", "sketches": list_sketches()}
+            elif act in ("ingest_sketch", "read_sketch", "sketch"):
+                from gemini_app.fleet.sketch_pipeline import ingest_sketch
+                target_sketch = command or host or node_id
+                return ingest_sketch(target_sketch)
+            elif act in ("sync_sketches", "sync_ipad_sketches"):
+                from gemini_app.fleet.sketch_pipeline import sync_ipad_sketches
+                return sync_ipad_sketches()
+            elif act in ("scaffold_sketch", "sketch_to_code", "sketch_scaffold"):
+                from gemini_app.fleet.sketch_pipeline import scaffold_sketch_to_code
+                target_sketch = command or host or node_id
+                fw = "textual"
+                if host and host.lower() in ("html", "textual"):
+                    fw = host.lower()
+                return scaffold_sketch_to_code(target_sketch, target_framework=fw)
             elif act in ("register", "add"):
                 return register_or_update_node(node_id=node_id, host=host)
             return {"status": "error", "message": f"Unknown fleet node action '{action}'."}

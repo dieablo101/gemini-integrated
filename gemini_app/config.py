@@ -95,6 +95,13 @@ THEMES: dict[str, dict[str, str]] = {
         "banner_bg": "#881144",
         "card_active_bg": "#2a081a",
     },
+    "cyan": {
+        "accent": "#00e5ff",
+        "accent_dim": "#008b8b",
+        "accent_bright": "#33eeff",
+        "banner_bg": "#005566",
+        "card_active_bg": "#08222a",
+    },
 }
 
 DEFAULT_PALETTE: str = "red"
@@ -184,6 +191,8 @@ def generate_theme_css_rules() -> str:
         .theme-{name} #feed_nav_banner.flash-purple {{ background: #bb55ff !important; color: #000000 !important; }}
         .theme-{name} #feed_nav_banner.flash-yellow {{ background: #ffcc00 !important; color: #000000 !important; }}
         .theme-{name} #feed_nav_banner.flash-pink {{ background: #ff55aa !important; color: #000000 !important; }}
+        .theme-{name} #feed_nav_banner.flash-cyan {{ background: #00e5ff !important; color: #000000 !important; }}
+        .theme-{name} #feed.border-cyan, .theme-{name} #input.border-cyan {{ border: round #00e5ff !important; }}
         .theme-{name} #feed.border-pink, .theme-{name} #input.border-pink {{ border: round #ff55aa !important; }}
         .theme-{name} #feed.border-purple, .theme-{name} #input.border-purple {{ border: round #bb55ff !important; }}
         .theme-{name} #feed.border-blue, .theme-{name} #input.border-blue {{ border: round #3399ff !important; }}

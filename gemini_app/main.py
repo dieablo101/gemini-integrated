@@ -20,6 +20,13 @@ def start_app() -> None:
 
 def main() -> None:
     """Launches the console application protected by the autonomous crash guardian."""
+    # 0. Explicit Safe Mode boot flag check
+    import os
+    if "--safe-mode" in sys.argv or os.environ.get("GEMINI_SAFE_MODE") == "1":
+        from gemini_app.storage.rollback import launch_safe_mode
+        launch_safe_mode(exc=RuntimeError("Safe mode requested via explicit boot flag (--safe-mode)"))
+        return
+
     # 1. Ensure Projects directory exists in user's home directory
     try:
         PROJECTS_DIR.mkdir(mode=0o755, parents=True, exist_ok=True)

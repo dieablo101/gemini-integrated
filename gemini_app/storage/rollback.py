@@ -306,13 +306,21 @@ def run_with_guardian(app_launcher: Callable[[], Any], cwd: Path | str | None = 
 
     state = read_state()
     boot_failures = state.get("boot_failures_count", 0) + 1
+    last_boot = state.get("last_boot_timestamp", 0.0)
+    now = time.time()
+    rapid_crash = (now - last_boot < 10.0) and boot_failures >= 3
+
     state["boot_failures_count"] = boot_failures
-    state["last_boot_timestamp"] = time.time()
+    state["last_boot_timestamp"] = now
     write_state(state)
 
-    if boot_failures >= 3:
+    if boot_failures >= 3 or rapid_crash or os.environ.get("GEMINI_SAFE_MODE") == "1":
         launch_safe_mode(
-            exc=Exception(f"Repeated startup failures detected ({boot_failures} consecutive crashes)"),
+            exc=Exception(
+                f"Repeated startup failures detected ({boot_failures} consecutive crashes"
+                + (", rapid boot loop within 10s" if rapid_crash else "")
+                + ")" if not os.environ.get("GEMINI_SAFE_MODE") else "Safe mode explicitly requested via GEMINI_SAFE_MODE"
+            ),
             last_stable=get_last_stable_commit(),
             cwd=working_dir,
         )

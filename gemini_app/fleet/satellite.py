@@ -32,6 +32,26 @@ from gemini_app.fleet.security import (
     verify_command_signature,
 )
 
+try:
+    from gemini_app.helpers import calculate_reconnect_backoff, format_reconnect_countdown
+except ImportError:
+    def format_reconnect_countdown(remaining_seconds: float) -> str:
+        rem = max(0.0, float(remaining_seconds))
+        return f"{rem:.1f}s" if rem < 60.0 else f"{int(rem // 60)}m {rem % 60:.1f}s"
+
+    def calculate_reconnect_backoff(
+        attempt: int,
+        base_delay: float = 1.5,
+        factor: float = 1.5,
+        max_delay: float = 15.0,
+        jitter: float = 0.1,
+    ) -> float:
+        import random
+        raw = min(base_delay * (factor ** max(0, attempt - 1)), max_delay)
+        if jitter > 0:
+            raw += random.uniform(-raw * jitter, raw * jitter)
+        return max(0.5, round(raw, 2))
+
 
 def is_ish_platform() -> bool:
     """Detects iOS iSH Alpine emulation environment to apply crash-prevention safeguards."""
@@ -2626,7 +2646,23 @@ class SatelliteNode:
                     if not self._running:
                         self.hud.set_connection_status(False)
                         self.stop(release_wake_lock=False)
-                        time.sleep(2.0)
+                        reconnect_attempts = getattr(self, "_reconnect_hud_attempts", 0) + 1
+                        self._reconnect_hud_attempts = reconnect_attempts
+                        backoff = calculate_reconnect_backoff(
+                            attempt=reconnect_attempts,
+                            base_delay=1.5,
+                            factor=1.5,
+                            max_delay=15.0,
+                            jitter=0.1,
+                        )
+                        target_t = time.monotonic() + backoff
+                        while time.monotonic() < target_t:
+                            rem = max(0.0, target_t - time.monotonic())
+                            self.hud.show_toast(f"Reconnecting in {format_reconnect_countdown(rem)} (try {reconnect_attempts})...", duration=0.4)
+                            time.sleep(0.12)
+                            k = self.hud.check_keyboard_input()
+                            if k and k.lower() == "q":
+                                return
                         saved_lan, saved_wan, saved_p = get_saved_mothership_endpoints()
                         if saved_lan:
                             self.lan_host = saved_lan
@@ -2636,6 +2672,7 @@ class SatelliteNode:
                             self.mothership_port = saved_p
                         self.wan_ipv6 = get_saved_mothership_ipv6()
                         if self.start():
+                            self._reconnect_hud_attempts = 0
                             self.hud.show_toast("✓ Reconnected to Mothership", duration=2.5)
                 except Exception:
                     time.sleep(0.5)
@@ -2648,14 +2685,21 @@ class SatelliteNode:
             self.stop(release_wake_lock=True)
 
     def run_forever(self) -> None:
-        """Blocks while satellite is running; handles Ctrl+C cleanly and auto-reconnects."""
-        backoff = 2.0
-        max_backoff = 20.0
+        """Blocks while satellite is running; handles Ctrl+C cleanly and auto-reconnects with calibrated backoff."""
+        attempt = 0
         try:
             while True:
                 if not self._running:
                     self.stop(release_wake_lock=False)
-                    sys.stdout.write(f"[satellite] Connection lost. Reconnecting to {self.mothership_host}:{self.mothership_port} in {int(backoff)}s...\n")
+                    attempt += 1
+                    backoff = calculate_reconnect_backoff(
+                        attempt=attempt,
+                        base_delay=2.0,
+                        factor=1.5,
+                        max_delay=20.0,
+                        jitter=0.1,
+                    )
+                    sys.stdout.write(f"[satellite] Connection lost. Reconnecting to {self.mothership_host}:{self.mothership_port} in {format_reconnect_countdown(backoff)} (retry #{attempt})...\n")
                     time.sleep(backoff)
                     saved_lan, saved_wan, saved_p = get_saved_mothership_endpoints()
                     if saved_lan:
@@ -2667,11 +2711,9 @@ class SatelliteNode:
                     self.wan_ipv6 = get_saved_mothership_ipv6()
                     if self.start():
                         sys.stdout.write(f"[satellite] Reconnected successfully.\n")
-                        backoff = 2.0
-                    else:
-                        backoff = min(backoff * 1.5, max_backoff)
+                        attempt = 0
                 else:
-                    backoff = 2.0
+                    attempt = 0
                 time.sleep(0.5)
         except KeyboardInterrupt:
             sys.stdout.write("\n[satellite] Interrupt received. Shutting down...\n")

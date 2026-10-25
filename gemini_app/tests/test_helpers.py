@@ -6,6 +6,7 @@ from pathlib import Path
 
 from gemini_app.helpers import (
     build_ascii_tree,
+    calculate_reconnect_backoff,
     cast_ray_from_center,
     detect_language,
     extract_retry_delay,
@@ -159,6 +160,24 @@ class TestHelpers(unittest.TestCase):
         self.assertEqual(format_reconnect_countdown(60.0), "1m 0.0s")
         self.assertEqual(format_reconnect_countdown(75.32), "1m 15.3s")
         self.assertEqual(format_reconnect_countdown(134.8), "2m 14.8s")
+
+    def test_calculate_reconnect_backoff(self):
+        # Attempt 1 without jitter
+        b1 = calculate_reconnect_backoff(attempt=1, base_delay=1.5, factor=1.5, max_delay=15.0, jitter=0.0)
+        self.assertEqual(b1, 1.5)
+
+        # Attempt 2 without jitter: 1.5 * 1.5 = 2.25
+        b2 = calculate_reconnect_backoff(attempt=2, base_delay=1.5, factor=1.5, max_delay=15.0, jitter=0.0)
+        self.assertEqual(b2, 2.25)
+
+        # Max cap verification
+        b_max = calculate_reconnect_backoff(attempt=10, base_delay=1.5, factor=1.5, max_delay=15.0, jitter=0.0)
+        self.assertEqual(b_max, 15.0)
+
+        # Jitter bounds check
+        for _ in range(20):
+            bj = calculate_reconnect_backoff(attempt=1, base_delay=2.0, jitter=0.1)
+            self.assertTrue(1.8 <= bj <= 2.2)
 
     def test_generate_terminal_qr(self):
         # Empty string yields empty

@@ -83,6 +83,7 @@ from gemini_app.projects import get_user_real_name, scaffold_project, set_user_r
 from gemini_app.system_deps import detect_os, ensure_system_dependencies
 from gemini_app.helpers import (
     build_ascii_tree,
+    calculate_reconnect_backoff,
     cast_ray_from_center,
     detect_language,
     extract_retry_delay,
@@ -1099,10 +1100,13 @@ class ChatApp(App):
         if action in ("navbar", "nav", "flash", "pulse"):
             try:
                 banner = self.query_one("#feed_nav_banner", Static)
+                banner.styles.background = None
+                banner.styles.color = None
                 for p in THEMES:
                     banner.remove_class(f"flash-{p}")
                 banner.add_class(f"flash-{pal_key}")
                 banner.add_class("nav-pulse")
+                banner.refresh(layout=False)
             except Exception:
                 pass
 
@@ -1130,9 +1134,9 @@ class ChatApp(App):
             for p in THEMES:
                 banner.remove_class(f"flash-{p}")
             banner.remove_class("nav-pulse")
-            banner.styles.background = "#141414"
-            banner.styles.color = "#ffffff"
-            banner.refresh()
+            banner.styles.background = None
+            banner.styles.color = None
+            banner.refresh(layout=False)
         except Exception:
             pass
         self.update_feed_nav_banner()
@@ -1484,6 +1488,14 @@ class ChatApp(App):
     def on_key(self, event: events.Key) -> None:
         key_name = event.key.lower()
 
+        # Emergency escape hatch: Esc or C-g cancels ongoing generation or reconnect
+        if key_name in ("escape", "ctrl+g"):
+            if self._request_phase in ("connecting", "waiting", "reconnecting", "probing"):
+                event.prevent_default()
+                event.stop()
+                self.action_emergency_interrupt()
+                return
+
         if self.lock.is_locked:
             if key_name in GATED_NAV_KEYS:
                 event.prevent_default()
@@ -1808,17 +1820,19 @@ class ChatApp(App):
         self._spinner_idx += 1
 
         if self._request_phase == "reconnecting":
+            is_net = "network" in (getattr(self, "_request_details", "") or "").lower() or "dns" in (getattr(self, "_request_details", "") or "").lower()
+            prefix = "Network link interrupted" if is_net else "Quota reached"
             if self._reconnect_target_time > 0:
                 rem_sec = max(0.0, self._reconnect_target_time - time.monotonic())
                 if rem_sec > 0.05:
                     rem_str = format_reconnect_countdown(rem_sec)
-                    status_text = f"{frame} Quota reached — reconnecting silently in {rem_str} (retry {self._reconnect_attempt}/{self._reconnect_max_retries})"
+                    status_text = f"{frame} {prefix} — reconnecting silently in {rem_str} (retry {self._reconnect_attempt}/{self._reconnect_max_retries})"
                 else:
-                    status_text = f"{frame} Quota reached — reconnecting now (retry {self._reconnect_attempt}/{self._reconnect_max_retries})..."
+                    status_text = f"{frame} {prefix} — reconnecting now (retry {self._reconnect_attempt}/{self._reconnect_max_retries})..."
             elif self._request_details:
                 status_text = f"{frame} {self._request_details}"
             else:
-                status_text = f"{frame} Quota limit reached — reconnecting silently..."
+                status_text = f"{frame} {prefix} — reconnecting silently..."
         elif self._request_details:
             status_text = f"{frame} {self._request_details}... ({elapsed:.1f}s)"
         elif self._request_phase == "connecting":
@@ -4053,18 +4067,20 @@ class ChatApp(App):
             duration: float = 3.0,
             message: str = "",
         ) -> dict:
-            self._suppress_ambient_toasts = True
+            self._suppress_ambient_toasts = not bool(message)
             act = (action or "accent_talk").lower().strip()
             if act in ("theme", "set_theme"):
                 def _do_theme():
                     self.set_theme(palette, notify_user=bool(message))
                     if message:
                         self.notify(message, timeout=3.5)
+                    self.refresh()
                 self.app.call_from_thread(_do_theme)
                 return {"status": "success", "palette": palette, "message": f"Global theme set to '{palette}'."}
             elif act in ("accent_talk", "accent", "pulse"):
                 def _do_accent():
                     apply_accent_talk(self, target=target, palette=palette, duration=duration, message=message)
+                    self.refresh()
                 self.app.call_from_thread(_do_accent)
                 return {"status": "success", "target": target, "palette": palette, "duration": duration}
             elif act in ("pulse_nav", "nav", "flash_nav"):
@@ -4076,6 +4092,8 @@ class ChatApp(App):
                         duration=duration,
                         message=message,
                     )
+                    self.update_feed_nav_banner()
+                    self.refresh()
                 self.app.call_from_thread(_do_nav_pulse)
                 return {"status": "success", "action": "pulse_nav", "target": target, "palette": palette, "duration": duration}
             elif act in ("animate_mind", "mind_anim", "mind"):
@@ -4299,20 +4317,44 @@ class ChatApp(App):
                         if delay_hint is not None and delay_hint > 0:
                             wait_sec = max(delay_hint + 0.1, 0.5)
                         elif is_transient_network:
-                            # Transient DNS or connection reset: retry quickly in 1.5s - 3s
-                            wait_sec = min(base_delay * (1.5 ** (attempt - 1)), 10.0)
+                            # Transient DNS or connection reset: calibrated fast backoff with jitter
+                            wait_sec = calculate_reconnect_backoff(
+                                attempt=attempt,
+                                base_delay=1.5,
+                                factor=1.5,
+                                max_delay=10.0,
+                                jitter=0.1,
+                            )
                         else:
-                            wait_sec = base_delay * (2 ** (attempt - 1))
+                            # Quota ResourceExhausted: exponential backoff with sub-second jitter
+                            wait_sec = calculate_reconnect_backoff(
+                                attempt=attempt,
+                                base_delay=base_delay,
+                                factor=2.0,
+                                max_delay=60.0,
+                                jitter=0.08,
+                            )
 
                         target_time = time.monotonic() + wait_sec
 
-                        def _update_reconnect_ui(t=target_time, att=attempt, mr=max_retries, net=is_transient_network):
+                        def _update_reconnect_ui(t=target_time, att=attempt, mr=max_retries, net=is_transient_network, ws=wait_sec):
                             self._reconnect_target_time = t
                             self._reconnect_attempt = att
                             self._reconnect_max_retries = mr
                             self._request_phase = "reconnecting"
                             self._request_details = "DNS/network reconnecting..." if net else ""
                             self._tick_status()
+                            try:
+                                from gemini_app.fleet.telemetry import update_cognitive_state
+                                pref = "Network link interrupted" if net else "Quota reached"
+                                update_cognitive_state(
+                                    state_desc="Reconnecting",
+                                    task="Silent Reconnection & Backoff",
+                                    thought=f"{pref} — reconnecting in {format_reconnect_countdown(ws)} (attempt {att}/{mr})",
+                                    tool="reconnect",
+                                )
+                            except Exception:
+                                pass
 
                         self.app.call_from_thread(_update_reconnect_ui)
 
@@ -4329,6 +4371,16 @@ class ChatApp(App):
                             self._request_phase = "waiting"
                             self._request_details = f"Reconnecting now (attempt {att}/{mr})"
                             self._tick_status()
+                            try:
+                                from gemini_app.fleet.telemetry import update_cognitive_state
+                                update_cognitive_state(
+                                    state_desc="Reconnecting",
+                                    task="Silent Reconnection & Backoff",
+                                    thought=f"Reconnecting now (attempt {att}/{mr})...",
+                                    tool="reconnect",
+                                )
+                            except Exception:
+                                pass
 
                         self.app.call_from_thread(_update_retrying_ui)
 

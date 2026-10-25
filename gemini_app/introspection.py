@@ -292,7 +292,9 @@ def apply_accent_talk(
     message: str = "",
 ) -> Dict[str, Any]:
     """Alters accent colors on the fly for specific areas or pulses them with dynamic effects."""
-    pal_clean = palette.strip().lower()
+    pal_clean = (palette or "").strip().lower()
+    if not pal_clean:
+        pal_clean = getattr(app, "active_palette_name", DEFAULT_PALETTE)
     if pal_clean not in THEMES:
         valid = ", ".join(THEMES.keys())
         return {
@@ -479,8 +481,7 @@ def apply_accent_talk(
                             if prev_border is not None:
                                 target_widget.styles.border = prev_border
                             else:
-                                acc = getattr(app, "accent_color", "#ff3333")
-                                target_widget.styles.border = ("round", acc)
+                                target_widget.styles.border = None
                             if hasattr(target_widget, "refresh"):
                                 target_widget.refresh()
                         except Exception:

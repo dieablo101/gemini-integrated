@@ -362,6 +362,33 @@ def format_reconnect_countdown(remaining_seconds: float) -> str:
     return f"{mins}m {secs:.1f}s"
 
 
+def calculate_reconnect_backoff(
+    attempt: int,
+    base_delay: float = 1.5,
+    factor: float = 1.5,
+    max_delay: float = 15.0,
+    jitter: float = 0.1,
+) -> float:
+    """Calculates exponential backoff with calibrated sub-second precision and jitter.
+
+    Args:
+        attempt: The retry attempt number (1-based).
+        base_delay: Initial retry delay in seconds.
+        factor: Multiplier for exponential curve.
+        max_delay: Maximum delay cap in seconds.
+        jitter: Fractional range for uniform jitter (e.g. 0.1 = ±10%).
+
+    Returns:
+        Calibrated delay in seconds rounded to 2 decimal places.
+    """
+    import random
+    raw_delay = min(base_delay * (factor ** max(0, attempt - 1)), max_delay)
+    if jitter > 0:
+        jitter_range = raw_delay * jitter
+        raw_delay += random.uniform(-jitter_range, jitter_range)
+    return max(0.5, round(raw_delay, 2))
+
+
 def generate_terminal_qr(data: str, invert: bool = True) -> str:
     """Renders a data string into a high-contrast terminal Unicode/ASCII QR code.
 

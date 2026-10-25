@@ -69,8 +69,8 @@ def get_last_stable_commit() -> Optional[str]:
     return state.get("last_stable_commit")
 
 
-def verify_offline_preflight(cwd: Path | str | None = None) -> Tuple[bool, str]:
-    """Runs offline syntax and compilation preflight checks before any commit or console reboot."""
+def verify_offline_preflight(cwd: Path | str | None = None, run_smoke_tests: bool = False) -> Tuple[bool, str]:
+    """Runs offline syntax, compilation, and optional smoke test preflight checks before any commit or console reboot."""
     working_dir = Path(cwd or Path(__file__).resolve().parent.parent.parent)
     try:
         # 1. Compile gemini_app directory
@@ -86,6 +86,25 @@ def verify_offline_preflight(cwd: Path | str | None = None) -> Tuple[bool, str]:
                 py_compile.compile(str(py_file), doraise=True)
             except Exception as pe:
                 return False, f"Pre-flight compilation failed in {py_file.name}: {pe}"
+
+        # 3. Optional fast smoke test suite execution
+        if run_smoke_tests:
+            smoke_modules = [
+                "gemini_app.tests.test_helpers",
+                "gemini_app.tests.test_bootstrap",
+                "gemini_app.tests.test_firestore_stream",
+                "gemini_app.tests.test_config",
+            ]
+            res = subprocess.run(
+                [sys.executable, "-m", "unittest"] + smoke_modules,
+                cwd=str(working_dir),
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            if res.returncode != 0:
+                err_detail = (res.stderr or res.stdout).strip().splitlines()[-1] if (res.stderr or res.stdout) else "Unknown test failure"
+                return False, f"Pre-flight smoke tests failed (exit {res.returncode}): {err_detail}"
 
         return True, "Pre-flight verification passed: all python modules compile cleanly."
     except Exception as e:
@@ -350,3 +369,79 @@ def run_with_guardian(app_launcher: Callable[[], Any], cwd: Path | str | None = 
 
         # If not rebooting or rollback failed, re-raise
         raise
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Gemini Console Safety & Rollback Supervisor")
+    subparsers = parser.add_subparsers(dest="subcommand", help="Safety commands")
+
+    # verify / preflight
+    verify_p = subparsers.add_parser("verify", help="Run offline pre-flight syntax and compilation checks")
+    verify_p.add_argument("--smoke", action="store_true", help="Run fast smoke test suite")
+
+    # status
+    subparsers.add_parser("status", help="Inspect rollback state and boot flags")
+
+    # checkpoint
+    ckpt_p = subparsers.add_parser("checkpoint", help="Record safety checkpoint")
+    ckpt_p.add_argument("label", nargs="?", default="manual_checkpoint", help="Checkpoint label")
+
+    # restore
+    res_p = subparsers.add_parser("restore", help="Restore to safety checkpoint")
+    res_p.add_argument("id_or_commit", help="Checkpoint ID or commit hash")
+
+    # rollback
+    subparsers.add_parser("rollback", help="Perform git rollback to last stable commit")
+
+    # reset
+    subparsers.add_parser("reset-failures", help="Reset consecutive crash counter to 0")
+
+    args = parser.parse_args()
+
+    if args.subcommand in ("verify", "preflight", None):
+        run_smoke = getattr(args, "smoke", False)
+        print(f"Running pre-flight verification (smoke_tests={run_smoke})...")
+        ok, msg = verify_offline_preflight(run_smoke_tests=run_smoke)
+        if ok:
+            print(f"✓ {msg}")
+            sys.exit(0)
+        else:
+            print(f"✗ {msg}", file=sys.stderr)
+            sys.exit(1)
+
+    elif args.subcommand == "status":
+        st = read_state()
+        print("Safety Supervisor State:")
+        print(f"  • Last Stable Commit : {st.get('last_stable_commit', 'None')}")
+        print(f"  • Boot Failures Count: {st.get('boot_failures_count', 0)}")
+        print(f"  • Reboot In Progress : {st.get('reboot_in_progress', False)}")
+        print(f"  • Checkpoints Count  : {len(st.get('safety_checkpoints', []))}")
+        for c in st.get("safety_checkpoints", [])[-3:]:
+            print(f"      - {c.get('id')}: {c.get('label')} ({str(c.get('commit'))[:8]})")
+
+    elif args.subcommand == "checkpoint":
+        ckpt = create_safety_checkpoint(label=args.label)
+        print(f"✓ Safety checkpoint created: {ckpt.get('id')} ({ckpt.get('commit')[:8]} - {ckpt.get('label')})")
+
+    elif args.subcommand == "restore":
+        ok, msg = restore_safety_checkpoint(args.id_or_commit)
+        if ok:
+            print(f"✓ {msg}")
+        else:
+            print(f"✗ {msg}", file=sys.stderr)
+            sys.exit(1)
+
+    elif args.subcommand == "rollback":
+        ok, msg = perform_git_rollback()
+        if ok:
+            print(f"✓ {msg}")
+        else:
+            print(f"✗ {msg}", file=sys.stderr)
+            sys.exit(1)
+
+    elif args.subcommand == "reset-failures":
+        mark_startup_successful()
+        print("✓ Boot failure counters reset to 0.")
+

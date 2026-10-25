@@ -126,6 +126,10 @@ class TestRollbackEngine(unittest.TestCase):
         finally:
             os.environ.pop("GEMINI_TESTING", None)
 
+    def test_verify_offline_preflight_smoke_tests(self):
+        ok, msg = verify_offline_preflight(run_smoke_tests=True)
+        self.assertTrue(ok)
+        self.assertIn("Pre-flight verification passed", msg)
 
 
 if __name__ == "__main__":

@@ -126,6 +126,7 @@ from gemini_app.introspection import (
     get_console_state,
     start_mind_animation,
 )
+from gemini_app.cloud import MindExpansionSynthesizer, UpperMindClient
 from gemini_app.tools.registry import ToolRegistry
 from gemini_app.tools.snapshots import (
     capture_ui_snapshot,
@@ -238,6 +239,17 @@ class ChatApp(App):
         self.saved_prompt_draft: str = ""
         self._active_mind_animation: dict | None = None
         self.cognitive_adapter = None
+
+        # Upper Mind Cloud State & Cognitive Expansion Synthesizer (Zero-Token Shadow Mode)
+        try:
+            self.upper_mind_client: UpperMindClient = UpperMindClient(offline_mode=True)
+            self.upper_mind_synthesizer: MindExpansionSynthesizer = MindExpansionSynthesizer(
+                upper_mind_client=self.upper_mind_client,
+                max_token_budget=150,
+            )
+        except Exception:
+            self.upper_mind_client = None
+            self.upper_mind_synthesizer = None
 
         self.notes_open: bool = False
         self._last_focused_input_id: str = "input"
@@ -4195,6 +4207,24 @@ class ChatApp(App):
         notes_summary = self.notes_manager.format_prompt_summary() if hasattr(self, "notes_manager") else ""
         intro_summary = format_introspection_summary(self)
 
+        # Upper Mind Cognitive Expansion Synthesis
+        upper_mind_block = ""
+        if hasattr(self, "upper_mind_synthesizer") and self.upper_mind_synthesizer:
+            try:
+                latest_user_text = ""
+                for t in reversed(recent_turns):
+                    if t.get("role") == "user":
+                        latest_user_text = t.get("text", "")
+                        break
+                active_topic = getattr(self.notes_manager, "active_topic", "general") if hasattr(self, "notes_manager") else "general"
+                expansion_frame = self.upper_mind_synthesizer.expand_prompt_context(
+                    prompt=latest_user_text,
+                    active_topic=active_topic,
+                )
+                upper_mind_block = f"### UPPER MIND COGNITIVE EXPANSION (SHADOW GRAPH & HEARTH)\n{expansion_frame.render_system_block()}\n\n"
+            except Exception:
+                upper_mind_block = ""
+
         system_instruction = (
             f"You are Gemini running inside a bilateral terminal console.\n"
             f"Working directory: {working_dir_snapshot}\n"
@@ -4208,6 +4238,7 @@ class ChatApp(App):
             f"```text\n{self.current_tree_content or '└── *[Session Start]*'}\n```\n\n"
             f"### UNIFIED GEMINI-MANAGED NOTES CONTEXT\n"
             f"{notes_summary}\n\n"
+            f"{upper_mind_block}"
             f"### NOTES & TOPIC PROTOCOL\n"
             f"• You autonomously manage all project notes, organized strictly by topics.\n"
             f"• Automatically scan chat turns and associate notes with their relevant topics.\n"

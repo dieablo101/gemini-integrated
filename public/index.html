@@ -1082,26 +1082,44 @@
 
     // SSE Stream
     function initSSE() {
-      const evtSource = new EventSource("/events");
-      evtSource.addEventListener("synapse_fire", (e) => {
-        try {
-          const d = JSON.parse(e.data);
-          // Highlight edge or launch burst
-          const matchEdge = edges.find(ed => ed.from === d.source && ed.to === d.target);
-          if (matchEdge) {
-            particles.push({
-              edge: matchEdge,
-              t: 0,
-              speed: 0.02,
-              color: "#00f0ff"
-            });
-          }
-        } catch (_) {}
-      });
+      try {
+        const evtSource = new EventSource("/events");
+        evtSource.addEventListener("synapse_fire", (e) => {
+          try {
+            const d = JSON.parse(e.data);
+            // Highlight edge or launch burst
+            const matchEdge = edges.find(ed => ed.from === d.source && ed.to === d.target);
+            if (matchEdge) {
+              particles.push({
+                edge: matchEdge,
+                t: 0,
+                speed: 0.02,
+                color: "#00f0ff"
+              });
+            }
+          } catch (_) {}
+        });
 
-      evtSource.addEventListener("heartbeat", () => {
-        fetchTelemetry();
-      });
+        evtSource.addEventListener("heartbeat", () => {
+          fetchTelemetry();
+        });
+
+        evtSource.onerror = () => {
+          evtSource.close();
+          // Edge CDN autonomous simulation loop when running statically
+          setInterval(() => {
+            if (edges.length > 0) {
+              const randomEdge = edges[Math.floor(Math.random() * edges.length)];
+              particles.push({
+                edge: randomEdge,
+                t: 0,
+                speed: 0.015 + Math.random() * 0.015,
+                color: Math.random() > 0.5 ? "#00f0ff" : "#ffb703"
+              });
+            }
+          }, 3500);
+        };
+      } catch (_) {}
     }
 
     // --- 3. Generative Web Audio Ambient Drone (Hearth Frequency) ---

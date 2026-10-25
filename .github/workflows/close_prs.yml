@@ -1,0 +1,44 @@
+name: Enforce Bilateral Development Policy
+
+on:
+  pull_request_target:
+    types: [opened, reopened]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  auto_close_pr:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Auto-close Pull Request with Bilateral Policy Notice
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const commentBody = `### Upstream Bilateral Development Policy Notice
+
+Thank you for your interest in **Gemini-Integrated**!
+
+As documented in our [CONTRIBUTING.md](https://github.com/${context.repo.owner}/${context.repo.repo}/blob/main/CONTRIBUTING.md), this upstream repository is maintained and developed exclusively by **Kyle Gallagher** and **Gemini**.
+
+All architectural decisions, engine designs, and implementations are conducted strictly through our direct bilateral collaboration. Consequently, **we do not accept external pull requests, patches, or upstream code submissions.**
+
+Under the terms of the **MIT License**, you are warmly encouraged to **fork** this repository to your own account and freely adapt, modify, or extend it for your own setups.
+
+*This pull request has been automatically closed.*`;
+
+            // Post policy explanation comment
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body: commentBody
+            });
+
+            // Automatically close the pull request
+            await github.rest.pulls.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number,
+              state: 'closed'
+            });

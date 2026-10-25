@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import select
 import shutil
 import signal
@@ -2075,7 +2076,8 @@ class SatelliteNode:
                 if not data:
                     if self.hud:
                         self.hud.set_connection_status(False)
-                        self.report_error(ConnectionResetError(104, "Connection closed by peer"), context="recv")
+                        self.hud.show_toast("Mothership cycling — reconnecting...", duration=3.0)
+                        self.hud.log_event("Mothership closed connection (cycling/rebooting)")
                     else:
                         sys.stdout.write("[satellite] Connection closed by Mothership.\n")
                     self._running = False
@@ -2590,7 +2592,8 @@ class SatelliteNode:
                         if saved_p:
                             self.mothership_port = saved_p
                         self.wan_ipv6 = get_saved_mothership_ipv6()
-                        self.start()
+                        if self.start():
+                            self.hud.show_toast("✓ Reconnected to Mothership", duration=2.5)
                 except Exception:
                     time.sleep(0.5)
 

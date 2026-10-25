@@ -137,12 +137,26 @@ class UpperMindServer:
     def _register_routes(self) -> None:
         """Binds HTTP routes for the public observatory."""
         self.engine.register_get("/", self._handle_index)
+        self.engine.register_get("/promo", self._handle_promo)
+        self.engine.register_get("/docs", self._handle_promo)
         self.engine.register_get("/api/telemetry", self._handle_telemetry)
         self.engine.register_get("/api/graph", self._handle_graph)
         self.engine.register_get("/api/epiphanies", self._handle_epiphanies)
 
         # Strictly reject any external POST interaction
         self.engine.register_post("/", self._handle_forbidden_post, prefix=True)
+
+    def _handle_promo(self, handler: Any, query: Dict[str, List[str]]) -> Tuple[int, str, str]:
+        """Serves the promotional GitHub Pages landing site."""
+        try:
+            import os
+            docs_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "docs", "index.html")
+            with open(docs_path, "r", encoding="utf-8") as f:
+                html = f.read()
+            return 200, html, "text/html; charset=utf-8"
+        except Exception as e:
+            logger.error(f"Failed to read docs/index.html: {e}")
+            return 500, f"<h1>Error loading promo page: {e}</h1>", "text/html; charset=utf-8"
 
     def _handle_index(self, handler: Any, query: Dict[str, List[str]]) -> Tuple[int, str, str]:
         """Serves the living interactive HTML5/Canvas observatory."""

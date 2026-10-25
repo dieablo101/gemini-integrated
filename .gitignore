@@ -47,3 +47,4 @@ quarantine/
 *.zip
 *.bak
 *.tmp
+test_run_cortex/

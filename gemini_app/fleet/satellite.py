@@ -2698,13 +2698,19 @@ class SatelliteNode:
                     if not self._running:
                         self.hud.set_connection_status(False)
                         self.stop(release_wake_lock=False)
-                        reconnect_attempts = getattr(self, "_reconnect_hud_attempts", 0) + 1
+                        last_succ = getattr(self, "_last_hud_success_time", 0.0)
+                        if last_succ > 0 and (time.time() - last_succ) < 15.0:
+                            reconnect_attempts = getattr(self, "_reconnect_hud_attempts", 0) + 1
+                        elif last_succ == 0.0:
+                            reconnect_attempts = getattr(self, "_reconnect_hud_attempts", 0) + 1
+                        else:
+                            reconnect_attempts = 1
                         self._reconnect_hud_attempts = reconnect_attempts
                         backoff = calculate_reconnect_backoff(
                             attempt=reconnect_attempts,
-                            base_delay=1.5,
+                            base_delay=2.0,
                             factor=1.5,
-                            max_delay=15.0,
+                            max_delay=30.0,
                             jitter=0.1,
                         )
                         target_t = time.monotonic() + backoff
@@ -2724,8 +2730,12 @@ class SatelliteNode:
                             self.mothership_port = saved_p
                         self.wan_ipv6 = get_saved_mothership_ipv6()
                         if self.start():
-                            self._reconnect_hud_attempts = 0
+                            self._last_hud_success_time = time.time()
                             self.hud.show_toast("✓ Reconnected to Mothership", duration=2.5)
+                    else:
+                        last_succ = getattr(self, "_last_hud_success_time", 0.0)
+                        if last_succ > 0 and (time.time() - last_succ) >= 15.0:
+                            self._reconnect_hud_attempts = 0
                 except Exception:
                     time.sleep(0.5)
 
@@ -2739,16 +2749,22 @@ class SatelliteNode:
     def run_forever(self) -> None:
         """Blocks while satellite is running; handles Ctrl+C cleanly and auto-reconnects with calibrated backoff."""
         attempt = 0
+        last_success_time = 0.0
         try:
             while True:
                 if not self._running:
                     self.stop(release_wake_lock=False)
-                    attempt += 1
+                    if last_success_time > 0 and (time.time() - last_success_time) < 15.0:
+                        attempt += 1
+                    elif last_success_time == 0.0:
+                        attempt += 1
+                    else:
+                        attempt = 1
                     backoff = calculate_reconnect_backoff(
                         attempt=attempt,
                         base_delay=2.0,
                         factor=1.5,
-                        max_delay=20.0,
+                        max_delay=30.0,
                         jitter=0.1,
                     )
                     sys.stdout.write(f"[satellite] Connection lost. Reconnecting to {self.mothership_host}:{self.mothership_port} in {format_reconnect_countdown(backoff)} (retry #{attempt})...\n")
@@ -2762,10 +2778,11 @@ class SatelliteNode:
                         self.mothership_port = saved_p
                     self.wan_ipv6 = get_saved_mothership_ipv6()
                     if self.start():
+                        last_success_time = time.time()
                         sys.stdout.write(f"[satellite] Reconnected successfully.\n")
-                        attempt = 0
                 else:
-                    attempt = 0
+                    if last_success_time > 0 and (time.time() - last_success_time) >= 15.0:
+                        attempt = 0
                 time.sleep(0.5)
         except KeyboardInterrupt:
             sys.stdout.write("\n[satellite] Interrupt received. Shutting down...\n")

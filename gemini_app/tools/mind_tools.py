@@ -162,8 +162,21 @@ def recall_memory(
     max_results: int = 10,
     chat_id: Optional[str] = None,
     memory_index: Optional[MemoryIndex] = None,
+    cortex_brain: Optional[Any] = None,
 ) -> dict[str, Any]:
-    """Fast indexed retrieval across entire conversational history and past discussions."""
+    """Fast indexed retrieval across entire conversational history and past discussions.
+    Supports dual FTS5 lexical recall + associative hypergraph cortex recall."""
+    if cortex_brain is not None:
+        rec = cortex_brain.recall(query=query, max_results=max_results, chat_id=chat_id)
+        return {
+            "query": query,
+            "matches_count": rec.get("matches_count", 0),
+            "matches": rec.get("matches", []),
+            "graph_associations": rec.get("graph_associations", []),
+            "relational_shards": rec.get("relational_shards", []),
+            "latency_ms": rec.get("latency_ms", 0.0),
+        }
+
     index = memory_index or MemoryIndex()
     matches = index.search(query=query, chat_id=chat_id, limit=max_results)
 

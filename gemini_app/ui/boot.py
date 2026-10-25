@@ -209,6 +209,7 @@ class BootScreen(ResponsiveModalScreen[bool]):
         self._frame_idx: int = 0
         self._anim_timer: Timer | None = None
         self._dismiss_timer: Timer | None = None
+        self._is_dismissed: bool = False
 
     def compose(self) -> ComposeResult:
         with Vertical(id="boot_box"):
@@ -252,11 +253,20 @@ class BootScreen(ResponsiveModalScreen[bool]):
         self._dismiss_boot()
 
     def _dismiss_boot(self) -> None:
+        if self._is_dismissed:
+            return
+        self._is_dismissed = True
         if self._anim_timer:
-            self._anim_timer.stop()
+            try:
+                self._anim_timer.stop()
+            except Exception:
+                pass
             self._anim_timer = None
         if self._dismiss_timer:
-            self._dismiss_timer.stop()
+            try:
+                self._dismiss_timer.stop()
+            except Exception:
+                pass
             self._dismiss_timer = None
         try:
             if getattr(self, "app", None) and hasattr(self.app, "screen_stack") and self in self.app.screen_stack:
@@ -276,6 +286,12 @@ class BootScreen(ResponsiveModalScreen[bool]):
             pass
 
     def _tick_animation(self) -> None:
+        if self._is_dismissed:
+            return
+        now = time.monotonic()
+        if self._start_time > 0 and (now - self._start_time) >= (self.duration_seconds + 0.1):
+            self._dismiss_boot()
+            return
         self._frame_idx += 1
         self._update_display()
 

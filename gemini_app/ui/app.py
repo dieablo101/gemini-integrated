@@ -1091,7 +1091,7 @@ class ChatApp(App):
         action: str,
         toast_message: str = "",
         palette: str = "",
-        duration: float = 0.35,
+        duration: float = 1.5,
     ) -> None:
         self._nav_indicator_action = action
         self._nav_indicator_palette = palette or None
@@ -1112,13 +1112,13 @@ class ChatApp(App):
 
         self.update_feed_nav_banner()
 
-        if toast_message and not getattr(self, "_suppress_ambient_toasts", False):
+        if toast_message:
             accent = (
                 THEMES.get(palette, {}).get("accent", self.accent_color)
                 if palette
                 else self.accent_color
             )
-            self.notify(f"[{accent}]{toast_message}[/]", timeout=max(1.5, duration))
+            self.notify(f"[{accent}]{toast_message}[/]", timeout=max(2.0, duration))
 
         if self._nav_indicator_timer:
             self._nav_indicator_timer.stop()
@@ -4075,35 +4075,35 @@ class ChatApp(App):
             duration: float = 3.0,
             message: str = "",
         ) -> dict:
-            self._suppress_ambient_toasts = not bool(message)
+            eff_dur = max(1.5, duration) if duration > 0 else duration
             act = (action or "accent_talk").lower().strip()
             if act in ("theme", "set_theme"):
                 def _do_theme():
                     self.set_theme(palette, notify_user=bool(message))
                     if message:
                         self.notify(message, timeout=3.5)
-                    self.refresh()
+                    self.refresh(layout=True)
                 self.app.call_from_thread(_do_theme)
                 return {"status": "success", "palette": palette, "message": f"Global theme set to '{palette}'."}
             elif act in ("accent_talk", "accent", "pulse"):
                 def _do_accent():
-                    apply_accent_talk(self, target=target, palette=palette, duration=duration, message=message)
-                    self.refresh()
+                    apply_accent_talk(self, target=target, palette=palette, duration=eff_dur, message=message)
+                    self.refresh(layout=True)
                 self.app.call_from_thread(_do_accent)
-                return {"status": "success", "target": target, "palette": palette, "duration": duration}
+                return {"status": "success", "target": target, "palette": palette, "duration": eff_dur}
             elif act in ("pulse_nav", "nav", "flash_nav"):
                 def _do_nav_pulse():
                     apply_accent_talk(
                         self,
                         target="navbar" if target in ("all", "navbar", "nav", "banner") else target,
                         palette=palette,
-                        duration=duration,
+                        duration=eff_dur,
                         message=message,
                     )
                     self.update_feed_nav_banner()
-                    self.refresh()
+                    self.refresh(layout=True)
                 self.app.call_from_thread(_do_nav_pulse)
-                return {"status": "success", "action": "pulse_nav", "target": target, "palette": palette, "duration": duration}
+                return {"status": "success", "action": "pulse_nav", "target": target, "palette": palette, "duration": eff_dur}
             elif act in ("animate_mind", "mind_anim", "mind"):
                 def _do_anim():
                     start_mind_animation(self, effect=effect, palette=palette, duration=duration, message=message)

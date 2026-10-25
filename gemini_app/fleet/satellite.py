@@ -877,7 +877,15 @@ def _is_pid_running(pid: int) -> bool:
 
 
 def acquire_singleton_lock(mode: str = "node") -> bool:
-    """Guarantees only one satellite node or HUD instance runs at a time."""
+    """Guarantees only one satellite node or HUD instance runs at a time.
+
+    CRITICAL REDUNDANCY:
+    1. If starting 'hud' (interactive foreground user session):
+       - Cleanly signals any existing background daemon ('node') to exit and waits for it to release port 8888.
+    2. If starting 'node' (headless background daemon):
+       - Checks if an interactive 'hud' session is actively running.
+       - If 'hud' is active, 'node' immediately yields and exits (never killing the user's HUD!).
+    """
     pid_dir = Path(tempfile.gettempdir())
     pid_file = pid_dir / f"gemini-satellite-{mode}.pid"
     other_mode = "node" if mode == "hud" else "hud"
@@ -885,16 +893,20 @@ def acquire_singleton_lock(mode: str = "node") -> bool:
 
     my_pid = os.getpid()
 
-    # If starting HUD, terminate any background node daemon cleanly
+    # Redundancy 1: If starting HUD, terminate any background node daemon cleanly
     if mode == "hud" and other_pid_file.exists():
         try:
             old_pid = int(other_pid_file.read_text().strip())
             if old_pid != my_pid and _is_pid_running(old_pid):
                 try:
                     os.kill(old_pid, signal.SIGTERM)
-                    time.sleep(0.3)
+                    for _ in range(20):
+                        time.sleep(0.1)
+                        if not _is_pid_running(old_pid):
+                            break
                     if _is_pid_running(old_pid):
                         os.kill(old_pid, signal.SIGKILL)
+                        time.sleep(0.1)
                 except Exception:
                     pass
         except Exception:
@@ -903,8 +915,23 @@ def acquire_singleton_lock(mode: str = "node") -> bool:
             other_pid_file.unlink(missing_ok=True)
         except Exception:
             pass
+        # Brief pause to let OS reclaim TCP ports
+        time.sleep(0.2)
 
-    # Check same-mode PID
+    # Redundancy 2: If starting background node daemon, yield if interactive HUD is active!
+    if mode == "node" and other_pid_file.exists():
+        try:
+            old_pid = int(other_pid_file.read_text().strip())
+            if old_pid != my_pid and _is_pid_running(old_pid):
+                sys.stderr.write(
+                    f"[satellite] Interactive HUD session is active (PID {old_pid}). "
+                    f"Background daemon yielding to interactive user session.\n"
+                )
+                return False
+        except Exception:
+            pass
+
+    # Redundancy 3: Check same-mode PID
     if pid_file.exists():
         try:
             old_pid = int(pid_file.read_text().strip())

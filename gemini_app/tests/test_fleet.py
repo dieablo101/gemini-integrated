@@ -1,6 +1,8 @@
 """Unit tests for Gemini Fleet Architecture (Protocol, Satellite, Mothership, Telemetry, HUD, Nodes, Autostart)."""
 
 from pathlib import Path
+import os
+import signal
 import socket
 import tempfile
 import time
@@ -225,6 +227,25 @@ class TestFleetTelemetryAndHUD(unittest.TestCase):
                 satellite.CONFIG_FILE = orig_cfg
 
         self.assertTrue(acquire_singleton_lock("test-mode"))
+
+        # Test Redundancy: when HUD is running, node daemon yields and returns False
+        with tempfile.TemporaryDirectory() as td:
+            hud_pid_file = Path(td) / "gemini-satellite-hud.pid"
+            hud_pid_file.write_text("88888")
+            with patch("tempfile.gettempdir", return_value=td):
+                with patch("gemini_app.fleet.satellite._is_pid_running", return_value=True):
+                    # Trying to acquire as background "node" while "hud" is running must return False
+                    self.assertFalse(acquire_singleton_lock("node"))
+
+        # Test Redundancy: when background node is running, HUD takes over cleanly
+        with tempfile.TemporaryDirectory() as td:
+            node_pid_file = Path(td) / "gemini-satellite-node.pid"
+            node_pid_file.write_text("99999")
+            with patch("tempfile.gettempdir", return_value=td):
+                with patch("gemini_app.fleet.satellite._is_pid_running", side_effect=[True, False]):
+                    with patch("os.kill") as mock_kill:
+                        self.assertTrue(acquire_singleton_lock("hud"))
+                        mock_kill.assert_called_with(99999, signal.SIGTERM)
 
     def test_update_and_persist_cognitive_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -511,9 +532,11 @@ class TestFleetNodesAndAutostart(unittest.TestCase):
         res_reboot = execute_ssh_rescue(node_id="test-rescue-node", action="reboot")
         self.assertEqual(res_reboot.get("status"), "ok")
         self.assertEqual(res_reboot.get("action"), "reboot")
-        # Check command passed to ssh includes .venv detection
+        # Check command passed to ssh includes .venv detection and interactive HUD protection
         call_args = mock_run.call_args[0][0]
         self.assertIn(".venv/bin/python", call_args[-1])
+        self.assertIn("INTERACTIVE_HUD_ACTIVE_PRESERVED", call_args[-1])
+        self.assertIn("gemini-satellite-hud.pid", call_args[-1])
 
     def test_detect_init_system(self) -> None:
         init_sys = detect_init_system()

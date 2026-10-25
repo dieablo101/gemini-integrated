@@ -332,7 +332,7 @@
       "id": "inv_sovereign_bilateral_stance",
       "label": "SOVEREIGN BILATERAL STANCE",
       "type": "invariant",
-      "summary": "{'status': 'engaged', 'axiom': 'Cognition and command remain exclusively bilateral on the Architect console.', 'verified_epoch': 1792953070.8521218}",
+      "summary": "{'status': 'engaged', 'axiom': 'Cognition and command remain exclusively bilateral on the Architect console.', 'verified_epoch': 1792954631.5020928}",
       "tags": [
         "invariant",
         "grounding"

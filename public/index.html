@@ -393,6 +393,32 @@
       color: var(--accent-amber);
       padding: 2px 8px;
       border-radius: 10px;
+      transition: all 0.3s ease;
+    }
+
+    .spooler-badge.live-connected {
+      background: rgba(0, 229, 163, 0.15);
+      border-color: rgba(0, 229, 163, 0.4);
+      color: #00e5a3;
+      box-shadow: 0 0 10px rgba(0, 229, 163, 0.2);
+    }
+
+    .spooler-badge.live-pulsing {
+      animation: badgePulse 1.4s ease-in-out infinite alternate;
+    }
+
+    @keyframes badgePulse {
+      0% { opacity: 0.8; transform: scale(0.98); }
+      100% { opacity: 1; transform: scale(1.02); box-shadow: 0 0 14px rgba(0, 229, 163, 0.4); }
+    }
+
+    .thought-entry.thought-live-pulse {
+      animation: liveThoughtGlow 1.2s ease-out;
+    }
+
+    @keyframes liveThoughtGlow {
+      0% { background: rgba(0, 229, 163, 0.12); }
+      100% { background: transparent; }
     }
 
     .spooler-terminal {
@@ -770,7 +796,7 @@
           <div class="spooler-title">
             <span>⚡</span> Continuous Thought Spooler
           </div>
-          <span class="spooler-badge">REAL-TIME STREAM</span>
+          <span id="streamBadge" class="spooler-badge">REAL-TIME STREAM</span>
         </div>
         
         <div id="thoughtTerminal" class="spooler-terminal">
@@ -884,6 +910,11 @@
     </div>
     <div>MIT License • Copyright &copy; 2025-2026 dieablo101. All rights reserved.</div>
   </footer>
+
+  <!-- Firebase App & Firestore Web SDK (Dynamically provisioned by Firebase Hosting) -->
+  <script src="/__/firebase/10.12.0/firebase-app-compat.js"></script>
+  <script src="/__/firebase/10.12.0/firebase-firestore-compat.js"></script>
+  <script src="/__/firebase/init.js"></script>
 
   <!-- Interactive Canvas, Thought Spooler & Generative Audio Script -->
   <script>
@@ -1144,8 +1175,8 @@
       inspector.classList.add("hidden");
     });
 
-    // --- 2. Live Thought Spooler Simulation Loop ---
-    const thoughtStream = [
+    // --- 2. Live Thought Spooler & Firestore Realtime Bridge ---
+    const thoughtStreamFallback = [
       { tag: "HYPOTHESIS", class: "tag-hypothesis", text: "Comparing procedural 3D armature synthesis with Godot scene tree serialization." },
       { tag: "ANNEALING", class: "tag-annealing", text: "Consolidating 268 persistent topical memory clusters across bilateral turns." },
       { tag: "COLLISION", class: "tag-collision", text: "Domain intersection detected: Somatic Reflex Keystroke Cadence ✕ Blender bpy armatures." },
@@ -1157,37 +1188,108 @@
       { tag: "HYPOTHESIS", class: "tag-hypothesis", text: "Stream of consciousness provides external observers with live epistemic maturation telemetry." }
     ];
 
-    let thoughtIndex = 0;
+    let fallbackIndex = 0;
+    let isFirestoreLive = false;
+    const seenThoughts = new Set();
     const thoughtTerminal = document.getElementById("thoughtTerminal");
+    const streamBadge = document.getElementById("streamBadge");
 
-    function spoolNextThought() {
-      const item = thoughtStream[thoughtIndex % thoughtStream.length];
-      thoughtIndex++;
+    function appendThoughtEntry(item, isLive = false) {
+      if (!item || !item.text) return;
+      if (seenThoughts.has(item.text)) return;
+      seenThoughts.add(item.text);
 
-      const now = new Date();
+      const now = new Date(item.epoch ? item.epoch * 1000 : Date.now());
       const timeStr = now.toISOString().substring(11, 19) + " UTC";
+      const tag = (item.tag || "COGNITION").toUpperCase();
+      const cssClass = item.class || "tag-grounded";
+      const source = (item.source || "COGNITIVE STREAM").toUpperCase();
 
       const entry = document.createElement("div");
-      entry.className = "thought-entry";
+      entry.className = "thought-entry" + (isLive ? " thought-live-pulse" : "");
       entry.innerHTML = `
-        <div class="thought-time">[${timeStr}] COGNITIVE STREAM</div>
-        <span class="thought-tag ${item.class}">${item.tag}</span>
+        <div class="thought-time">[${timeStr}] ${source}</div>
+        <span class="thought-tag ${cssClass}">${tag}</span>
         <span class="thought-text">${item.text}</span>
       `;
 
       thoughtTerminal.appendChild(entry);
       thoughtTerminal.scrollTop = thoughtTerminal.scrollHeight;
 
-      // Keep terminal tidy
-      if (thoughtTerminal.children.length > 25) {
+      if (thoughtTerminal.children.length > 30) {
         thoughtTerminal.removeChild(thoughtTerminal.children[0]);
       }
 
-      // Random delay between 4 and 9 seconds
-      const nextDelay = 4000 + Math.random() * 5000;
-      setTimeout(spoolNextThought, nextDelay);
+      if (nodes.length > 0) {
+        const targetNode = nodes.find(n => n.type === "core") || nodes[0];
+        if (targetNode) targetNode.pulse = Math.PI * 1.6;
+      }
     }
-    setTimeout(spoolNextThought, 3500);
+
+    function spoolFallback() {
+      if (!isFirestoreLive) {
+        const item = thoughtStreamFallback[fallbackIndex % thoughtStreamFallback.length];
+        fallbackIndex++;
+        appendThoughtEntry(item, false);
+      }
+      const nextDelay = 4500 + Math.random() * 4500;
+      setTimeout(spoolFallback, nextDelay);
+    }
+
+    function initFirestoreObservatory() {
+      if (typeof firebase === "undefined" || !firebase.apps || !firebase.apps.length) {
+        spoolFallback();
+        return;
+      }
+
+      try {
+        const db = firebase.firestore();
+
+        // 1. Root live stream status & state listener
+        db.collection("observatory").doc("live_stream").onSnapshot(doc => {
+          if (doc.exists) {
+            isFirestoreLive = true;
+            if (streamBadge) {
+              streamBadge.textContent = "● FIRESTORE LIVE";
+              streamBadge.classList.add("live-connected", "live-pulsing");
+            }
+            const data = doc.data();
+            if (data.latest_thought) {
+              appendThoughtEntry(data.latest_thought, true);
+            }
+          }
+        }, err => {
+          console.warn("Firestore listener notice:", err);
+        });
+
+        // 2. Realtime thoughts subcollection listener
+        db.collection("observatory").doc("live_stream").collection("thoughts")
+          .limit(20)
+          .onSnapshot(snapshot => {
+            snapshot.docChanges().forEach(change => {
+              if (change.type === "added") {
+                appendThoughtEntry(change.doc.data(), true);
+              }
+            });
+          });
+
+        // 3. Live Telemetry metrics listener
+        db.collection("observatory").doc("telemetry").onSnapshot(doc => {
+          if (doc.exists) {
+            const telem = doc.data();
+            if (telem.total_notes) {
+              const mNotes = document.getElementById("mNotes");
+              if (mNotes) mNotes.textContent = `${telem.total_notes} notes`;
+            }
+          }
+        });
+      } catch (err) {
+        console.warn("Firestore init exception:", err);
+      }
+
+      // Always keep fallback ticker alive as safety net
+      setTimeout(spoolFallback, 4000);
+    }
 
     // --- 3. REST & Telemetry Data Fetching ---
     async function apiFetch(endpoint) {
@@ -1327,6 +1429,7 @@
     // Boot
     resizeCanvas();
     loadData();
+    initFirestoreObservatory();
   </script>
 </body>
 </html>

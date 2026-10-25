@@ -12,6 +12,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from gemini_app.cloud.upper_mind import UpperMindClient
+from gemini_app.cloud.firestore_stream import FirestoreStreamBridge
 from scripts.export_public_nexus import export_distribution
 
 def get_active_notes_and_topics():
@@ -142,6 +143,17 @@ def ingest_uppermind():
     # Generate the updated public distribution
     export_distribution()
     print("Export to public/api/ completed.")
+
+    # Publish live state to Firestore
+    bridge = FirestoreStreamBridge()
+    if bridge.is_connected:
+        bridge.sync_console_state()
+        bridge.publish_thought(
+            tag="GROUNDED",
+            text="Upper Mind Observatory re-synchronized with live bilateral mothership state.",
+            topic="uppermind web nexus & public face"
+        )
+        print("[+] Live state & thought published to Firestore 'gemini-source'.")
 
     # Deploy to Firebase Hosting
     print("Deploying updated Upper Mind to Firebase Hosting...")

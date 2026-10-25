@@ -3498,6 +3498,53 @@ class ChatApp(App):
                 self.notify(f"Scaffolding failed: {res.get('message')}", severity="error")
             return True
 
+        elif verb in ("grim", "daw"):
+            from gemini_app.plugins.grim import grim_engine
+            sub_parts = arg.split(None, 1)
+            sub_action = sub_parts[0].lower() if sub_parts else "status"
+            sub_arg = sub_parts[1].strip() if len(sub_parts) > 1 else ""
+
+            if sub_action in ("status", "info"):
+                st = grim_engine.get_status()
+                md = (
+                    "### 🎛️ Grim DAW & Audio Subsystem\n"
+                    f"- **Status:** {'✓ Ready' if st.get('reaper_available') else '⚠ Cockos REAPER missing'}\n"
+                    f"- **REAPER Binary:** `{st.get('reaper_binary')}`\n"
+                    f"- **CLI Version:** {st.get('reaper_version')}\n"
+                    f"- **Stock FX Available:** {st.get('stock_fx_count')} ReaPlugs\n"
+                    f"- **Sample Rate:** {st.get('default_sample_rate')} Hz\n"
+                    f"- **Bridge:** Godot Photon / GDScript Autoload ready"
+                )
+                self.call_after_refresh(lambda: self.append_to_feed("system", md, jump_to_start=False))
+                self.notify("Grim DAW status checked.", timeout=3.0)
+                return True
+
+            elif sub_action in ("create", "new"):
+                proj_name = sub_arg or "grim_theme"
+                out_rpp = f"/home/kidlucrid/Projects/games/dieablo/assets/audio/grim/{proj_name}.rpp"
+                res = grim_engine.create_project_template(name=proj_name, output_rpp=out_rpp)
+                md = (
+                    f"### 🎛️ Grim Project Created: `{proj_name}`\n"
+                    f"- **RPP File:** `{res.get('rpp_path')}`\n"
+                    f"- **Manifest:** `{res.get('manifest_path')}`\n"
+                    f"- **Stems:** {', '.join(res.get('stems', []))}\n"
+                    f"- **Tempo:** {res.get('bpm')} BPM"
+                )
+                self.call_after_refresh(lambda: self.append_to_feed("system", md, jump_to_start=False))
+                self.notify(f"Grim template '{proj_name}' created.", timeout=3.5)
+                return True
+
+            elif sub_action in ("synth", "dsp"):
+                kind = sub_arg or "impact"
+                out_wav = f"/tmp/grim_{kind}.wav"
+                res = grim_engine.synthesize_dsp_sample(output_wav=out_wav, kind=kind)
+                self.notify(f"Synthesized Grim DSP sample: {kind} ({res.get('duration')}s) -> {out_wav}", timeout=4.0)
+                return True
+
+            else:
+                self.notify("Usage: /grim [status|new <name>|synth <impact|slash|parry|drone>]", severity="warning")
+                return True
+
         elif verb == "projects":
             proj_dir = PROJECTS_DIR
             if not proj_dir.exists():

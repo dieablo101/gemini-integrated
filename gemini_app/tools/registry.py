@@ -261,7 +261,7 @@ class ToolRegistry:
             host: str = "",
             command: str = "",
         ) -> Dict[str, Any]:
-            """Manages distributed satellite nodes: lists active/registered nodes, captures mic/earbud audio, synthesizes earbud TTS whispers, inspects audio/media telemetry, controls playback, fetches screenshots, or performs remote SSH rescue/reboot."""
+            """Manages distributed satellite nodes: lists active/registered nodes, triggers Face ID / facescan on iPad, hardware fingerprint on Android, captures mic/earbud audio, synthesizes earbud TTS whispers, inspects audio/media telemetry, controls playback, fetches screenshots, or performs remote SSH rescue/reboot."""
             self._notify_phase("fleet", f"fleet node management ({action} {node_id})")
             from gemini_app.fleet.nodes import (
                 control_node_media,
@@ -349,11 +349,28 @@ class ToolRegistry:
                 target = node_id or "android-termux-localhost"
                 from gemini_app.fleet.nodes import list_node_screenshots
                 return list_node_screenshots(node_id=target)
-            elif act in ("biometric", "biometric_auth", "webauthn"):
+            elif act in ("facescan", "face_id", "apple_face_id", "face"):
                 target = node_id or "ipad-ish-localhost"
                 return send_mothership_command("biometric_auth", {
                     "node_id": target,
+                    "reason": command or "Scan Face ID on iPad",
+                    "method": "facescan",
+                    "timeout": 30.0,
+                }, timeout=35.0)
+            elif act in ("fingerprint", "android_fingerprint", "finger"):
+                target = node_id or "android-termux-localhost"
+                return send_mothership_command("biometric_auth", {
+                    "node_id": target,
+                    "reason": command or "Touch Fingerprint Sensor on Android",
+                    "method": "android_fingerprint",
+                    "timeout": 30.0,
+                }, timeout=35.0)
+            elif act in ("biometric", "biometric_auth", "webauthn"):
+                target = node_id or ""
+                return send_mothership_command("biometric_auth", {
+                    "node_id": target,
                     "reason": command or "Authorize Bilateral Action",
+                    "method": "auto",
                     "timeout": 30.0,
                 }, timeout=35.0)
             elif act in ("rescue", "restart", "reboot", "check", "exec", "provision", "autostart", "install_autostart"):

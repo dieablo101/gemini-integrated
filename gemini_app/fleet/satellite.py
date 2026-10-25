@@ -1491,7 +1491,7 @@ class SatelliteNode:
             reason = params.get("reason", "Authorize Action")
             t_out = float(params.get("timeout", 30.0))
             method = params.get("method", "auto")
-            if is_termux_platform() and method in ("auto", "android_fingerprint"):
+            if is_termux_platform() and method in ("auto", "android_fingerprint", "fingerprint"):
                 try:
                     from gemini_app.fleet.biometrics import authenticate_local_termux
                     result_payload.update(authenticate_local_termux(reason=reason, timeout=int(t_out)))
@@ -1499,7 +1499,7 @@ class SatelliteNode:
                     result_payload["status"] = "error"
                     result_payload["error"] = str(exc)
             elif self.wingman_applet:
-                bio_res = self.wingman_applet.request_biometric(reason=reason, timeout=t_out)
+                bio_res = self.wingman_applet.request_biometric(reason=reason, method=method, timeout=t_out)
                 result_payload.update(bio_res)
             else:
                 result_payload["status"] = "error"

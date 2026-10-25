@@ -862,10 +862,12 @@ class MothershipServer:
                                 target_nid = msg.payload.get("params", {}).get("node_id", "")
                                 b_reason = msg.payload.get("params", {}).get("reason", "Authorize Action")
                                 b_timeout = float(msg.payload.get("params", {}).get("timeout", 30.0))
+                                b_method = msg.payload.get("params", {}).get("method", "auto")
                                 resp_payload["biometric_result"] = self.request_node_biometric(
                                     node_id=target_nid,
                                     reason=b_reason,
                                     timeout=b_timeout,
+                                    method=b_method,
                                 )
                             elif action in ("get_wingman_actions", "wingman_actions"):
                                 with self.lock:
@@ -1395,17 +1397,23 @@ class MothershipServer:
         node_id: str,
         reason: str = "Authorize Operation",
         timeout: float = 30.0,
+        method: str = "auto",
     ) -> Dict[str, Any]:
         """Requests biometric authentication (Face ID or Fingerprint) from a specific node."""
+        if not node_id:
+            from gemini_app.fleet.biometrics import FleetBiometricsManager
+            mgr = FleetBiometricsManager(self)
+            return mgr.request_biometric(reason=reason, method=method, timeout=timeout)
+
         if node_id in ("local", "localhost", "mothership"):
             if self.local_wingman and self.local_wingman.engine.is_running:
-                return self.local_wingman.request_biometric(reason=reason, timeout=timeout)
+                return self.local_wingman.request_biometric(reason=reason, method=method, timeout=timeout)
             return {"status": "error", "error": "Local Wingman not running for biometrics"}
 
         return self.send_command(
             node_id=node_id,
             action="biometric_auth",
-            params={"reason": reason, "timeout": timeout},
+            params={"reason": reason, "timeout": timeout, "method": method},
             timeout=timeout + 5.0,
         )
 

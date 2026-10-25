@@ -822,8 +822,13 @@ class WingmanApplet:
         self.engine.broadcast_event("chat_message", msg_obj)
         return msg_id_val
 
-    def request_biometric(self, reason: str = "Authorize Operation", timeout: float = 30.0) -> Dict[str, Any]:
-        """Dispatches a WebAuthn biometric challenge to the open Wingman browser."""
+    def request_biometric(
+        self,
+        reason: str = "Authorize Operation",
+        method: str = "facescan",
+        timeout: float = 30.0,
+    ) -> Dict[str, Any]:
+        """Dispatches a WebAuthn or optical Face ID scan challenge to the open Wingman browser."""
         chal_id = f"chal-{secrets.token_hex(8)}"
         nonce = secrets.token_hex(16)
         ev = threading.Event()
@@ -835,6 +840,7 @@ class WingmanApplet:
             "challenge_id": chal_id,
             "nonce": nonce,
             "reason": reason,
+            "method": method,
             "timestamp": time.time(),
         }
 

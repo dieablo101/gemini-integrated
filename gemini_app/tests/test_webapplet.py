@@ -278,6 +278,46 @@ class TestFleetBiometrics(unittest.TestCase):
         android_node = next(d for d in available if d["platform"] == "android")
         self.assertEqual(android_node["method"], "android_fingerprint")
 
+    def test_request_face_scan_and_fingerprint_dispatch(self) -> None:
+        dispatched_cmds = []
+
+        class MockMothership:
+            def list_nodes(self):
+                return [
+                    {
+                        "node_id": "ipad-ish-localhost",
+                        "telemetry": {
+                            "is_ish": True,
+                            "webapplet": {"wingman_active": True, "port": 8888},
+                        },
+                    },
+                    {
+                        "node_id": "android-termux-localhost",
+                        "telemetry": {
+                            "is_termux": True,
+                            "webapplet": {"wingman_active": False},
+                        },
+                    },
+                ]
+
+            def send_command(self, node_id, action, params, timeout=35.0):
+                dispatched_cmds.append({"node_id": node_id, "action": action, "params": params})
+                return {"status": "authenticated", "method": params.get("method")}
+
+        mgr = FleetBiometricsManager(MockMothership())
+
+        # Test iPad Face Scan
+        res_face = mgr.request_face_scan(reason="Unlock Pro Vault")
+        self.assertEqual(res_face["node_id"], "ipad-ish-localhost")
+        self.assertEqual(res_face["method"], "facescan")
+        self.assertEqual(dispatched_cmds[-1]["params"]["method"], "facescan")
+
+        # Test Android Fingerprint
+        res_finger = mgr.request_fingerprint(reason="Sign Release Package")
+        self.assertEqual(res_finger["node_id"], "android-termux-localhost")
+        self.assertEqual(res_finger["method"], "android_fingerprint")
+        self.assertEqual(dispatched_cmds[-1]["params"]["method"], "android_fingerprint")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -312,6 +312,33 @@ class TestTools(unittest.TestCase):
         self.assertEqual(nav_res["action"], "pulse_nav")
         self.assertEqual(nav_res["target"], "edge")
 
+    def test_manage_fleet_nodes_biometrics_dispatch(self):
+        registry = ToolRegistry(working_dir=self.work_dir, history=[])
+        _, tools_dict = registry.get_tool_callables()
+        fleet_tool = tools_dict["manage_fleet_nodes"]
+
+        from unittest.mock import patch
+        with patch("gemini_app.fleet.nodes.send_mothership_command") as mock_send:
+            mock_send.return_value = {"status": "authenticated", "method": "facescan"}
+            res = fleet_tool(action="facescan", node_id="ipad-ish-localhost", command="Face ID Gate")
+            self.assertEqual(res["status"], "authenticated")
+            mock_send.assert_called_with("biometric_auth", {
+                "node_id": "ipad-ish-localhost",
+                "reason": "Face ID Gate",
+                "method": "facescan",
+                "timeout": 30.0,
+            }, timeout=35.0)
+
+            mock_send.return_value = {"status": "authenticated", "method": "android_fingerprint"}
+            res_finger = fleet_tool(action="fingerprint", node_id="android-termux-localhost", command="Sensor Gate")
+            self.assertEqual(res_finger["status"], "authenticated")
+            mock_send.assert_called_with("biometric_auth", {
+                "node_id": "android-termux-localhost",
+                "reason": "Sensor Gate",
+                "method": "android_fingerprint",
+                "timeout": 30.0,
+            }, timeout=35.0)
+
 
 if __name__ == "__main__":
     unittest.main()

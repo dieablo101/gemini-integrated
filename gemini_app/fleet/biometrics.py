@@ -90,6 +90,7 @@ class FleetBiometricsManager:
         self,
         reason: str = "Authorize Vault Operation",
         preferred_node: Optional[str] = None,
+        method: str = "auto",
         timeout: float = 30.0,
     ) -> Dict[str, Any]:
         """Dispatches an interactive biometric authorization challenge to an active node."""
@@ -105,6 +106,16 @@ class FleetBiometricsManager:
                     break
 
         if not target_device:
+            if method in ("facescan", "face_id", "apple_face_id"):
+                ios_devices = [d for d in available if d["platform"] == "ios"]
+                if ios_devices:
+                    target_device = ios_devices[0]
+            elif method in ("fingerprint", "android_fingerprint"):
+                android_devices = [d for d in available if d["platform"] == "android"]
+                if android_devices:
+                    target_device = android_devices[0]
+
+        if not target_device:
             # Prefer active Wingman session (user is looking at it right now)
             ready_ios = [d for d in available if d["method"] == "apple_face_id" and d["ready"]]
             if ready_ios:
@@ -114,18 +125,46 @@ class FleetBiometricsManager:
                 target_device = available[0]
 
         target_nid = target_device["node_id"]
-        method = target_device["method"]
+        chosen_method = method if method != "auto" else target_device["method"]
 
         # Dispatch command over fleet socket
         resp = self.mothership.send_command(
             node_id=target_nid,
             action="biometric_auth",
-            params={"reason": reason, "method": method, "timeout": timeout},
+            params={"reason": reason, "method": chosen_method, "timeout": timeout},
             timeout=timeout + 5.0,
         )
 
         return {
             "node_id": target_nid,
-            "method": method,
+            "method": chosen_method,
             "response": resp,
         }
+
+    def request_face_scan(
+        self,
+        reason: str = "Scan Face ID on iPad",
+        preferred_node: Optional[str] = None,
+        timeout: float = 30.0,
+    ) -> Dict[str, Any]:
+        """Dispatches an Apple Face ID / camera scan challenge specifically to iPad Wingman."""
+        return self.request_biometric(
+            reason=reason,
+            preferred_node=preferred_node,
+            method="facescan",
+            timeout=timeout,
+        )
+
+    def request_fingerprint(
+        self,
+        reason: str = "Touch Fingerprint Sensor on Android",
+        preferred_node: Optional[str] = None,
+        timeout: float = 30.0,
+    ) -> Dict[str, Any]:
+        """Dispatches a hardware fingerprint scan challenge specifically to Android Termux."""
+        return self.request_biometric(
+            reason=reason,
+            preferred_node=preferred_node,
+            method="android_fingerprint",
+            timeout=timeout,
+        )

@@ -124,6 +124,9 @@ class CommandsModal(ResponsiveModalScreen[None]):
 
             yield Label("Slash Commands:", classes="cmd_section_title")
             yield Label("[bold]/vault [cmd][/]      : Master vault manager (password, file, secret, sync, change, lock)", classes="cmd_row")
+            yield Label("[bold]/facescan [reason][/]: Trigger Apple TrueDepth Face ID scan on iPad Wingman", classes="cmd_row")
+            yield Label("[bold]/fingerprint [r][/]  : Prompt Android hardware fingerprint sensor (Termux)", classes="cmd_row")
+            yield Label("[bold]/bio [reason][/]      : Dispatches platform-aware bilateral biometric challenge", classes="cmd_row")
             yield Label("[bold]/qr [payload][/]      : Generate terminal QR code for phone scanning / node pairing", classes="cmd_row")
             yield Label("[bold]/api-key[/]          : Configure / update Google Gemini API key", classes="cmd_row")
             yield Label("[bold]/git-setup[/]        : Configure Real Name & Git credentials", classes="cmd_row")

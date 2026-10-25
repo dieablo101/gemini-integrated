@@ -3592,6 +3592,89 @@ class ChatApp(App):
             threading.Thread(target=_async_volume, daemon=True, name="vol-cmd").start()
             return True
 
+        elif verb in ("facescan", "faceid", "face"):
+            reason = arg.strip() or "Authorize Console Action via iPad"
+            self.notify("🔒 Dispatched Apple Face ID scan to iPad Pro...", timeout=3.5)
+
+            def _async_face():
+                from gemini_app.fleet.nodes import send_mothership_command
+                res = send_mothership_command("biometric_auth", {
+                    "node_id": "ipad-ish-localhost",
+                    "reason": reason,
+                    "method": "facescan",
+                    "timeout": 30.0,
+                }, timeout=35.0)
+                b_res = res.get("biometric_result", {})
+                if b_res.get("status") == "authenticated":
+                    meth = b_res.get("method", "apple_face_scan")
+                    self.notify("✓ Apple Face ID verified on iPad Pro!", timeout=4.5)
+                    self.call_after_refresh(lambda: self.append_to_feed(
+                        "system",
+                        f"### 🔒 Apple Face ID Biometric Verification\n- **Status:** Authenticated\n- **Device:** iPad Pro (Wingman)\n- **Method:** `{meth}`\n- **Reason:** {reason}",
+                        jump_to_start=False
+                    ))
+                else:
+                    err = b_res.get("error", "Biometric cancelled or timed out")
+                    self.notify(f"Face ID verification failed: {err}", severity="error")
+
+            threading.Thread(target=_async_face, daemon=True, name="facescan-cmd").start()
+            return True
+
+        elif verb in ("fingerprint", "finger"):
+            reason = arg.strip() or "Authorize Console Action via Android"
+            self.notify("🔒 Prompting Android hardware fingerprint sensor...", timeout=3.5)
+
+            def _async_finger():
+                from gemini_app.fleet.nodes import send_mothership_command
+                res = send_mothership_command("biometric_auth", {
+                    "node_id": "android-termux-localhost",
+                    "reason": reason,
+                    "method": "android_fingerprint",
+                    "timeout": 30.0,
+                }, timeout=35.0)
+                b_res = res.get("biometric_result", {})
+                if b_res.get("status") == "authenticated":
+                    self.notify("✓ Android fingerprint authenticated!", timeout=4.5)
+                    self.call_after_refresh(lambda: self.append_to_feed(
+                        "system",
+                        f"### 🔒 Android Hardware Fingerprint Verification\n- **Status:** Authenticated\n- **Device:** Android (Termux)\n- **Method:** `android_fingerprint`\n- **Reason:** {reason}",
+                        jump_to_start=False
+                    ))
+                else:
+                    err = b_res.get("error", "Fingerprint cancelled or rejected")
+                    self.notify(f"Fingerprint verification failed: {err}", severity="error")
+
+            threading.Thread(target=_async_finger, daemon=True, name="fingerprint-cmd").start()
+            return True
+
+        elif verb in ("bio", "biometric"):
+            reason = arg.strip() or "Authorize Console Action"
+            self.notify("🔒 Dispatching bilateral biometric challenge...", timeout=3.5)
+
+            def _async_bio():
+                from gemini_app.fleet.nodes import send_mothership_command
+                res = send_mothership_command("biometric_auth", {
+                    "node_id": "",
+                    "reason": reason,
+                    "method": "auto",
+                    "timeout": 30.0,
+                }, timeout=35.0)
+                b_res = res.get("biometric_result", {})
+                if b_res.get("status") == "authenticated":
+                    meth = b_res.get("method", "biometric")
+                    self.notify("✓ Biometric authentication successful!", timeout=4.5)
+                    self.call_after_refresh(lambda: self.append_to_feed(
+                        "system",
+                        f"### 🔒 Biometric Verification\n- **Status:** Authenticated\n- **Method:** `{meth}`\n- **Reason:** {reason}",
+                        jump_to_start=False
+                    ))
+                else:
+                    err = b_res.get("error", "Biometric cancelled or timed out")
+                    self.notify(f"Biometric verification failed: {err}", severity="error")
+
+            threading.Thread(target=_async_bio, daemon=True, name="bio-cmd").start()
+            return True
+
         elif verb == "help":
             help_text = (
                 "### Console Slash Commands\n"

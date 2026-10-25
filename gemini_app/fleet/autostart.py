@@ -317,9 +317,9 @@ def install_autostart(
         service_path.write_text(content, encoding="utf-8")
 
         try:
-            subprocess.run(cmd_prefix + ["daemon-reload"], check=True, timeout=5)
-            subprocess.run(cmd_prefix + ["enable", "gemini-satellite.service"], check=True, timeout=5)
-            subprocess.run(cmd_prefix + ["restart", "gemini-satellite.service"], check=True, timeout=5)
+            subprocess.run(cmd_prefix + ["daemon-reload"], check=True, capture_output=True, timeout=5)
+            subprocess.run(cmd_prefix + ["enable", "gemini-satellite.service"], check=True, capture_output=True, timeout=5)
+            subprocess.run(cmd_prefix + ["restart", "gemini-satellite.service"], check=True, capture_output=True, timeout=5)
             return {
                 "status": "ok",
                 "init": "systemd",
@@ -390,7 +390,12 @@ def install_autostart(
                 f"cd {work_dir} && "
                 f"nohup {python_bin} {script_path} node --mothership {mothership} --interval {interval} > {work_dir}/satellite.log 2>&1 &"
             )
-            subprocess.Popen(["/bin/sh", "-c", launch_cmd], start_new_session=True)
+            subprocess.Popen(
+                ["/bin/sh", "-c", launch_cmd],
+                start_new_session=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
         except Exception:
             pass
 

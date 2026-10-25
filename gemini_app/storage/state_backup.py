@@ -166,9 +166,9 @@ def ensure_state_repo_initialized(remote_repo: str = DEFAULT_REPO_NAME) -> Path:
         res = subprocess.run(["git", "remote", "get-url", "origin"], cwd=str(GEMINI_HOME), capture_output=True, text=True)
         if res.returncode == 0:
             if res.stdout.strip() != remote_url:
-                subprocess.run(["git", "remote", "set-url", "origin", remote_url], cwd=str(GEMINI_HOME), check=True)
+                subprocess.run(["git", "remote", "set-url", "origin", remote_url], cwd=str(GEMINI_HOME), check=True, capture_output=True)
         else:
-            subprocess.run(["git", "remote", "add", "origin", remote_url], cwd=str(GEMINI_HOME), check=True)
+            subprocess.run(["git", "remote", "add", "origin", remote_url], cwd=str(GEMINI_HOME), check=True, capture_output=True)
 
     return GEMINI_HOME
 
@@ -368,7 +368,7 @@ def perform_backup(force: bool = False) -> dict[str, Any]:
         return result
 
     # 3. Check for staged changes
-    diff_res = subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=str(GEMINI_HOME))
+    diff_res = subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=str(GEMINI_HOME), capture_output=True)
     has_changes = diff_res.returncode != 0
 
     if has_changes:

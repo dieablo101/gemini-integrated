@@ -108,9 +108,21 @@ def sync_gemini_git_state(commit_msg: Optional[str] = None) -> bool:
             return True
 
         # Stage and commit
-        subprocess.run(["git", "add", "-A"], cwd=str(GEMINI_HOME), check=True, timeout=15)
+        subprocess.run(
+            ["git", "add", "-A"],
+            cwd=str(GEMINI_HOME),
+            check=True,
+            capture_output=True,
+            timeout=15,
+        )
         msg = commit_msg or f"chore(state): auto milestone checkpoint [{int(time.time())}]"
-        subprocess.run(["git", "commit", "-m", msg], cwd=str(GEMINI_HOME), check=True, timeout=15)
+        subprocess.run(
+            ["git", "commit", "-m", msg],
+            cwd=str(GEMINI_HOME),
+            check=True,
+            capture_output=True,
+            timeout=15,
+        )
 
         # Push to origin
         push_res = subprocess.run(

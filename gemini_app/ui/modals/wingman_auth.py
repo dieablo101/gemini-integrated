@@ -109,7 +109,7 @@ class WingmanAuthModal(ResponsiveModalScreen[str]):
             time_str = time.strftime("%H:%M:%S UTC", time.gmtime(self.timestamp))
             meta_text = (
                 f"• Node ID:    {self.node_id}\n"
-                f"• Client IP:  {self.client_ip}\n"
+                f"• Device IP:  {self.client_ip}\n"
                 f"• Request ID: {self.auth_req_id}\n"
                 f"• Client:     {self.user_agent[:45]}\n"
                 f"• Time:       {time_str}"

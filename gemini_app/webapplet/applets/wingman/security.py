@@ -170,9 +170,7 @@ class WingmanSecurity:
                 if match_dev or is_loopback:
                     cand.last_seen = now
                     if cand.status == "authorized":
-                        # Only permanently paired / trusted devices can resume an authorized session without presenting a token
-                        if device_trusted or cand.is_paired:
-                            return cand
+                        return cand
                     elif cand.status == "denied":
                         return cand
                     elif cand.status == "pending":
@@ -270,6 +268,15 @@ class WingmanSecurity:
         """Operator explicitly authorizes a pending session."""
         with self._lock:
             session = self.sessions.get(session_id)
+            if not session and session_id:
+                for cand in self.sessions.values():
+                    if cand.session_id == session_id or cand.session_id.startswith(session_id):
+                        session = cand
+                        break
+            if not session:
+                pending_sessions = [s for s in self.sessions.values() if s.status == "pending"]
+                if len(pending_sessions) == 1:
+                    session = pending_sessions[0]
             if not session:
                 return None
             session.status = "authorized"

@@ -18,9 +18,11 @@ def get_wingman_html(
     auth_req_id: str = "",
     client_ip: str = "127.0.0.1",
     session_token: str = "",
+    device_ip: str = "",
 ) -> str:
     """Returns responsive, dark-mode single-page portal HTML."""
     gate_display = "none" if auth_state == "approved" else "flex"
+    effective_device_ip = device_ip or client_ip or "127.0.0.1"
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -1092,7 +1094,10 @@ def get_wingman_html(
       <div class="gate-card">
         <div class="gate-icon">🔒</div>
         <div class="gate-title">Wingman Security Gate</div>
-        <div class="gate-desc">A bilateral interactive session was initiated on node <strong style="color: #fff;">{node_id}</strong> ({client_ip}).</div>
+        <div class="gate-desc">A bilateral interactive session was initiated on node <strong style="color: #fff;">{node_id}</strong>.</div>
+        <div class="gate-meta-info" style="font-size: 11px; color: var(--text-muted); font-family: var(--font-mono); margin-top: 6px;">
+          Device IP: <span id="gateDeviceIp" style="color: var(--accent); font-weight: 600;">{effective_device_ip}</span>
+        </div>
 
         <div class="pending-radar">
           <div class="radar-pulse"></div>
@@ -1839,7 +1844,9 @@ def get_wingman_html(
       }} else {{
         if (gateIcon) gateIcon.textContent = '🔒';
         if (gateTitle) gateTitle.textContent = 'Wingman Security Gate';
-        if (gateDesc) gateDesc.textContent = 'A bilateral interactive session was initiated on node {node_id} ({client_ip}).';
+        if (gateDesc) gateDesc.textContent = 'A bilateral interactive session was initiated on node {node_id}.';
+        const devIpEl = document.getElementById('gateDeviceIp');
+        if (devIpEl) devIpEl.textContent = '{effective_device_ip}';
         checkSession();
       }}
     }}
@@ -1869,6 +1876,11 @@ def get_wingman_html(
           if (isPairedDevice) {{
             localStorage.setItem('wingman_session_id', sessionId);
           }}
+        }}
+
+        if (data.device_ip) {{
+          const devIpEl = document.getElementById('gateDeviceIp');
+          if (devIpEl) devIpEl.textContent = data.device_ip;
         }}
 
         if (data.mothership_boot_id) {{
@@ -1948,10 +1960,13 @@ def get_wingman_html(
       authPollingInterval = setInterval(async () => {{
         if (isMaintenanceMode) return;
         try {{
-          const res = await fetch('/applet/wingman/auth_status?req_id=' + encodeURIComponent(sessionId));
+          const res = await fetch('/applet/wingman/auth_status?req_id=' + encodeURIComponent(sessionId) + '&device_id=' + encodeURIComponent(deviceId));
           const data = await res.json();
           if (data.status === 'approved' && data.token) {{
-            clearInterval(authPollingInterval);
+            if (authPollingInterval) {{
+              clearInterval(authPollingInterval);
+              authPollingInterval = null;
+            }}
             unknownAuthCount = 0;
             if (!data.is_paired) {{
               localStorage.removeItem('wingman_token');
@@ -1960,7 +1975,10 @@ def get_wingman_html(
             }}
             unlockUI(data.token, Boolean(data.is_paired));
           }} else if (data.status === 'denied') {{
-            clearInterval(authPollingInterval);
+            if (authPollingInterval) {{
+              clearInterval(authPollingInterval);
+              authPollingInterval = null;
+            }}
             unknownAuthCount = 0;
             sessionToken = '';
             sessionStorage.removeItem('wingman_token');
@@ -1971,17 +1989,20 @@ def get_wingman_html(
             lockUI("Access Denied by Mothership Operator");
           }} else if (data.status === 'unknown' || data.needs_reauth) {{
             unknownAuthCount++;
-            if (unknownAuthCount >= 2) {{
+            if (unknownAuthCount >= 3) {{
               unknownAuthCount = 0;
               await checkSession();
             }}
           }}
         }} catch (e) {{}}
-      }}, 1500);
+      }}, 1000);
     }}
 
     function unlockUI(token, isPaired = false) {{
-      if (authPollingInterval) clearInterval(authPollingInterval);
+      if (authPollingInterval) {{
+        clearInterval(authPollingInterval);
+        authPollingInterval = null;
+      }}
       isPairedDevice = Boolean(isPaired);
       if (token) {{
         sessionToken = token;
@@ -1999,6 +2020,9 @@ def get_wingman_html(
       statusDot.className = "status-dot";
       playTone(587.33, 'triangle', 0.1);
       loadCardsHistory();
+      if (!sseSource || sseSource.readyState === EventSource.CLOSED) {{
+        connectSSE();
+      }}
     }}
 
     function lockUI(reason = "Awaiting mothership console authorization...") {{
@@ -3110,6 +3134,9 @@ def get_wingman_html(
       if (currentMode === 'hud') {{
         fetchTelemetryHUD();
       }}
+      if (securityGate && securityGate.style.display !== 'none') {{
+        checkSession();
+      }}
       fetch('/applet/wingman/ping')
         .then(res => res.json())
         .then(data => {{
@@ -3168,10 +3195,13 @@ def get_wingman_html(
         if (securityGate && securityGate.style.display !== 'none') {{
           // If sitting on the gate awaiting authorization, immediately poll auth_status!
           try {{
-            const res = await fetch('/applet/wingman/auth_status?req_id=' + encodeURIComponent(sessionId));
+            const res = await fetch('/applet/wingman/auth_status?req_id=' + encodeURIComponent(sessionId) + '&device_id=' + encodeURIComponent(deviceId));
             const data = await res.json();
             if (data.status === 'approved' && data.token) {{
-              if (authPollingInterval) clearInterval(authPollingInterval);
+              if (authPollingInterval) {{
+                clearInterval(authPollingInterval);
+                authPollingInterval = null;
+              }}
               if (!data.is_paired) {{
                 localStorage.removeItem('wingman_token');
                 localStorage.removeItem('wingman_paired');
@@ -3197,6 +3227,9 @@ def get_wingman_html(
 
     checkSession();
     loadCardsHistory();
+    if (!sessionToken || (securityGate && securityGate.style.display !== 'none')) {{
+      startAuthPolling();
+    }}
 
     // Clipboard paste support (iPad/Desktop: paste screenshot directly into chat)
     const chatInputElem = document.getElementById('chatInput');

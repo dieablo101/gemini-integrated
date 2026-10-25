@@ -1111,6 +1111,53 @@ class TestWingmanSecurity(unittest.TestCase):
         finally:
             applet.stop()
 
+    def test_one_time_accepted_session_auto_opens_and_resumes_without_token(self) -> None:
+        """Verifies that an unpaired session accepted by Mothership auto-opens without resetting to pending."""
+        applet = WingmanApplet(port=0, node_id="test-phone", require_pairing=True)
+        try:
+            # 1. Phone initiates pending session
+            sess_id = "sess-phone-unpaired-123"
+            dev_id = "dev-phone-456"
+            s1 = applet.security.create_or_resume_session(
+                client_ip="192.168.1.179",
+                device_id=dev_id,
+                existing_session_id=sess_id,
+            )
+            self.assertEqual(s1.status, "pending")
+
+            # 2. Mothership Operator clicks 'Accept' (one-time approval: trust_device=False)
+            res = applet.authorize_session(sess_id, accepted=True, trust_device=False)
+            self.assertEqual(res.get("status"), "ok")
+            self.assertEqual(s1.status, "authorized")
+            self.assertFalse(s1.is_paired)
+
+            # 3. Phone browser calls checkSession (/applet/wingman/session) before having token stored
+            mock_handler = MagicMock()
+            mock_handler.client_address = ("192.168.1.179", 54321)
+            mock_handler.headers = {"X-Wingman-Device": dev_id, "X-Wingman-Session": sess_id}
+            check_res = applet._handle_session_check(mock_handler, {})
+
+            # Must be authenticated and must return token, not reset to pending!
+            self.assertTrue(check_res.get("authenticated"))
+            self.assertEqual(check_res.get("status"), "authorized")
+            self.assertEqual(check_res.get("token"), s1.token)
+            self.assertEqual(check_res.get("device_ip"), "192.168.1.179")
+
+            # 4. Auth status polling with device_id also confirms approved status
+            status_res = applet._handle_auth_status(mock_handler, {"session_id": [sess_id], "device_id": [dev_id]})
+            self.assertEqual(status_res.get("status"), "approved")
+            self.assertEqual(status_res.get("token"), s1.token)
+        finally:
+            applet.stop()
+
+    def test_wingman_gate_html_shows_device_ip(self) -> None:
+        """Verifies that the security gate displays the real device IP instead of 127.0.0.1."""
+        from gemini_app.webapplet.applets.wingman.ui import get_wingman_html
+        html = get_wingman_html(device_ip="192.168.1.179", node_id="android-phone")
+        self.assertIn("Device IP:", html)
+        self.assertIn("gateDeviceIp", html)
+        self.assertIn("192.168.1.179", html)
+
 
 if __name__ == "__main__":
     unittest.main()

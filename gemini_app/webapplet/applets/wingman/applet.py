@@ -181,13 +181,28 @@ class WingmanApplet:
         self._serve_apk(handler, BOOT_APK, "Termux_Boot_v0.8.1.apk")
 
     def _handle_index(self, handler: Any, query: Dict[str, List[str]]) -> str:
+        client_ip = handler.client_address[0] if hasattr(handler, "client_address") else "127.0.0.1"
         try:
+            from gemini_app.fleet.telemetry import get_local_lan_ip
+            device_ip = client_ip if client_ip not in ("127.0.0.1", "::1", "localhost") else (get_local_lan_ip() or "127.0.0.1")
             import importlib
             from gemini_app.webapplet.applets.wingman import ui as wingman_ui
             importlib.reload(wingman_ui)
-            return wingman_ui.get_wingman_html(port=self.engine.port, node_id=self.node_id)
+            return wingman_ui.get_wingman_html(
+                port=self.engine.port,
+                node_id=self.node_id,
+                client_ip=device_ip,
+                device_ip=device_ip,
+            )
         except Exception:
-            return get_wingman_html(port=self.engine.port, node_id=self.node_id)
+            from gemini_app.fleet.telemetry import get_local_lan_ip
+            device_ip = client_ip if client_ip not in ("127.0.0.1", "::1", "localhost") else (get_local_lan_ip() or "127.0.0.1")
+            return get_wingman_html(
+                port=self.engine.port,
+                node_id=self.node_id,
+                client_ip=device_ip,
+                device_ip=device_ip,
+            )
 
     def _handle_ping(self, handler: Any, query: Dict[str, List[str]]) -> Dict[str, Any]:
         uptime_sec = 0.0
@@ -259,6 +274,9 @@ class WingmanApplet:
             is_loopback=is_loopback,
         )
 
+        from gemini_app.fleet.telemetry import get_local_lan_ip
+        device_ip = client_ip if not is_loopback else (get_local_lan_ip() or "127.0.0.1")
+
         is_trusted = bool(session.device_id) and self.security.is_device_trusted(session.device_id)
         is_paired = is_trusted or getattr(session, "is_paired", False)
         return {
@@ -270,6 +288,8 @@ class WingmanApplet:
             "token": session.token if session.status == "authorized" else "",
             "mode": session.current_mode,
             "device_id": session.device_id,
+            "client_ip": client_ip,
+            "device_ip": device_ip,
             "node_id": self.node_id,
             "trusted": is_trusted,
             "boot_id": self.boot_id,
@@ -720,7 +740,18 @@ class WingmanApplet:
 
     def _handle_auth_status(self, handler: Any, query: Dict[str, List[str]]) -> Dict[str, Any]:
         req_id = query.get("req_id", [""])[0] or query.get("session_id", [""])[0]
+        dev_id = query.get("device_id", [""])[0] or (handler.headers.get("X-Wingman-Device", "") if hasattr(handler, "headers") else "")
         sess = self.security.get_session(req_id)
+        if not sess and dev_id:
+            for s in list(self.security.sessions.values()):
+                if s.device_id == dev_id and s.status in ("authorized", "pending"):
+                    sess = s
+                    break
+        if not sess and req_id:
+            for s in list(self.security.sessions.values()):
+                if s.session_id.startswith(req_id) or req_id.startswith(s.session_id):
+                    sess = s
+                    break
         if sess:
             sess.last_seen = time.time()
             is_trusted = bool(sess.device_id) and self.security.is_device_trusted(sess.device_id)

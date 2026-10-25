@@ -1481,10 +1481,13 @@ class MothershipServer:
         timeout: float = 10.0,
     ) -> Dict[str, Any]:
         """Sends bilateral authorization decision (accept, trust, or deny) for an auth request."""
+        dev_id = ""
         with self.lock:
             # If node_id was not explicitly specified or is local, look up who owns this auth_req_id
             if (not node_id or node_id in ("local", "localhost")) and auth_req_id in self.pending_wingman_auth_requests:
                 node_id = self.pending_wingman_auth_requests[auth_req_id].get("node_id", node_id)
+            if auth_req_id in self.pending_wingman_auth_requests:
+                dev_id = self.pending_wingman_auth_requests[auth_req_id].get("device_id", "")
             self.pending_wingman_auth_requests.pop(auth_req_id, None)
 
         accepted = (decision in ("accept", "accepted", "trust", "pair"))
@@ -1492,7 +1495,7 @@ class MothershipServer:
 
         if node_id in ("local", "localhost", "mothership"):
             if self.local_wingman and hasattr(self.local_wingman, "authorize_session"):
-                return self.local_wingman.authorize_session(auth_req_id, accepted=accepted, trust_device=trust_device)
+                return self.local_wingman.authorize_session(auth_req_id, accepted=accepted, trust_device=trust_device, device_id=dev_id)
             elif self.local_wingman and hasattr(self.local_wingman, "resolve_auth_request"):
                 return self.local_wingman.resolve_auth_request(auth_req_id, decision=decision, trust=trust_device)
             return {"status": "error", "error": "Local Wingman not running"}
@@ -1503,6 +1506,7 @@ class MothershipServer:
             params={
                 "session_id": auth_req_id,
                 "auth_req_id": auth_req_id,
+                "device_id": dev_id,
                 "decision": decision,
                 "accepted": accepted,
                 "trust_device": trust_device,

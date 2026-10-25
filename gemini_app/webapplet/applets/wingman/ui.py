@@ -2023,15 +2023,8 @@ def get_wingman_html(
         if (isMaintenanceMode) return;
         pollCount++;
         if (securityGate && securityGate.style.display !== 'none') {{
-          pendingTicks++;
-          // If sitting on gate unanswered for > 15 seconds, rotate session ID and re-dispatch
-          if (pendingTicks >= 15 && !isPairedDevice) {{
-            pendingTicks = 0;
-            generateFreshSessionId();
-            try {{
-              await checkSession();
-            }} catch (e) {{}}
-          }} else if (pollCount % 4 === 0) {{
+          // Keep session assertion active on gate every 4 polling ticks (~4s) without mutating or rotating session ID
+          if (pollCount % 4 === 0) {{
             try {{
               await checkSession();
             }} catch (e) {{}}

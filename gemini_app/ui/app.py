@@ -589,7 +589,7 @@ class ChatApp(App):
             if isinstance(res, dict) and "requests" in res:
                 for req in res.get("requests", []):
                     rid = req.get("auth_req_id") or req.get("session_id")
-                    if rid and (rid not in handled_times or (time.time() - handled_times[rid]) >= 45.0):
+                    if rid and (rid not in handled_times or (time.time() - handled_times[rid]) >= 5.0):
                         self.call_from_thread(self._handle_wingman_auth_prompt, req)
         except Exception:
             pass
@@ -598,7 +598,7 @@ class ChatApp(App):
         try:
             if getattr(self, "wingman_applet", None) and hasattr(self.wingman_applet, "security"):
                 for sess in list(self.wingman_applet.security.sessions.values()):
-                    if sess.status == "pending" and (sess.session_id not in handled_times or (time.time() - handled_times[sess.session_id]) >= 45.0):
+                    if sess.status == "pending" and (sess.session_id not in handled_times or (time.time() - handled_times[sess.session_id]) >= 5.0):
                         self.call_from_thread(self._handle_wingman_auth_prompt, {
                             "auth_req_id": sess.session_id,
                             "session_id": sess.session_id,

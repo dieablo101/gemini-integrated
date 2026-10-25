@@ -1044,6 +1044,31 @@ class TestWingmanSecurity(unittest.TestCase):
         finally:
             applet.stop()
 
+    def test_authorization_device_id_continuity_and_auth_status(self) -> None:
+        """Verifies that authorizing by session_id + device_id properly approves and unlocks polling."""
+        applet = WingmanApplet(port=0, node_id="test-node", require_pairing=True)
+        try:
+            # 1. Device connects with session A
+            s1 = applet.security.create_or_resume_session(
+                client_ip="192.168.1.179",
+                device_id="dev-android-continuity",
+                existing_session_id="sess-android-old",
+            )
+            self.assertEqual(s1.status, "pending")
+
+            # 2. Operator authorizes session A passing device_id
+            res = applet.authorize_session("sess-android-old", accepted=True, trust_device=False, device_id="dev-android-continuity")
+            self.assertEqual(res["status"], "ok")
+
+            # 3. Client queries auth_status even with a different session ID or device_id
+            mock_handler = MagicMock()
+            mock_handler.headers = {"X-Wingman-Device": "dev-android-continuity"}
+            status_res = applet._handle_auth_status(mock_handler, {"req_id": ["sess-android-diff"], "device_id": ["dev-android-continuity"]})
+            self.assertEqual(status_res["status"], "approved")
+            self.assertTrue(bool(status_res["token"]))
+        finally:
+            applet.stop()
+
     def test_passkey_unlock_and_session_lock_distinction(self) -> None:
         """Verifies distinction between session_locked and reauth_required, and passkey verification unlocks pending session."""
         applet = WingmanApplet(port=0, node_id="test-node", require_pairing=True)

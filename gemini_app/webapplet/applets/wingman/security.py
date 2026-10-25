@@ -264,6 +264,7 @@ class WingmanSecurity:
         session_id: str,
         trust_device: bool = False,
         device_label: str = "",
+        device_id: str = "",
     ) -> Optional[WingmanSession]:
         """Operator explicitly authorizes a pending session."""
         with self._lock:
@@ -273,12 +274,27 @@ class WingmanSecurity:
                     if cand.session_id == session_id or cand.session_id.startswith(session_id):
                         session = cand
                         break
+            if not session and device_id:
+                for cand in self.sessions.values():
+                    if cand.device_id == device_id:
+                        session = cand
+                        break
             if not session:
                 pending_sessions = [s for s in self.sessions.values() if s.status == "pending"]
                 if len(pending_sessions) == 1:
                     session = pending_sessions[0]
             if not session:
                 return None
+
+            target_dev = device_id or session.device_id
+            # Authorize this session and any other pending sessions for this same device
+            for s in self.sessions.values():
+                if s.session_id == session.session_id or (target_dev and s.device_id == target_dev and s.status == "pending"):
+                    s.status = "authorized"
+                    s.is_paired = trust_device
+                    s.last_seen = time.time()
+                    self.tokens_to_session[s.token] = s.session_id
+
             session.status = "authorized"
             session.is_paired = trust_device
             session.last_seen = time.time()

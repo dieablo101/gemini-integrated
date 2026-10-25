@@ -1610,11 +1610,12 @@ class SatelliteNode:
 
         elif action in ("wingman_auth_decision", "authorize_wingman"):
             sess_id = params.get("session_id") or params.get("auth_req_id", "")
+            dev_id = params.get("device_id", "")
             decision = params.get("decision", "accept")
             accepted = params.get("accepted", True) if "accepted" in params else (decision in ("accept", "pair", "trust"))
             trust_device = params.get("trust_device", False) or params.get("trust", False) or (decision in ("pair", "trust"))
             if self.wingman_applet:
-                res = self.wingman_applet.authorize_session(sess_id, accepted=accepted, trust_device=trust_device)
+                res = self.wingman_applet.authorize_session(sess_id, accepted=accepted, trust_device=trust_device, device_id=dev_id)
                 result_payload.update(res)
                 if self.hud:
                     self.hud.show_toast(f"Wingman auth {decision.upper()}", duration=4.0)

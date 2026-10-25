@@ -753,6 +753,12 @@ class WingmanApplet:
         req_id = query.get("req_id", [""])[0] or query.get("session_id", [""])[0]
         dev_id = query.get("device_id", [""])[0] or (handler.headers.get("X-Wingman-Device", "") if hasattr(handler, "headers") else "")
         sess = self.security.get_session(req_id)
+        # If the requested session is not authorized, but an authorized session exists for this device, prefer it!
+        if (not sess or sess.status != "authorized") and dev_id:
+            for s in list(self.security.sessions.values()):
+                if s.device_id == dev_id and s.status == "authorized":
+                    sess = s
+                    break
         if not sess and dev_id:
             for s in list(self.security.sessions.values()):
                 if s.device_id == dev_id and s.status in ("authorized", "pending"):
@@ -851,10 +857,10 @@ class WingmanApplet:
         self.engine.broadcast_event("passkey_prompt", payload)
         return p_id
 
-    def authorize_session(self, session_id: str, accepted: bool = True, trust_device: bool = False) -> Dict[str, Any]:
+    def authorize_session(self, session_id: str, accepted: bool = True, trust_device: bool = False, device_id: str = "") -> Dict[str, Any]:
         """Approves or denies a pending session via Mothership command or operator action."""
         if accepted:
-            sess = self.security.authorize_session(session_id, trust_device=trust_device)
+            sess = self.security.authorize_session(session_id, trust_device=trust_device, device_id=device_id)
             if sess:
                 is_trusted = bool(sess.device_id) and (trust_device or self.security.is_device_trusted(sess.device_id))
                 auth_payload = {

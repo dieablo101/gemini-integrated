@@ -2023,21 +2023,8 @@ def get_wingman_html(
     function startAuthPolling() {{
       if (authPollingInterval) clearInterval(authPollingInterval);
       if (isMaintenanceMode) return;
-      let pollCount = 0;
-      let pendingTicks = 0;
       authPollingInterval = setInterval(async () => {{
         if (isMaintenanceMode) return;
-        pollCount++;
-        if (securityGate && securityGate.style.display !== 'none') {{
-          // Keep session assertion active on gate every 4 polling ticks (~4s) without mutating or rotating session ID
-          if (pollCount % 4 === 0) {{
-            try {{
-              await checkSession();
-            }} catch (e) {{}}
-          }}
-        }} else {{
-          pendingTicks = 0;
-        }}
         try {{
           const res = await fetch('/applet/wingman/auth_status?req_id=' + encodeURIComponent(sessionId) + '&device_id=' + encodeURIComponent(deviceId));
           const data = await res.json();
@@ -2068,7 +2055,7 @@ def get_wingman_html(
             lockUI("Access Denied by Mothership Operator");
           }} else if (data.status === 'unknown' || data.needs_reauth) {{
             unknownAuthCount++;
-            if (unknownAuthCount >= 3) {{
+            if (unknownAuthCount >= 5) {{
               unknownAuthCount = 0;
               await checkSession();
             }}

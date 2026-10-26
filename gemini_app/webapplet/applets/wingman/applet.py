@@ -296,7 +296,7 @@ class WingmanApplet:
         from gemini_app.fleet.telemetry import get_local_lan_ip
         device_ip = client_ip if not is_loopback else (get_local_lan_ip() or "127.0.0.1")
 
-        is_trusted = self.security.is_device_trusted(session.device_id, client_ip)
+        is_trusted = self.security.is_device_trusted(session.device_id)
         is_paired = is_trusted or getattr(session, "is_paired", False)
         return {
             "session_id": session.session_id,
@@ -779,16 +779,7 @@ class WingmanApplet:
         if sess:
             now = time.time()
             sess.last_seen = now
-            if sess.status == "pending":
-                should_notify = (now - getattr(sess, "_last_notified", 0.0)) > 4.0
-                if should_notify:
-                    sess._last_notified = now
-                    for cb in list(self.security._on_pending_session_callbacks):
-                        try:
-                            cb(sess)
-                        except Exception:
-                            pass
-            is_trusted = self.security.is_device_trusted(sess.device_id, sess.client_ip)
+            is_trusted = self.security.is_device_trusted(sess.device_id)
             is_paired = is_trusted or getattr(sess, "is_paired", False)
             return {
                 "status": "approved" if sess.status == "authorized" else sess.status,

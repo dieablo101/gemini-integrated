@@ -1626,6 +1626,21 @@ class SatelliteNode:
                 result_payload["status"] = "error"
                 result_payload["error"] = "Wingman applet not active on node"
 
+        elif action == "revoke_wingman_device":
+            target_did = params.get("device_id", "")
+            if self.wingman_applet and target_did:
+                self.wingman_applet.security.revoke_device(target_did)
+                self.wingman_applet.engine.broadcast_event("session_denied", {
+                    "device_id": target_did,
+                    "status": "denied",
+                })
+                self.wingman_applet.engine.broadcast_event("auth_denied", {
+                    "device_id": target_did,
+                    "status": "denied",
+                })
+            result_payload["status"] = "ok"
+            result_payload["revoked"] = target_did
+
         elif action == "wingman_prompt_passkey":
             reason = params.get("reason", "Authorize Bilateral Homebase Message")
             prompt_id = params.get("prompt_id")

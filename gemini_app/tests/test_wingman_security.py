@@ -745,7 +745,7 @@ class TestWingmanSecurity(unittest.TestCase):
             applet.stop()
 
     def test_pending_session_reconnect_reinvokes_pending_callbacks(self) -> None:
-        """Verifies that when a pending device refreshes or re-polls, on_pending_session is re-invoked."""
+        """Verifies that when a pending device re-checks, duplicate notifications are prevented."""
         applet = WingmanApplet(port=0, node_id="test-node", require_pairing=True)
         notifications = []
         applet.on_auth_request(lambda req: notifications.append(req))
@@ -758,11 +758,10 @@ class TestWingmanSecurity(unittest.TestCase):
             s2 = applet.security.create_or_resume_session(client_ip="192.168.1.179", device_id="dev-phone-x")
             self.assertEqual(len(notifications), 1)
 
-            # 3. Reconnect after notification cooldown (> 3s simulated)
-            s1._last_notified = time.time() - 4.0
+            # 3. Subsequent routine check does not spam duplicate notifications
             s3 = applet.security.create_or_resume_session(client_ip="192.168.1.179", device_id="dev-phone-x")
-            self.assertEqual(len(notifications), 2)
-            self.assertEqual(notifications[1]["session_id"], s1.session_id)
+            self.assertEqual(len(notifications), 1)
+            self.assertEqual(s3.session_id, s1.session_id)
         finally:
             applet.stop()
 
@@ -1250,7 +1249,7 @@ class TestWingmanSecurity(unittest.TestCase):
             ms.stop()
 
     def test_auth_status_polling_re_notifies_pending_session(self) -> None:
-        """Verifies that polling _handle_auth_status periodically invokes pending callbacks without page reload."""
+        """Verifies that polling _handle_auth_status does NOT repeatedly invoke pending callbacks to avoid notification spam."""
         applet = WingmanApplet(port=0, node_id="test-node-poll", require_pairing=True)
         notifications = []
         applet.on_auth_request(lambda r: notifications.append(r))
@@ -1259,19 +1258,17 @@ class TestWingmanSecurity(unittest.TestCase):
             self.assertEqual(sess.status, "pending")
             self.assertEqual(len(notifications), 1)
 
-            # Polling immediately within throttle window should not re-notify
+            # Polling should not re-notify
             mock_handler = MagicMock()
             mock_handler.headers = {}
             status_res = applet._handle_auth_status(mock_handler, {"req_id": [sess.session_id]})
             self.assertEqual(status_res["status"], "pending")
             self.assertEqual(len(notifications), 1)
 
-            # After 4.1 seconds of polling while sitting on the gate, callback is re-invoked
-            sess._last_notified = time.time() - 4.5
+            # Continuous polling while sitting on the gate keeps notification count at 1 (no spam)
             status_res2 = applet._handle_auth_status(mock_handler, {"req_id": [sess.session_id]})
             self.assertEqual(status_res2["status"], "pending")
-            self.assertEqual(len(notifications), 2)
-            self.assertEqual(notifications[1]["auth_req_id"], sess.session_id)
+            self.assertEqual(len(notifications), 1)
         finally:
             applet.stop()
 

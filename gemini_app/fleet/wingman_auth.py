@@ -61,11 +61,16 @@ def save_trusted_devices(devices: Dict[str, Dict[str, Any]]) -> bool:
 
 
 def is_device_trusted(identifier: str) -> bool:
-    """Checks if a device identifier (IP, node_id, or token) is trusted."""
+    """Checks if a device identifier (device_id, node_id, or token) is trusted."""
     if not identifier or identifier in ("127.0.0.1", "::1", "localhost", "local"):
         return False
     devices = load_trusted_devices()
-    return identifier in devices
+    if identifier in devices:
+        return True
+    for v in devices.values():
+        if v.get("device_id") == identifier or v.get("identifier") == identifier:
+            return True
+    return False
 
 
 def trust_device(
@@ -75,10 +80,11 @@ def trust_device(
     label: str = "",
     meta: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Adds a device or IP to the trusted paired registry."""
+    """Adds a device to the trusted paired registry."""
     devices = load_trusted_devices()
     entry = {
         "identifier": identifier,
+        "device_id": identifier,
         "node_id": node_id,
         "client_ip": client_ip,
         "label": label or f"Paired Node {node_id or identifier}",
@@ -87,8 +93,6 @@ def trust_device(
         "meta": meta or {},
     }
     devices[identifier] = entry
-    if client_ip and client_ip not in devices:
-        devices[client_ip] = entry
     save_trusted_devices(devices)
     return entry
 
@@ -97,17 +101,32 @@ def revoke_trusted_device(identifier: str) -> bool:
     """Removes a device or IP from the trusted registry."""
     devices = load_trusted_devices()
     removed = False
-    if identifier in devices:
-        del devices[identifier]
-        removed = True
-    # Also clean matching client_ip or node_id
-    to_delete = [
-        k for k, v in devices.items()
-        if v.get("node_id") == identifier or v.get("client_ip") == identifier
-    ]
+    safe_id = identifier.replace(":", "_").replace("/", "_").replace(".", "_")
+    to_delete = []
+    for k, v in devices.items():
+        did = v.get("device_id") or v.get("identifier") or k
+        cip = v.get("client_ip") or ""
+        nid = v.get("node_id") or ""
+        safe_k = k.replace(":", "_").replace("/", "_").replace(".", "_")
+        safe_did = did.replace(":", "_").replace("/", "_").replace(".", "_")
+        safe_cip = cip.replace(":", "_").replace("/", "_").replace(".", "_")
+        safe_nid = nid.replace(":", "_").replace("/", "_").replace(".", "_")
+        if (
+            k == identifier
+            or did == identifier
+            or cip == identifier
+            or nid == identifier
+            or safe_k == safe_id
+            or safe_did == safe_id
+            or safe_cip == safe_id
+            or safe_nid == safe_id
+        ):
+            to_delete.append(k)
+
     for k in to_delete:
-        del devices[k]
-        removed = True
+        if k in devices:
+            del devices[k]
+            removed = True
     if removed:
         save_trusted_devices(devices)
     return removed

@@ -109,6 +109,8 @@ class MothershipServer:
         self.mothership_boot_id = secrets.token_hex(8)
         self.wingman_maintenance_mode = False
         self.latest_node_media: Dict[str, Dict[str, Any]] = {}
+        self._handled_auth_ids: Dict[str, float] = {}
+        self._notified_auth_times: Dict[str, float] = {}
 
     def start(self) -> bool:
         """Binds and starts accepting incoming satellite node connections."""
@@ -502,10 +504,12 @@ class MothershipServer:
                                                     entry["node_id"] = node_id
                                                     entry["client_ip"] = cip
                                                     entry["timestamp"] = p.get("timestamp") or time.time()
+                                                    is_new = (rid not in self.pending_wingman_auth_requests and match_key is None)
                                                     if match_key and match_key != rid:
                                                         self.pending_wingman_auth_requests.pop(match_key, None)
                                                     self.pending_wingman_auth_requests[rid] = entry
-                                                    self._notify_wingman_auth(entry)
+                                                    if is_new and not self._is_auth_handled(rid, dev_id):
+                                                        self._notify_wingman_auth(entry)
                             try:
                                 save_active_nodes(self.list_nodes())
                             except Exception:
@@ -905,6 +909,23 @@ class MothershipServer:
                                 if not nid and req_id in self.pending_wingman_auth_requests:
                                     nid = self.pending_wingman_auth_requests[req_id].get("node_id", "local")
                                 resp_payload["result"] = self.authorize_wingman(node_id=nid or "local", auth_req_id=req_id, decision=dec, trust=trust_dev)
+                            elif action in ("revoke_wingman_device", "revoke_device"):
+                                target_did = msg.payload.get("params", {}).get("device_id", "")
+                                if target_did:
+                                    from gemini_app.fleet.wingman_auth import revoke_trusted_device
+                                    revoke_trusted_device(target_did)
+                                    if self.local_wingman and hasattr(self.local_wingman, "security"):
+                                        self.local_wingman.security.revoke_device(target_did)
+                                    self.broadcast(FleetMessage(
+                                        msg_type=FleetMessage.TYPE_COMMAND,
+                                        node_id="mothership",
+                                        payload={
+                                            "action": "revoke_wingman_device",
+                                            "params": {"device_id": target_did},
+                                        },
+                                    ))
+                                    resp_payload["status"] = "ok"
+                                    resp_payload["revoked"] = target_did
                             elif action in ("prune_wingman_requests", "clear_pending_wingman_auth"):
                                 with self.lock:
                                     self.pending_wingman_auth_requests.clear()
@@ -1024,10 +1045,12 @@ class MothershipServer:
                                         ):
                                             match_key = r_rid
                                             break
+                                    is_new = (req_id not in self.pending_wingman_auth_requests and match_key is None)
                                     if match_key and match_key != req_id:
                                         self.pending_wingman_auth_requests.pop(match_key, None)
                                     self.pending_wingman_auth_requests[req_id] = auth_entry
-                                    self._notify_wingman_auth(auth_entry)
+                                    if is_new:
+                                        self._notify_wingman_auth(auth_entry)
 
                             elif event_name == "wingman_chat_message":
                                 chat_text = msg.payload.get("text", "")

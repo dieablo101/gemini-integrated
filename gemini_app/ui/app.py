@@ -477,14 +477,22 @@ class ChatApp(App):
             return
 
         now = time.time()
+        handled_times = getattr(self, "_handled_wingman_auth_times", {})
+        if req_id in handled_times and (now - handled_times[req_id]) < 300.0:
+            return
+        dev_id = auth_data.get("device_id", "")
+        if dev_id and f"dev:{dev_id}" in handled_times and (now - handled_times[f"dev:{dev_id}"]) < 300.0:
+            return
+        client_ip = auth_data.get("client_ip", "remote")
+        if client_ip and client_ip not in ("127.0.0.1", "::1", "localhost") and f"ip:{client_ip}" in handled_times and (now - handled_times[f"ip:{client_ip}"]) < 300.0:
+            return
+
         ts = auth_data.get("timestamp", now)
         boot_time = getattr(self, "_console_boot_time", now)
         if (now - ts) > 120.0 or ts < (boot_time - 5.0):
             return
 
-        client_ip = auth_data.get("client_ip", "remote")
         node_id = auth_data.get("node_id", "local")
-        dev_id = auth_data.get("device_id", "")
 
         node_id_check = str(node_id).strip().lower()
         if node_id_check.startswith(("test-", "test_")) or node_id_check == "test":
@@ -499,6 +507,7 @@ class ChatApp(App):
             if (now - k_ts) > 120.0:
                 self._pending_wingman_auth.pop(k, None)
 
+        is_already_known = (req_id in self._pending_wingman_auth)
         self._pending_wingman_auth[req_id] = dict(auth_data)
 
         # If WingmanAuthModal is already visible on screen, live-refresh it
@@ -507,12 +516,16 @@ class ChatApp(App):
                 screen.add_or_update_request(dict(auth_data))
                 return
 
-        # Throttle toast notifications: at most once per 25s for the same device/IP
+        # Do not spam toast notifications if this exact request was already stored and notified
+        if is_already_known:
+            return
+
+        # Throttle toast notifications: at most once per 60s for the same device/IP
         notify_key = dev_id or client_ip or node_id
         if not hasattr(self, "_last_wingman_notified_times"):
             self._last_wingman_notified_times = {}
         last_t = self._last_wingman_notified_times.get(notify_key, 0.0)
-        if (now - last_t) < 25.0:
+        if (now - last_t) < 60.0:
             return
         self._last_wingman_notified_times[notify_key] = now
 
@@ -554,7 +567,7 @@ class ChatApp(App):
         # 1. Authorize on local Wingman applet if running
         if getattr(self, "wingman_applet", None):
             try:
-                self.wingman_applet.authorize_session(req_id, accepted=accepted, trust_device=trust_device)
+                self.wingman_applet.authorize_session(req_id, accepted=accepted, trust_device=trust_device, device_id=dev_id_val)
             except Exception:
                 pass
 
@@ -565,6 +578,7 @@ class ChatApp(App):
                 "auth_req_id": req_id,
                 "session_id": req_id,
                 "node_id": node_id_val,
+                "device_id": dev_id_val,
                 "decision": dec,
                 "trust": trust_device,
             }, timeout=3.0)
@@ -579,11 +593,34 @@ class ChatApp(App):
             self.notify(f"Wingman connection denied for {client_ip_val} ({node_id_val})", severity="warning", title="Wingman Denied")
 
     def _revoke_wingman_device(self, device_id: str) -> None:
-        """Revokes a permanently paired device from trusted registry."""
+        """Revokes a permanently paired device from trusted registry across the fleet."""
         try:
             from gemini_app.webapplet.applets.wingman.security import WingmanSecurity
+            from gemini_app.fleet.wingman_auth import revoke_trusted_device
             sec = WingmanSecurity()
             sec.revoke_device(device_id)
+            revoke_trusted_device(device_id)
+
+            if getattr(self, "wingman_applet", None) and hasattr(self.wingman_applet, "security"):
+                try:
+                    self.wingman_applet.security.revoke_device(device_id)
+                    self.wingman_applet.engine.broadcast_event("session_denied", {
+                        "device_id": device_id,
+                        "status": "denied",
+                    })
+                    self.wingman_applet.engine.broadcast_event("auth_denied", {
+                        "device_id": device_id,
+                        "status": "denied",
+                    })
+                except Exception:
+                    pass
+
+            try:
+                from gemini_app.fleet.nodes import send_mothership_command
+                send_mothership_command("revoke_wingman_device", {"device_id": device_id}, timeout=3.0)
+            except Exception:
+                pass
+
             self.notify(f"Revoked pairing for device: {device_id}", title="Wingman Device Revoked", severity="warning")
         except Exception as e:
             self.notify(f"Failed to revoke device: {e}", severity="error")
@@ -600,25 +637,28 @@ class ChatApp(App):
             if (now - k_ts) > 120.0:
                 self._pending_wingman_auth.pop(k, None)
 
-        # Pull fresh pending requests from mothership
-        try:
-            from gemini_app.fleet.nodes import send_mothership_command
-            res = send_mothership_command("get_pending_wingman_auth", timeout=1.0)
-            if isinstance(res, dict) and "requests" in res:
-                for req in res.get("requests", []):
-                    ts = req.get("timestamp", now)
-                    if (now - ts) <= 120.0:
-                        rid = req.get("auth_req_id") or req.get("session_id")
-                        if rid:
-                            self._pending_wingman_auth[rid] = dict(req)
-        except Exception:
-            pass
+        handled_times = getattr(self, "_handled_wingman_auth_times", {})
+
+        # Pull fresh pending requests from mothership if not in unit test mode
+        if "unittest" not in sys.modules and not os.environ.get("GEMINI_TEST_MODE"):
+            try:
+                from gemini_app.fleet.nodes import send_mothership_command
+                res = send_mothership_command("get_pending_wingman_auth", timeout=1.0)
+                if isinstance(res, dict) and "requests" in res:
+                    for req in res.get("requests", []):
+                        ts = req.get("timestamp", now)
+                        if (now - ts) <= 120.0:
+                            rid = req.get("auth_req_id") or req.get("session_id")
+                            if rid and rid not in handled_times:
+                                self._pending_wingman_auth[rid] = dict(req)
+            except Exception:
+                pass
 
         # Pull fresh pending from local applet
         try:
             if getattr(self, "wingman_applet", None) and hasattr(self.wingman_applet, "security"):
                 for sess in list(self.wingman_applet.security.sessions.values()):
-                    if sess.status == "pending":
+                    if sess.status == "pending" and sess.session_id not in handled_times:
                         ts = getattr(sess, "last_seen", sess.created_at)
                         if (now - ts) <= 120.0:
                             self._pending_wingman_auth[sess.session_id] = {
@@ -632,6 +672,11 @@ class ChatApp(App):
                             }
         except Exception:
             pass
+
+        # Filter out any handled requests
+        for rid in list(self._pending_wingman_auth.keys()):
+            if rid in handled_times and (now - handled_times[rid]) < 300.0:
+                self._pending_wingman_auth.pop(rid, None)
 
         # Load paired devices
         paired_devices = []

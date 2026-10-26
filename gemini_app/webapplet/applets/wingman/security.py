@@ -85,59 +85,93 @@ class WingmanSecurity:
             return False
 
     def is_device_trusted(self, device_id: str, client_ip: str = "") -> bool:
-        """Returns True if device ID / fingerprint or client IP has been permanently paired."""
+        """Returns True if device ID / fingerprint has been permanently paired."""
+        if not device_id or device_id in ("127.0.0.1", "::1", "localhost", "local"):
+            return False
         devices = self._load_trusted_devices()
-        if device_id and device_id not in ("127.0.0.1", "::1", "localhost", "local"):
-            if device_id in devices:
-                return True
-        if client_ip and client_ip not in ("127.0.0.1", "::1", "localhost", "local"):
-            if client_ip in devices:
+        if device_id in devices:
+            return True
+        for d in devices.values():
+            if d.get("device_id") == device_id:
                 return True
         return False
 
     def trust_device(self, device_id: str, label: str = "", client_ip: str = "") -> bool:
         """Stores device in trusted paired devices registry."""
-        if not device_id and not client_ip:
-            return False
-        if device_id in ("127.0.0.1", "::1", "localhost", "local"):
-            device_id = ""
-        if client_ip in ("127.0.0.1", "::1", "localhost", "local"):
-            client_ip = ""
-        if not device_id and not client_ip:
+        if not device_id or device_id in ("127.0.0.1", "::1", "localhost", "local"):
             return False
         with self._lock:
             devices = self._load_trusted_devices()
             entry = {
-                "device_id": device_id or f"ip-{client_ip}",
-                "label": label or f"Paired Satellite ({client_ip or device_id})",
+                "device_id": device_id,
+                "label": label or f"Paired Satellite ({device_id})",
                 "client_ip": client_ip,
                 "paired_at": time.time(),
                 "last_used": time.time(),
             }
-            if device_id:
-                devices[device_id] = entry
-            if client_ip:
-                devices[client_ip] = entry
+            devices[device_id] = entry
             return self._save_trusted_devices(devices)
 
-    def revoke_device(self, device_id: str) -> bool:
-        """Revokes a trusted device pairing."""
+    def revoke_device(self, identifier: str) -> bool:
+        """Revokes a trusted device pairing across device_id and matching entries."""
+        if not identifier:
+            return False
         with self._lock:
             devices = self._load_trusted_devices()
-            if device_id in devices:
-                del devices[device_id]
+            removed = False
+            safe_id = identifier.replace(":", "_").replace("/", "_").replace(".", "_")
+            keys_to_del = []
+            for k, v in devices.items():
+                did = v.get("device_id") or k
+                cip = v.get("client_ip") or ""
+                safe_k = k.replace(":", "_").replace("/", "_").replace(".", "_")
+                safe_did = did.replace(":", "_").replace("/", "_").replace(".", "_")
+                safe_cip = cip.replace(":", "_").replace("/", "_").replace(".", "_")
+                if (
+                    k == identifier
+                    or did == identifier
+                    or cip == identifier
+                    or safe_k == safe_id
+                    or safe_did == safe_id
+                    or safe_cip == safe_id
+                ):
+                    keys_to_del.append(k)
+
+            for k in keys_to_del:
+                if k in devices:
+                    del devices[k]
+                    removed = True
+
+            if removed:
                 self._save_trusted_devices(devices)
                 # Sever any active sessions for this device
                 for s in self.sessions.values():
-                    if s.device_id == device_id:
+                    safe_sdid = getattr(s, "device_id", "").replace(":", "_").replace("/", "_").replace(".", "_")
+                    safe_scip = getattr(s, "client_ip", "").replace(":", "_").replace("/", "_").replace(".", "_")
+                    if (
+                        s.device_id == identifier
+                        or getattr(s, "client_ip", "") == identifier
+                        or safe_sdid == safe_id
+                        or safe_scip == safe_id
+                    ):
                         s.status = "denied"
-                return True
-            return False
+                        s.is_paired = False
+                        if s.token:
+                            self.tokens_to_session.pop(s.token, None)
+                            s.token = ""
+            return removed
 
     def list_trusted_devices(self) -> List[Dict[str, Any]]:
-        """Returns list of all trusted and paired devices."""
+        """Returns unique list of all trusted and paired devices."""
         devices = self._load_trusted_devices()
-        return list(devices.values())
+        seen: set[str] = set()
+        result: List[Dict[str, Any]] = []
+        for k, v in devices.items():
+            did = v.get("device_id") or k
+            if did not in seen:
+                seen.add(did)
+                result.append(v)
+        return result
 
     def on_pending_session(self, callback: Callable[[WingmanSession], None]) -> None:
         """Registers callback fired when a new unauthenticated browser requests access."""
@@ -165,7 +199,7 @@ class WingmanSecurity:
                     session.last_seen = now
                     return session
 
-            device_trusted = self.is_device_trusted(effective_device_id, client_ip)
+            device_trusted = self.is_device_trusted(effective_device_id)
 
             # 2. Check if existing_session_id is already in sessions
             if existing_session_id and existing_session_id in self.sessions:
@@ -180,14 +214,6 @@ class WingmanSecurity:
                     elif cand.status == "pending":
                         if user_agent:
                             cand.user_agent = user_agent
-                        should_notify = (now - getattr(cand, "_last_notified", 0.0)) > 3.0
-                        if should_notify:
-                            cand._last_notified = now
-                            for cb in list(self._on_pending_session_callbacks):
-                                try:
-                                    cb(cand)
-                                except Exception:
-                                    pass
                         return cand
 
             # 3. If device is permanently trusted or require_pairing is False
@@ -207,14 +233,6 @@ class WingmanSecurity:
                     matched_existing.last_seen = now
                     if user_agent:
                         matched_existing.user_agent = user_agent
-                    should_notify = (now - getattr(matched_existing, "_last_notified", 0.0)) > 3.0
-                    if should_notify:
-                        matched_existing._last_notified = now
-                        for cb in list(self._on_pending_session_callbacks):
-                            try:
-                                cb(matched_existing)
-                            except Exception:
-                                pass
                     return matched_existing
 
             sess_id = existing_session_id or f"sess-{secrets.token_hex(8)}"

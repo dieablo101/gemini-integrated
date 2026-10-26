@@ -1823,11 +1823,12 @@ class ChatApp(App):
 
         self._console_boot_time = time.time()
         self._pending_wingman_auth = {}
-        try:
-            from gemini_app.fleet.nodes import send_mothership_command
-            send_mothership_command("prune_wingman_requests", timeout=0.5)
-        except Exception:
-            pass
+        if "unittest" not in sys.modules and not os.environ.get("GEMINI_TEST_MODE"):
+            try:
+                from gemini_app.fleet.nodes import send_mothership_command
+                send_mothership_command("prune_wingman_requests", timeout=0.5)
+            except Exception:
+                pass
 
         notes_open_saved = False
         if STATE_FILE.exists():

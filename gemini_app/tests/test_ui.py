@@ -118,8 +118,11 @@ class TestUIApp(unittest.IsolatedAsyncioTestCase):
             # Arbitrary key (e.g. 'a') must NEVER dismiss boot screen
             await pilot.press("a")
             self.assertIsInstance(test_app.screen, BootScreen)
+            # Advance past the 0.6s grace period
+            boot._start_time -= 1.0
             # Intentional skip key (e.g. 'space') dismisses once beyond grace period
             await pilot.press("space")
+            await pilot.pause()
             self.assertNotIsInstance(test_app.screen, BootScreen)
 
     async def test_reboot_restores_notes_open(self):

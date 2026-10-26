@@ -84,12 +84,16 @@ class WingmanSecurity:
         except Exception:
             return False
 
-    def is_device_trusted(self, device_id: str) -> bool:
-        """Returns True if device ID / fingerprint has been permanently paired."""
-        if not device_id or device_id in ("127.0.0.1", "::1", "localhost", "local"):
-            return False
+    def is_device_trusted(self, device_id: str, client_ip: str = "") -> bool:
+        """Returns True if device ID / fingerprint or client IP has been permanently paired."""
         devices = self._load_trusted_devices()
-        return device_id in devices
+        if device_id and device_id not in ("127.0.0.1", "::1", "localhost", "local"):
+            if device_id in devices:
+                return True
+        if client_ip and client_ip not in ("127.0.0.1", "::1", "localhost", "local"):
+            if client_ip in devices:
+                return True
+        return False
 
     def trust_device(self, device_id: str, label: str = "", client_ip: str = "") -> bool:
         """Stores device in trusted paired devices registry."""
@@ -161,7 +165,7 @@ class WingmanSecurity:
                     session.last_seen = now
                     return session
 
-            device_trusted = bool(effective_device_id) and self.is_device_trusted(effective_device_id)
+            device_trusted = self.is_device_trusted(effective_device_id, client_ip)
 
             # 2. Check if existing_session_id is already in sessions
             if existing_session_id and existing_session_id in self.sessions:
@@ -206,7 +210,6 @@ class WingmanSecurity:
                     should_notify = (now - getattr(matched_existing, "_last_notified", 0.0)) > 3.0
                     if should_notify:
                         matched_existing._last_notified = now
-                    if should_notify:
                         for cb in list(self._on_pending_session_callbacks):
                             try:
                                 cb(matched_existing)

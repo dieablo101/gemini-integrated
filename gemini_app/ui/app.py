@@ -479,7 +479,7 @@ class ChatApp(App):
         now = time.time()
         ts = auth_data.get("timestamp", now)
         boot_time = getattr(self, "_console_boot_time", now)
-        if (now - ts) > 60.0 or ts < (boot_time - 5.0):
+        if (now - ts) > 120.0 or ts < (boot_time - 5.0):
             return
 
         client_ip = auth_data.get("client_ip", "remote")
@@ -493,10 +493,10 @@ class ChatApp(App):
         if not hasattr(self, "_pending_wingman_auth"):
             self._pending_wingman_auth = {}
 
-        # Prune expired requests
+        # Prune expired requests (> 120s)
         for k in list(self._pending_wingman_auth.keys()):
             k_ts = self._pending_wingman_auth[k].get("timestamp", now)
-            if (now - k_ts) > 60.0 or k_ts < (boot_time - 5.0):
+            if (now - k_ts) > 120.0:
                 self._pending_wingman_auth.pop(k, None)
 
         self._pending_wingman_auth[req_id] = dict(auth_data)
@@ -591,14 +591,13 @@ class ChatApp(App):
     def action_open_wingman_manager(self) -> None:
         """Opens the Wingman Connection & Auth Manager modal on demand."""
         now = time.time()
-        boot_time = getattr(self, "_console_boot_time", now)
         if not hasattr(self, "_pending_wingman_auth"):
             self._pending_wingman_auth = {}
 
-        # Prune expired requests (> 60s)
+        # Prune expired requests (> 120s)
         for k in list(self._pending_wingman_auth.keys()):
             k_ts = self._pending_wingman_auth[k].get("timestamp", now)
-            if (now - k_ts) > 60.0 or k_ts < (boot_time - 5.0):
+            if (now - k_ts) > 120.0:
                 self._pending_wingman_auth.pop(k, None)
 
         # Pull fresh pending requests from mothership
@@ -608,7 +607,7 @@ class ChatApp(App):
             if isinstance(res, dict) and "requests" in res:
                 for req in res.get("requests", []):
                     ts = req.get("timestamp", now)
-                    if (now - ts) <= 60.0 and ts >= (boot_time - 5.0):
+                    if (now - ts) <= 120.0:
                         rid = req.get("auth_req_id") or req.get("session_id")
                         if rid:
                             self._pending_wingman_auth[rid] = dict(req)
@@ -621,7 +620,7 @@ class ChatApp(App):
                 for sess in list(self.wingman_applet.security.sessions.values()):
                     if sess.status == "pending":
                         ts = getattr(sess, "last_seen", sess.created_at)
-                        if (now - ts) <= 60.0 and ts >= (boot_time - 5.0):
+                        if (now - ts) <= 120.0:
                             self._pending_wingman_auth[sess.session_id] = {
                                 "auth_req_id": sess.session_id,
                                 "session_id": sess.session_id,
@@ -777,7 +776,6 @@ class ChatApp(App):
     def _check_pending_wingman_auth(self) -> None:
         """Polls MothershipServer and local applet for pending Wingman access requests."""
         now = time.time()
-        boot_time = getattr(self, "_console_boot_time", now)
 
         # Check MothershipServer for requests from satellites
         try:
@@ -786,7 +784,7 @@ class ChatApp(App):
             if isinstance(res, dict) and "requests" in res:
                 for req in res.get("requests", []):
                     ts = req.get("timestamp", now)
-                    if (now - ts) <= 60.0 and ts >= (boot_time - 5.0):
+                    if (now - ts) <= 120.0:
                         self.call_from_thread(self._handle_incoming_wingman_auth, req)
         except Exception:
             pass
@@ -797,7 +795,7 @@ class ChatApp(App):
                 for sess in list(self.wingman_applet.security.sessions.values()):
                     if sess.status == "pending":
                         ts = getattr(sess, "last_seen", sess.created_at)
-                        if (now - ts) <= 60.0 and ts >= (boot_time - 5.0):
+                        if (now - ts) <= 120.0:
                             self.call_from_thread(self._handle_incoming_wingman_auth, {
                                 "auth_req_id": sess.session_id,
                                 "session_id": sess.session_id,
@@ -1800,7 +1798,6 @@ class ChatApp(App):
             self._boot_complete = True
             if "unittest" not in sys.modules and not os.environ.get("GEMINI_TEST_MODE"):
                 self.set_interval(1.5, self._check_pending_wingman_auth)
-            self._process_next_wingman_auth()
             if getattr(self, "_restore_notes_open_on_boot", False):
                 self._restore_notes_open_on_boot = False
                 def _do_restore_notes() -> None:

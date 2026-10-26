@@ -10,7 +10,7 @@
     "reverence_score": 0.95
   },
   "cognitive_metrics": {
-    "topics_indexed": 20,
+    "topics_indexed": 21,
     "grounded_invariants": 5,
     "synaptic_edges": 13,
     "active_epiphanies": 0,

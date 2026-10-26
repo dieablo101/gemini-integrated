@@ -310,7 +310,7 @@
       "id": "system safety & bulletproofing",
       "label": "System Safety & Bulletproofing",
       "type": "topic",
-      "summary": "Knowledge cluster consolidated from 3 working notes.",
+      "summary": "Knowledge cluster consolidated from 7 working notes.",
       "tags": [
         "system",
         "safety",
@@ -353,6 +353,17 @@
         "reaper",
         "audio",
         "automation"
+      ],
+      "weight": 1.5
+    },
+    {
+      "id": "packaging & deployment",
+      "label": "Packaging & Deployment",
+      "type": "topic",
+      "summary": "Knowledge cluster consolidated from 2 working notes.",
+      "tags": [
+        "packaging",
+        "deployment"
       ],
       "weight": 1.5
     },
@@ -404,7 +415,7 @@
       "id": "inv_last_milestone_checkpoint",
       "label": "LAST MILESTONE CHECKPOINT",
       "type": "invariant",
-      "summary": "{'reason': 'unit_test_milestone', 'timestamp': 1792989228.116345, 'topics_indexed': 32}",
+      "summary": "{'reason': 'unit_test_milestone', 'timestamp': 1793038976.5974948, 'topics_indexed': 33}",
       "tags": [
         "invariant",
         "grounding"

@@ -297,3 +297,26 @@ class TestUIApp(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(bool(last_turn["text"].strip()))
             self.assertNotEqual(last_turn["text"].strip(), "")
 
+    async def test_turn_ui_action_persistence_on_request_finished(self):
+        from gemini_app.events import RequestFinished
+        app = ChatApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("space")
+
+            # Simulate Gemini calling interact_ui during generation
+            app._turn_ui_action = {
+                "action": "mood",
+                "palette": "purple",
+                "message": "Forging DIEABLO ⚔️",
+                "duration": 5.0,
+            }
+
+            # Post RequestFinished event
+            app.post_message(RequestFinished("Action finished.", 0.2, 5))
+            await pilot.pause()
+
+            # Status should reflect the mood, NOT the generic word count message
+            status_widget = app.query_one("#feed_status", Static)
+            self.assertIn("Forging DIEABLO", str(status_widget.content))
+
+

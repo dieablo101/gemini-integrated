@@ -2219,8 +2219,39 @@ class ChatApp(App):
         except Exception:
             pass
 
-        self.set_status_text(f"✓ Response complete ({event.words} words in {event.elapsed:.1f}s)")
-        self.set_timer(1.2, self.hide_status)
+        turn_ui = getattr(self, "_turn_ui_action", None)
+        self._turn_ui_action = None
+        if turn_ui:
+            act = turn_ui.get("action")
+            dur = turn_ui.get("duration", 3.0)
+            msg = turn_ui.get("message", "")
+            pal = turn_ui.get("palette", "")
+            tgt = turn_ui.get("target", "all")
+            eff = turn_ui.get("effect", "none")
+            if act in ("mood", "status", "vibe"):
+                pal_key = pal or getattr(self, "active_palette_name", DEFAULT_PALETTE)
+                acc = THEMES.get(pal_key, {}).get("accent", self.accent_color)
+                self.set_status_text(f"[{acc}]{msg or '✨ Bilateral Synchrony'}[/]")
+                if dur > 0:
+                    self.set_timer(dur, self.hide_status)
+            elif act in ("pulse_nav", "nav", "flash_nav"):
+                apply_accent_talk(
+                    self,
+                    target="navbar" if tgt in ("all", "navbar", "nav", "banner") else tgt,
+                    palette=pal,
+                    duration=dur,
+                    message=msg,
+                )
+                self.update_feed_nav_banner()
+            elif act in ("accent_talk", "accent", "pulse"):
+                apply_accent_talk(self, target=tgt, palette=pal, duration=dur, message=msg)
+            elif act in ("animate_mind", "mind_anim", "mind"):
+                start_mind_animation(self, effect=eff, palette=pal, duration=dur, message=msg)
+            elif act in ("theme", "set_theme"):
+                self.set_theme(pal, notify_user=bool(msg))
+        else:
+            self.set_status_text(f"✓ Response complete ({event.words} words in {event.elapsed:.1f}s)")
+            self.set_timer(1.2, self.hide_status)
 
         self.query_one("#input", ExpandingInput).focus()
         self.refresh(layout=True)
@@ -4443,6 +4474,14 @@ class ChatApp(App):
         ) -> dict:
             eff_dur = max(1.5, duration) if duration > 0 else duration
             act = (action or "accent_talk").lower().strip()
+            self._turn_ui_action = {
+                "action": act,
+                "target": target,
+                "palette": palette,
+                "effect": effect,
+                "duration": eff_dur,
+                "message": message,
+            }
             if act in ("theme", "set_theme"):
                 def _do_theme():
                     self.set_theme(palette, notify_user=bool(message))

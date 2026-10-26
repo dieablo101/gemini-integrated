@@ -24,12 +24,28 @@ class TestUIApp(unittest.IsolatedAsyncioTestCase):
         snapshots.SCREENSHOTS_DIR = self.screenshots_path
         snapshots.INDEX_FILE = self.screenshots_path / "snapshots_index.json"
         gemini_app.config.SCREENSHOTS_DIR = self.screenshots_path
+        if gemini_app.config.STATE_FILE.exists():
+            try:
+                import json
+                st = json.loads(gemini_app.config.STATE_FILE.read_text(encoding="utf-8"))
+                st.pop("notes_open_pre_reboot", None)
+                gemini_app.config.STATE_FILE.write_text(json.dumps(st), encoding="utf-8")
+            except Exception:
+                pass
 
     def tearDown(self):
         try:
             snapshots.cleanup_test_snapshots()
         except Exception:
             pass
+        if gemini_app.config.STATE_FILE.exists():
+            try:
+                import json
+                st = json.loads(gemini_app.config.STATE_FILE.read_text(encoding="utf-8"))
+                st.pop("notes_open_pre_reboot", None)
+                gemini_app.config.STATE_FILE.write_text(json.dumps(st), encoding="utf-8")
+            except Exception:
+                pass
         snapshots.SCREENSHOTS_DIR = self.orig_screenshots_dir
         snapshots.INDEX_FILE = self.orig_index_file
         gemini_app.config.SCREENSHOTS_DIR = self.orig_config_screenshots
@@ -90,6 +106,42 @@ class TestUIApp(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             # Once dismissed, the active screen is the base screen (ChatApp)
             self.assertNotIsInstance(app.screen, BootScreen)
+
+    async def test_boot_screen_skip_debounce(self):
+        from textual.app import App
+        test_app = App()
+        boot = BootScreen(duration_seconds=5.0)
+        async with test_app.run_test() as pilot:
+            test_app.push_screen(boot)
+            await pilot.pause()
+            self.assertIsInstance(test_app.screen, BootScreen)
+            # Arbitrary key (e.g. 'a') must NEVER dismiss boot screen
+            await pilot.press("a")
+            self.assertIsInstance(test_app.screen, BootScreen)
+            # Intentional skip key (e.g. 'space') dismisses once beyond grace period
+            await pilot.press("space")
+            self.assertNotIsInstance(test_app.screen, BootScreen)
+
+    async def test_reboot_restores_notes_open(self):
+        import json
+        from gemini_app.config import STATE_FILE
+        # Simulate state saved right before reboot
+        state_data = {}
+        if STATE_FILE.exists():
+            try:
+                state_data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        state_data["notes_open_pre_reboot"] = "1"
+        STATE_FILE.write_text(json.dumps(state_data), encoding="utf-8")
+
+        app = ChatApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            # Let boot screen complete and dismiss
+            await asyncio.sleep(2.6)
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            self.assertTrue(app.notes_open)
 
     async def test_app_lifecycle_and_mount(self):
         app = ChatApp()

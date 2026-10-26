@@ -207,6 +207,7 @@ class BootScreen(ResponsiveModalScreen[bool]):
         self.duration_seconds: float = max(0.5, duration_seconds)
         self._start_time: float = 0.0
         self._frame_idx: int = 0
+        self._painted_frames: int = 0
         self._anim_timer: Timer | None = None
         self._dismiss_timer: Timer | None = None
         self._is_dismissed: bool = False
@@ -231,9 +232,10 @@ class BootScreen(ResponsiveModalScreen[bool]):
         super().on_mount()
         self._start_time = time.monotonic()
         self._frame_idx = 0
+        self._painted_frames = 0
         self._update_display()
         self._anim_timer = self.set_interval(0.06, self._tick_animation)
-        self._dismiss_timer = self.set_timer(self.duration_seconds, self._dismiss_boot)
+        self._dismiss_timer = self.set_timer(self.duration_seconds + 0.5, self._dismiss_boot)
 
     def on_resize(self, event: events.Resize) -> None:
         super().on_resize(event)
@@ -245,11 +247,21 @@ class BootScreen(ResponsiveModalScreen[bool]):
             if hasattr(self.app, "action_quit"):
                 self.app.action_quit()
             return
-        # Any other key allows early skip if user presses keyboard
-        self._dismiss_boot()
+
+        # Guard against buffered keystrokes immediately upon boot/reboot:
+        # Require minimum 0.6s grace period and only intentional skip keys
+        now = time.monotonic()
+        if self._start_time <= 0 or (now - self._start_time) < 0.6:
+            return
+
+        if event.key in ("escape", "space", "enter"):
+            self._dismiss_boot()
 
     def on_click(self, event: events.Click) -> None:
-        # Clicking allows early skip
+        # Guard against terminal focus-clicks or buffered mouse events upon boot:
+        now = time.monotonic()
+        if self._start_time <= 0 or (now - self._start_time) < 0.6:
+            return
         self._dismiss_boot()
 
     def _dismiss_boot(self) -> None:
@@ -289,10 +301,13 @@ class BootScreen(ResponsiveModalScreen[bool]):
         if self._is_dismissed:
             return
         now = time.monotonic()
-        if self._start_time > 0 and (now - self._start_time) >= (self.duration_seconds + 0.1):
+        elapsed = max(0.0, now - self._start_time) if self._start_time > 0 else 0.0
+        self._frame_idx += 1
+        self._painted_frames += 1
+
+        if self._start_time > 0 and elapsed >= self.duration_seconds and self._painted_frames >= 8:
             self._dismiss_boot()
             return
-        self._frame_idx += 1
         self._update_display()
 
     def _update_display(self) -> None:

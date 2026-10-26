@@ -1622,11 +1622,30 @@ class ChatApp(App):
         self._start_wingman_server()
         self._start_upper_mind_server()
 
+        notes_open_saved = False
+        if STATE_FILE.exists():
+            try:
+                st = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+                notes_open_saved = st.pop("notes_open_pre_reboot", "0") == "1"
+                STATE_FILE.write_text(json.dumps(st, indent=2), encoding="utf-8")
+            except Exception:
+                pass
+        self._restore_notes_open_on_boot = notes_open_saved
+
         def _on_boot_dismissed(result: Any = None) -> None:
             self._boot_complete = True
             if "unittest" not in sys.modules and not os.environ.get("GEMINI_TEST_MODE"):
                 self.set_interval(1.5, self._check_pending_wingman_auth)
             self._process_next_wingman_auth()
+            if getattr(self, "_restore_notes_open_on_boot", False):
+                self._restore_notes_open_on_boot = False
+                def _do_restore_notes() -> None:
+                    try:
+                        if getattr(self, "screen_stack", None) and not self.notes_open:
+                            self.action_toggle_notes()
+                    except Exception:
+                        pass
+                self.set_timer(0.2, _do_restore_notes)
 
         self._boot_complete = False
         self.push_screen(BootScreen(), _on_boot_dismissed)
@@ -2320,6 +2339,7 @@ class ChatApp(App):
                 self._save_to_state("active_chat", self.current_chat_id)
             report = status_report or "✓ Reboot complete: Console reloaded, session restored, UI operational."
             self._save_to_state("pending_reboot_report", report)
+            self._save_to_state("notes_open_pre_reboot", "1" if self.notes_open else "0")
             mark_reboot_in_progress()
         except Exception:
             pass
@@ -2463,7 +2483,12 @@ class ChatApp(App):
             pass
 
     def action_toggle_notes(self) -> None:
-        if self.lock.is_locked or isinstance(self.screen, MindMapScreen):
+        try:
+            if not getattr(self, "screen_stack", None) or self.lock.is_locked:
+                return
+            if isinstance(self.screen, MindMapScreen):
+                return
+        except Exception:
             return
         self._toggle_notes_lockstep()
 
@@ -2478,6 +2503,7 @@ class ChatApp(App):
         target_snap = feed._get_center_raycast_target()
         opening = not self.notes_open
         self.notes_open = opening
+        self._save_to_state("notes_open_pre_reboot", "1" if opening else "0")
 
         try:
             if opening:

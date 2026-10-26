@@ -57,9 +57,7 @@ def ensure_environment() -> None:
             import textual
             import rich
             import pyperclip
-            if not constrained:
-                import google.genai
-            return  # Environment is fully operational
+            return  # Core UI environment is fully operational
         except ImportError:
             pass
 
@@ -83,13 +81,8 @@ def ensure_environment() -> None:
             subprocess.run([sys.executable, "-m", "venv", str(venv_dir)], check=True)
 
     # Check dependencies in venv
-    check_code = (
-        "import textual, rich, pyperclip"
-        if constrained
-        else "import textual, google.genai, rich, pyperclip"
-    )
     req_check = subprocess.run(
-        [str(venv_python), "-c", check_code],
+        [str(venv_python), "-c", "import textual, rich, pyperclip"],
         capture_output=True,
     )
     if req_check.returncode != 0:
@@ -111,7 +104,20 @@ def ensure_environment() -> None:
             )
             sys.stdout.write("✓ Virtual environment & dependencies ready.\n")
         except subprocess.CalledProcessError as exc:
-            sys.stderr.write(f"Warning: pip install failed ({exc}). Continuing with available packages.\n")
+            # Fallback for systems without a Rust toolchain: install core UI without google-genai
+            if not constrained and "google-genai>=1.0.0" in pkg_list:
+                sys.stderr.write(f"Warning: full install failed ({exc}). Retrying with core pure-wheel packages...\n")
+                try:
+                    fallback_pkgs = ["textual>=0.50.0", "rich>=13.0.0", "pyperclip>=1.8.0"]
+                    subprocess.run(
+                        [str(venv_python), "-m", "pip", "install", "-q"] + fallback_pkgs,
+                        check=True,
+                    )
+                    sys.stdout.write("✓ Virtual environment core UI packages ready.\n")
+                except subprocess.CalledProcessError as sub_exc:
+                    sys.stderr.write(f"Warning: pip install failed ({sub_exc}). Continuing with available packages.\n")
+            else:
+                sys.stderr.write(f"Warning: pip install failed ({exc}). Continuing with available packages.\n")
 
     # If we are not currently running under venv_python, re-exec into venv
     if Path(sys.executable).resolve() != venv_python.resolve():
@@ -291,6 +297,27 @@ if __name__ == "__main__":
         sys.exit(0 if res.get("status") == "ok" else 1)
 
     # 6. Check for node/satellite mode anywhere in CLI arguments
+    if "--role" in sys.argv:
+        r_idx = sys.argv.index("--role")
+        if r_idx + 1 < len(sys.argv):
+            r_val = sys.argv[r_idx + 1].lower()
+            if r_val in ("satellite", "node", "hud"):
+                sys.argv.pop(r_idx + 1)
+                sys.argv.pop(r_idx)
+                if r_val == "hud":
+                    sys.argv.append("--hud")
+                from gemini_app.fleet.satellite import main as satellite_main
+                sys.exit(satellite_main())
+    for arg in list(sys.argv[1:]):
+        if arg.startswith("--role="):
+            r_val = arg.split("=", 1)[1].lower()
+            if r_val in ("satellite", "node", "hud"):
+                sys.argv.remove(arg)
+                if r_val == "hud":
+                    sys.argv.append("--hud")
+                from gemini_app.fleet.satellite import main as satellite_main
+                sys.exit(satellite_main())
+
     satellite_tokens = {"--node", "-n", "--satellite", "node", "satellite"}
     matched_sat = [tok for tok in sys.argv[1:] if tok in satellite_tokens]
     if matched_sat:

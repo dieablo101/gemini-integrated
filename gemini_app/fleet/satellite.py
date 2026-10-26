@@ -2843,6 +2843,7 @@ def main() -> int:
     parser.add_argument("--mothership", default=None, help=f"Mothership host IP (saved default: {saved_host})")
     parser.add_argument("--port", type=int, default=None, help=f"Mothership TCP port (saved default: {saved_port})")
     parser.add_argument("--node-id", default=None, help="Explicit node identifier")
+    parser.add_argument("--role", default=None, help="Execution role (satellite|node|hud)")
     parser.add_argument("--interval", type=float, default=15.0, help="Heartbeat interval in seconds")
     parser.add_argument("--once", action="store_true", help="Send single registration/telemetry probe and exit")
     parser.add_argument("--hud", "--monitor", action="store_true", help="Run in interactive Live Telemetry HUD mode")

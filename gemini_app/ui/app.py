@@ -3543,7 +3543,7 @@ class ChatApp(App):
 
             elif sub_action in ("create", "new"):
                 proj_name = sub_arg or "grim_theme"
-                out_rpp = f"/home/kidlucrid/Projects/games/dieablo/assets/audio/grim/{proj_name}.rpp"
+                out_rpp = str(Path.home() / "Projects" / "games" / "dieablo" / "assets" / "audio" / "grim" / f"{proj_name}.rpp")
                 res = grim_engine.create_project_template(name=proj_name, output_rpp=out_rpp)
                 md = (
                     f"### 🎛️ Grim Project Created: `{proj_name}`\n"

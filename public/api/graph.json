@@ -404,7 +404,7 @@
       "id": "inv_last_milestone_checkpoint",
       "label": "LAST MILESTONE CHECKPOINT",
       "type": "invariant",
-      "summary": "{'reason': 'periodic_progression_t4', 'timestamp': 1792969416.0552294, 'topics_indexed': 32}",
+      "summary": "{'reason': 'unit_test_milestone', 'timestamp': 1792989228.116345, 'topics_indexed': 32}",
       "tags": [
         "invariant",
         "grounding"

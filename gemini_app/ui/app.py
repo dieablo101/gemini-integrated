@@ -2240,7 +2240,7 @@ class ChatApp(App):
                 elif action == "wingman_auth_prompt":
                     auth_data = payload.get("auth_data", {})
                     if auth_data:
-                        self._handle_wingman_auth_prompt(auth_data)
+                        self._handle_incoming_wingman_auth(auth_data)
                 elif action == "wingman_chat":
                     text = payload.get("text", "")
                     sender = payload.get("sender", "operator")

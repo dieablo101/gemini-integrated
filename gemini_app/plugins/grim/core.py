@@ -33,7 +33,7 @@ class GrimProjectManifest:
 
 
 class GrimEngine:
-    """Unified DAW engine for gemini-integrated and external engines (Photon/Godot)."""
+    """Unified DAW engine conductor for gemini-integrated and external audio workspaces."""
 
     DEFAULT_REAPER_PATHS = [
         "/usr/local/bin/reaper",
@@ -41,10 +41,67 @@ class GrimEngine:
         "/opt/REAPER/reaper",
     ]
 
+    STANDALONE_WORKSPACE_CANDIDATES = [
+        Path(os.path.expanduser("~/Projects/grim")),
+        Path("/opt/grim"),
+    ]
+
+    GAMES_WORKSPACE_CANDIDATES = [
+        Path(os.path.expanduser("~/Projects/games/scripts/grim")),
+        Path(os.path.expanduser("~/Projects/games")),
+    ]
+
     def __init__(self, reaper_path: Optional[str] = None):
         self._reaper_bin = self._resolve_reaper_binary(reaper_path)
+        self._workspace_path, self._workspace_type = self._resolve_workspace()
+        self._bridge_script = self._resolve_bridge_script()
+
+    def _resolve_workspace(self) -> tuple[Optional[Path], str]:
+        """Resolves active Grim audio workspace with strict priority hierarchy:
+        1. Standalone DAW workspace (~/Projects/grim)
+        2. In-game audio scripts (~/Projects/games/scripts/grim)
+        3. Embedded standard-library fallback
+        """
+        for candidate in self.STANDALONE_WORKSPACE_CANDIDATES:
+            if candidate.exists() and candidate.is_dir():
+                return candidate.resolve(), "standalone"
+        for candidate in self.GAMES_WORKSPACE_CANDIDATES:
+            if candidate.exists() and candidate.is_dir():
+                return candidate.resolve(), "games"
+        return None, "embedded"
+
+    def _resolve_bridge_script(self) -> Optional[Path]:
+        """Finds grim_reaper DAW bridge script adhering to workspace priority."""
+        if self._workspace_path:
+            # 1. Standalone tools
+            t1 = self._workspace_path / "tools" / "grim_reaper.py"
+            if t1.exists():
+                return t1.resolve()
+            # 2. Standalone root
+            t2 = self._workspace_path / "grim_reaper.py"
+            if t2.exists():
+                return t2.resolve()
+        # Fallback check games
+        for candidate in self.GAMES_WORKSPACE_CANDIDATES:
+            t3 = candidate / "grim_reaper.py"
+            if t3.exists():
+                return t3.resolve()
+        return None
+
+    @property
+    def workspace_path(self) -> Optional[Path]:
+        return self._workspace_path
+
+    @property
+    def workspace_type(self) -> str:
+        return self._workspace_type
+
+    @property
+    def bridge_script(self) -> Optional[Path]:
+        return self._bridge_script
 
     def _resolve_reaper_binary(self, custom_path: Optional[str] = None) -> Optional[str]:
+
         if custom_path and os.path.exists(custom_path):
             return custom_path
         which_reaper = shutil.which("reaper")
@@ -81,6 +138,9 @@ class GrimEngine:
 
         return {
             "daw": "Grim Audio Subsystem",
+            "workspace_type": self._workspace_type,
+            "workspace_path": str(self._workspace_path) if self._workspace_path else None,
+            "bridge_script": str(self._bridge_script) if self._bridge_script else None,
             "reaper_available": self.is_reaper_available,
             "reaper_binary": self._reaper_bin,
             "reaper_version": reaper_ver,

@@ -18,6 +18,15 @@ class TestGrimEngine(unittest.TestCase):
         self.assertEqual(status["daw"], "Grim Audio Subsystem")
         self.assertIn("default_sample_rate", status)
         self.assertEqual(status["default_sample_rate"], 44100)
+        self.assertIn("workspace_type", status)
+        self.assertIn(status["workspace_type"], ["standalone", "games", "embedded"])
+
+    def test_workspace_resolution_priority(self):
+        self.assertIsNotNone(self.grim.workspace_path)
+        self.assertEqual(self.grim.workspace_type, "standalone")
+        self.assertTrue(str(self.grim.workspace_path).endswith("Projects/grim"))
+        if self.grim.bridge_script:
+            self.assertTrue(str(self.grim.bridge_script).endswith("grim_reaper.py"))
 
     def test_create_project_template(self):
         with tempfile.TemporaryDirectory() as tmpdir:

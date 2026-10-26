@@ -872,19 +872,25 @@ class MothershipServer:
                             elif action in ("get_wingman_actions", "wingman_actions"):
                                 with self.lock:
                                     resp_payload["actions"] = list(self.recent_wingman_actions)
+                            elif action in ("clear_pending_wingman_auth", "flush_pending_wingman_auth"):
+                                with self.lock:
+                                    self.pending_wingman_auth_requests.clear()
+                                    resp_payload["status"] = "ok"
                             elif action in ("get_pending_wingman_auth", "pending_wingman_auth"):
                                 with self.lock:
                                     self._prune_pending_wingman_requests()
                                     reqs = dict(self.pending_wingman_auth_requests)
                                     now_t = time.time()
                                     for nid, sat in self.nodes.items():
+                                        if (now_t - getattr(sat, "last_heartbeat", 0.0)) > 60.0:
+                                            continue
                                         pending_items = sat.telemetry.get("webapplet", {}).get("pending_auth", [])
                                         is_act = sat.telemetry.get("webapplet", {}).get("wingman_active", False)
                                         if is_act or pending_items:
                                             for p in pending_items:
                                                 rid = p.get("auth_req_id") or p.get("session_id")
-                                                p_ts = p.get("timestamp", now_t)
-                                                if rid and (now_t - p_ts <= 45.0) and rid not in reqs:
+                                                p_ts = float(p.get("timestamp") or 0.0)
+                                                if rid and p_ts > 0.0 and (now_t - p_ts <= 45.0) and rid not in reqs:
                                                     entry = dict(p)
                                                     entry["node_id"] = nid
                                                     entry["timestamp"] = p_ts
@@ -899,6 +905,10 @@ class MothershipServer:
                                 if not nid and req_id in self.pending_wingman_auth_requests:
                                     nid = self.pending_wingman_auth_requests[req_id].get("node_id", "local")
                                 resp_payload["result"] = self.authorize_wingman(node_id=nid or "local", auth_req_id=req_id, decision=dec, trust=trust_dev)
+                            elif action in ("prune_wingman_requests", "clear_pending_wingman_auth"):
+                                with self.lock:
+                                    self.pending_wingman_auth_requests.clear()
+                                    resp_payload["status"] = "ok"
                             elif action in ("set_wingman_maintenance", "wingman_maintenance"):
                                 active = bool(msg.payload.get("params", {}).get("active", False))
                                 reason = str(msg.payload.get("params", {}).get("reason", ""))
@@ -1452,13 +1462,20 @@ class MothershipServer:
         now = time.time()
         to_remove = []
         for rid, req in list(self.pending_wingman_auth_requests.items()):
-            ts = req.get("timestamp", now)
+            ts = float(req.get("timestamp", now) or now)
             if now - ts > max_age:
                 to_remove.append(rid)
                 continue
             nid = req.get("node_id")
-            if nid and nid in self.nodes:
-                telem = self.nodes[nid].telemetry or {}
+            if nid and nid not in ("local", "localhost", "mothership"):
+                if nid not in self.nodes:
+                    to_remove.append(rid)
+                    continue
+                sat = self.nodes[nid]
+                if (now - getattr(sat, "last_heartbeat", now)) > 60.0:
+                    to_remove.append(rid)
+                    continue
+                telem = sat.telemetry or {}
                 # Only prune if node explicitly reports wingman browser is not open AND node has no pending auth in telemetry
                 pending_on_node = telem.get("webapplet", {}).get("pending_auth", [])
                 if telem.get("webapplet", {}).get("wingman_active") is False and not pending_on_node:

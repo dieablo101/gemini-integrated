@@ -28,3 +28,18 @@ class ResponsiveModalScreen(ModalScreen[ModalResultType], Generic[ModalResultTyp
 
     def on_resize(self, event: events.Resize) -> None:
         self._update_screen_classes(event.size.width)
+
+    def dismiss(self, result: ModalResultType | None = None) -> None:
+        """Safely dismisses the modal, guarding against ScreenStackError if not top screen or stack <= 1."""
+        try:
+            if not getattr(self, "is_mounted", False):
+                return
+            app = getattr(self, "app", None)
+            if not app:
+                return
+            screen_stack = getattr(app, "_screen_stack", [])
+            if len(screen_stack) <= 1:
+                return
+            super().dismiss(result)
+        except Exception:
+            pass

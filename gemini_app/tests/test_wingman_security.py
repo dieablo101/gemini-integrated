@@ -448,6 +448,7 @@ class TestWingmanSecurity(unittest.TestCase):
         from gemini_app.ui.app import ChatApp
 
         app = ChatApp()
+        app._boot_complete = True
         app._wingman_modal_open = False
         app._wingman_auth_queue = []
         app._handled_wingman_auth_reqs = set()
@@ -1333,6 +1334,150 @@ class TestWingmanSecurity(unittest.TestCase):
             self.assertEqual(res_after_new.get("token", ""), "")
         finally:
             applet.stop()
+
+    def test_incoming_wingman_auth_only_toasts_and_never_auto_pushes_screen(self) -> None:
+        """Verifies background incoming device auth never pushes a modal, only toasts and queues in pending."""
+        from gemini_app.ui.app import ChatApp
+
+        app = ChatApp()
+        app.notify = MagicMock()
+        mock_push = MagicMock()
+        app.push_screen = mock_push
+
+        req = {
+            "session_id": "sess-toast-1",
+            "auth_req_id": "sess-toast-1",
+            "client_ip": "192.168.1.50",
+            "node_id": "ipad-node",
+            "device_id": "dev-ipad-50",
+            "timestamp": time.time(),
+        }
+
+        # Handle incoming auth request
+        app._handle_incoming_wingman_auth(req)
+
+        # Modal was NOT pushed!
+        mock_push.assert_not_called()
+        # Toast notification was triggered
+        app.notify.assert_called_once()
+        toast_msg = app.notify.call_args[0][0]
+        self.assertIn("192.168.1.50", toast_msg)
+        self.assertIn("/wingman", toast_msg)
+        # Pending dictionary stores the request
+        self.assertIn("sess-toast-1", app._pending_wingman_auth)
+
+        # Immediate repeat request for the same device should be throttled (no duplicate toast spam)
+        app.notify.reset_mock()
+        app._handle_incoming_wingman_auth(req)
+        app.notify.assert_not_called()
+
+    def test_incoming_wingman_auth_ttl_and_boot_time_filtering(self) -> None:
+        """Verifies that expired requests (> 60s) or requests from before console boot are ignored."""
+        from gemini_app.ui.app import ChatApp
+
+        app = ChatApp()
+        app.notify = MagicMock()
+        app._console_boot_time = time.time()
+
+        # 1. Stale request from 10 minutes ago
+        stale_req = {
+            "session_id": "sess-ancient-1",
+            "client_ip": "192.168.1.77",
+            "timestamp": time.time() - 600.0,
+        }
+        app._handle_incoming_wingman_auth(stale_req)
+        self.assertNotIn("sess-ancient-1", app._pending_wingman_auth)
+        app.notify.assert_not_called()
+
+        # 2. Stale request timestamped before boot time
+        pre_boot_req = {
+            "session_id": "sess-preboot-2",
+            "client_ip": "192.168.1.78",
+            "timestamp": app._console_boot_time - 30.0,
+        }
+        app._handle_incoming_wingman_auth(pre_boot_req)
+        self.assertNotIn("sess-preboot-2", app._pending_wingman_auth)
+        app.notify.assert_not_called()
+
+    def test_wingman_slash_command_opens_auth_manager_modal(self) -> None:
+        """Verifies that /wingman slash command launches WingmanAuthModal on demand."""
+        from gemini_app.ui.app import ChatApp
+        from gemini_app.ui.modals.wingman_auth import WingmanAuthModal
+
+        app = ChatApp()
+        pushed_screens = []
+        app.push_screen = lambda scr, *args, **kwargs: pushed_screens.append(scr)
+
+        # Add a pending request
+        app._pending_wingman_auth = {
+            "req-1": {
+                "auth_req_id": "req-1",
+                "client_ip": "192.168.1.99",
+                "node_id": "phone-node",
+                "timestamp": time.time(),
+            }
+        }
+
+        # Execute /wingman slash command
+        res = app._handle_slash_command("/wingman")
+        self.assertTrue(res)
+        self.assertEqual(len(pushed_screens), 1)
+        modal = pushed_screens[0]
+        self.assertIsInstance(modal, WingmanAuthModal)
+        self.assertEqual(len(modal.pending_requests), 1)
+        self.assertEqual(modal.pending_requests[0]["client_ip"], "192.168.1.99")
+
+    def test_wingman_auth_modal_manager_multi_device_and_revoke(self) -> None:
+        """Verifies multi-device pending resolution and device revoke callbacks."""
+        from gemini_app.ui.modals.wingman_auth import WingmanAuthModal
+
+        resolved = []
+        revoked = []
+
+        pending = [
+            {"auth_req_id": "r1", "client_ip": "192.168.1.10", "node_id": "ipad", "timestamp": time.time()},
+            {"auth_req_id": "r2", "client_ip": "192.168.1.20", "node_id": "phone", "timestamp": time.time()},
+        ]
+        paired = [
+            {"device_id": "dev-trusted-1", "label": "Studio iPad", "client_ip": "192.168.1.10"},
+        ]
+
+        modal = WingmanAuthModal(
+            pending_requests=pending,
+            paired_devices=paired,
+            on_resolve=lambda rid, dec, data: resolved.append((rid, dec)),
+            on_revoke=lambda dev_id: revoked.append(dev_id),
+        )
+
+        dismiss_results = []
+        modal.dismiss = lambda res: dismiss_results.append(res)
+
+        # Resolve first item
+        modal._resolve_one(0, "accept")
+        self.assertEqual(resolved, [("r1", "accept")])
+        self.assertEqual(len(modal.pending_requests), 1)
+        self.assertEqual(len(dismiss_results), 0)
+
+        # Resolve second item
+        modal._resolve_one(0, "pair")
+        self.assertEqual(resolved, [("r1", "accept"), ("r2", "pair")])
+        self.assertEqual(len(modal.pending_requests), 0)
+        self.assertEqual(dismiss_results, ["pair"])
+
+    def test_responsive_modal_screen_guarded_dismiss_prevents_screen_stack_error(self) -> None:
+        """Verifies that dismissing when screen stack <= 1 does NOT raise ScreenStackError."""
+        from gemini_app.ui.modals.wingman_auth import WingmanAuthModal
+
+        modal = WingmanAuthModal(auth_data={"session_id": "s-test"})
+        modal._mounted = True
+        mock_app = MagicMock()
+        mock_app._screen_stack = [MagicMock()]  # Only 1 screen on stack!
+        mock_app.pop_screen.side_effect = Exception("ScreenStackError: Can't pop screen; <= 1")
+        modal._app = mock_app
+
+        # Calling dismiss must not raise ScreenStackError
+        modal.dismiss("accept")
+        mock_app.pop_screen.assert_not_called()
 
 
 if __name__ == "__main__":

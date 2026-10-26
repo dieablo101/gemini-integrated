@@ -218,6 +218,9 @@ class ChatApp(App):
         self._wingman_modal_open: bool = False
         self._wingman_auth_queue: list[Dict[str, Any]] = []
         self._handled_wingman_auth_reqs: set[str] = set()
+        self._pending_wingman_auth: Dict[str, Dict[str, Any]] = {}
+        self._last_wingman_notified_times: Dict[str, float] = {}
+        self._console_boot_time: float = time.time()
         
         # Unified Notes System (Gemini Managed Notes)
         self.gemini_notes: str = ""
@@ -465,7 +468,184 @@ class ChatApp(App):
 
     def _on_wingman_auth_request(self, auth_data: Dict[str, Any]) -> None:
         """Invoked from Wingman engine thread when an incoming device requests access."""
-        self.call_from_thread(self._handle_wingman_auth_prompt, auth_data)
+        self.call_from_thread(self._handle_incoming_wingman_auth, auth_data)
+
+    def _handle_incoming_wingman_auth(self, auth_data: Dict[str, Any]) -> None:
+        """Handles incoming Wingman auth request: validates TTL, stores pending, and notifies via toast."""
+        req_id = auth_data.get("auth_req_id") or auth_data.get("session_id", "")
+        if not req_id:
+            return
+
+        now = time.time()
+        ts = auth_data.get("timestamp", now)
+        boot_time = getattr(self, "_console_boot_time", now)
+        if (now - ts) > 60.0 or ts < (boot_time - 5.0):
+            return
+
+        client_ip = auth_data.get("client_ip", "remote")
+        node_id = auth_data.get("node_id", "local")
+        dev_id = auth_data.get("device_id", "")
+
+        node_id_check = str(node_id).strip().lower()
+        if node_id_check.startswith(("test-", "test_")) or node_id_check == "test":
+            return
+
+        if not hasattr(self, "_pending_wingman_auth"):
+            self._pending_wingman_auth = {}
+
+        # Prune expired requests
+        for k in list(self._pending_wingman_auth.keys()):
+            k_ts = self._pending_wingman_auth[k].get("timestamp", now)
+            if (now - k_ts) > 60.0 or k_ts < (boot_time - 5.0):
+                self._pending_wingman_auth.pop(k, None)
+
+        self._pending_wingman_auth[req_id] = dict(auth_data)
+
+        # If WingmanAuthModal is already visible on screen, live-refresh it
+        for screen in getattr(self, "_screen_stack", []):
+            if screen.__class__.__name__ == "WingmanAuthModal" and hasattr(screen, "add_or_update_request"):
+                screen.add_or_update_request(dict(auth_data))
+                return
+
+        # Throttle toast notifications: at most once per 25s for the same device/IP
+        notify_key = dev_id or client_ip or node_id
+        if not hasattr(self, "_last_wingman_notified_times"):
+            self._last_wingman_notified_times = {}
+        last_t = self._last_wingman_notified_times.get(notify_key, 0.0)
+        if (now - last_t) < 25.0:
+            return
+        self._last_wingman_notified_times[notify_key] = now
+
+        # Non-blocking toast notification: typing and screen stack remain completely untouched!
+        self.notify(
+            f"Device {client_ip} ({node_id}) requested access.\nType /wingman to review.",
+            title="🔔 Wingman Pairing Request",
+            severity="information",
+            timeout=6.0,
+        )
+
+    def _resolve_wingman_decision(self, req_id: str, decision: str, auth_data: Dict[str, Any]) -> None:
+        """Applies operator authorization decision across local applet and mothership fleet server."""
+        if not hasattr(self, "_handled_wingman_auth_times"):
+            self._handled_wingman_auth_times = {}
+        self._handled_wingman_auth_times[req_id] = time.time()
+        handled_set = getattr(self, "_handled_wingman_auth_reqs", set())
+        handled_set.add(req_id)
+        self._handled_wingman_auth_reqs = handled_set
+
+        if hasattr(self, "_pending_wingman_auth"):
+            self._pending_wingman_auth.pop(req_id, None)
+
+        dec = decision or "deny"
+        trust_device = (dec == "pair")
+        accepted = (dec in ("accept", "pair"))
+        node_id_val = auth_data.get("node_id", "local")
+        dev_id_val = auth_data.get("device_id", "")
+        client_ip_val = auth_data.get("client_ip", "remote")
+
+        # 1. Authorize on local Wingman applet if running
+        if getattr(self, "wingman_applet", None):
+            try:
+                self.wingman_applet.authorize_session(req_id, accepted=accepted, trust_device=trust_device)
+            except Exception:
+                pass
+
+        # 2. Authorize via MothershipServer (for satellite nodes like iPad / phone)
+        try:
+            from gemini_app.fleet.nodes import send_mothership_command
+            send_mothership_command("resolve_wingman_auth", {
+                "auth_req_id": req_id,
+                "session_id": req_id,
+                "node_id": node_id_val,
+                "decision": dec,
+                "trust": trust_device,
+            }, timeout=3.0)
+        except Exception:
+            pass
+
+        if dec == "accept":
+            self.notify(f"Wingman session accepted (one-time approval) for {client_ip_val} ({node_id_val})", title="Wingman Authorized")
+        elif dec == "pair":
+            self.notify(f"Wingman permanently paired & trusted for {client_ip_val} ({node_id_val})", title="Wingman Paired")
+        else:
+            self.notify(f"Wingman connection denied for {client_ip_val} ({node_id_val})", severity="warning", title="Wingman Denied")
+
+    def _revoke_wingman_device(self, device_id: str) -> None:
+        """Revokes a permanently paired device from trusted registry."""
+        try:
+            from gemini_app.webapplet.applets.wingman.security import WingmanSecurity
+            sec = WingmanSecurity()
+            sec.revoke_device(device_id)
+            self.notify(f"Revoked pairing for device: {device_id}", title="Wingman Device Revoked", severity="warning")
+        except Exception as e:
+            self.notify(f"Failed to revoke device: {e}", severity="error")
+
+    def action_open_wingman_manager(self) -> None:
+        """Opens the Wingman Connection & Auth Manager modal on demand."""
+        now = time.time()
+        boot_time = getattr(self, "_console_boot_time", now)
+        if not hasattr(self, "_pending_wingman_auth"):
+            self._pending_wingman_auth = {}
+
+        # Prune expired requests (> 60s)
+        for k in list(self._pending_wingman_auth.keys()):
+            k_ts = self._pending_wingman_auth[k].get("timestamp", now)
+            if (now - k_ts) > 60.0 or k_ts < (boot_time - 5.0):
+                self._pending_wingman_auth.pop(k, None)
+
+        # Pull fresh pending requests from mothership
+        try:
+            from gemini_app.fleet.nodes import send_mothership_command
+            res = send_mothership_command("get_pending_wingman_auth", timeout=1.0)
+            if isinstance(res, dict) and "requests" in res:
+                for req in res.get("requests", []):
+                    ts = req.get("timestamp", now)
+                    if (now - ts) <= 60.0 and ts >= (boot_time - 5.0):
+                        rid = req.get("auth_req_id") or req.get("session_id")
+                        if rid:
+                            self._pending_wingman_auth[rid] = dict(req)
+        except Exception:
+            pass
+
+        # Pull fresh pending from local applet
+        try:
+            if getattr(self, "wingman_applet", None) and hasattr(self.wingman_applet, "security"):
+                for sess in list(self.wingman_applet.security.sessions.values()):
+                    if sess.status == "pending":
+                        ts = getattr(sess, "last_seen", sess.created_at)
+                        if (now - ts) <= 60.0 and ts >= (boot_time - 5.0):
+                            self._pending_wingman_auth[sess.session_id] = {
+                                "auth_req_id": sess.session_id,
+                                "session_id": sess.session_id,
+                                "node_id": "mothership",
+                                "client_ip": sess.client_ip,
+                                "user_agent": sess.user_agent,
+                                "device_id": sess.device_id,
+                                "timestamp": ts,
+                            }
+        except Exception:
+            pass
+
+        # Load paired devices
+        paired_devices = []
+        try:
+            from gemini_app.webapplet.applets.wingman.security import WingmanSecurity
+            sec = WingmanSecurity()
+            paired_devices = sec.list_trusted_devices()
+        except Exception:
+            pass
+
+        # Avoid duplicate manager modals
+        if any(s.__class__.__name__ == "WingmanAuthModal" for s in getattr(self, "_screen_stack", [])):
+            return
+
+        modal = WingmanAuthModal(
+            pending_requests=list(self._pending_wingman_auth.values()),
+            paired_devices=paired_devices,
+            on_resolve=self._resolve_wingman_decision,
+            on_revoke=self._revoke_wingman_device,
+        )
+        self.push_screen(modal)
 
     def _handle_wingman_auth_prompt(self, auth_data: Dict[str, Any]) -> None:
         """Enqueues and mounts WingmanAuthModal on the Mothership TUI to Accept, Pair, or Deny sequentially."""
@@ -492,7 +672,7 @@ class ChatApp(App):
         if node_id_check.startswith(("test-", "test_")) or node_id_check == "test":
             return
 
-        # Avoid duplicate modals in queue (by req_id or by device/client_ip/node_id)
+        # Avoid duplicate modals in queue
         for queued in self._wingman_auth_queue:
             q_req = queued.get("auth_req_id") or queued.get("session_id")
             if q_req == req_id:
@@ -503,20 +683,6 @@ class ChatApp(App):
                 return
             if client_ip and client_ip not in ("127.0.0.1", "::1", "localhost") and queued.get("client_ip") == client_ip:
                 return
-
-        if getattr(self, "_wingman_modal_open", False):
-            has_auth_modal = any(s.__class__.__name__ == "WingmanAuthModal" for s in getattr(self, "screen_stack", []))
-            if not has_auth_modal and getattr(self, "screen_stack", None):
-                self._wingman_modal_open = False
-            else:
-                curr_data = getattr(self, "_active_wingman_auth_data", None)
-                if curr_data:
-                    if node_id and node_id not in ("local", "mothership") and curr_data.get("node_id") == node_id:
-                        return
-                    if dev_id and curr_data.get("device_id") == dev_id:
-                        return
-                    if client_ip and client_ip not in ("127.0.0.1", "::1", "localhost") and curr_data.get("client_ip") == client_ip:
-                        return
 
         self._wingman_auth_queue.append(dict(auth_data))
         self._process_next_wingman_auth()
@@ -556,56 +722,18 @@ class ChatApp(App):
             self._process_next_wingman_auth()
             return
 
-        client_ip = auth_data.get("client_ip", "remote")
-        node_id = auth_data.get("node_id", "local")
         self._wingman_modal_open = True
         self._active_wingman_auth_data = auth_data
 
         def _on_decision(decision: str) -> None:
             self._wingman_modal_open = False
             self._active_wingman_auth_data = None
-            if not hasattr(self, "_handled_wingman_auth_times"):
-                self._handled_wingman_auth_times = {}
-            self._handled_wingman_auth_times[req_id] = time.time()
-            handled_set = getattr(self, "_handled_wingman_auth_reqs", set())
-            handled_set.add(req_id)
-            self._handled_wingman_auth_reqs = handled_set
-
-            dec = decision or "deny"
-            trust_device = (dec == "pair")
-            accepted = (dec in ("accept", "pair"))
-            node_id_val = auth_data.get("node_id", node_id)
-            dev_id_val = auth_data.get("device_id", "")
-            client_ip_val = auth_data.get("client_ip", client_ip)
-
-            # 1. Authorize on local Wingman applet if running
-            if getattr(self, "wingman_applet", None):
-                try:
-                    self.wingman_applet.authorize_session(req_id, accepted=accepted, trust_device=trust_device)
-                except Exception:
-                    pass
-
-            # 2. Authorize via MothershipServer (for satellite nodes like iPad / phone)
-            try:
-                from gemini_app.fleet.nodes import send_mothership_command
-                send_mothership_command("resolve_wingman_auth", {
-                    "auth_req_id": req_id,
-                    "session_id": req_id,
-                    "node_id": node_id_val,
-                    "decision": dec,
-                    "trust": trust_device,
-                }, timeout=3.0)
-            except Exception:
-                pass
-
-            if dec == "accept":
-                self.notify(f"Wingman session accepted (one-time approval) from {client_ip_val} ({node_id_val})", title="Wingman Authorized")
-            elif dec == "pair":
-                self.notify(f"Wingman permanently paired & trusted for {client_ip_val} ({node_id_val})", title="Wingman Paired")
-            else:  # deny
-                self.notify(f"Wingman connection denied for {client_ip_val} ({node_id_val})", severity="warning", title="Wingman Denied")
+            self._resolve_wingman_decision(req_id, decision, auth_data)
 
             # Purge any remaining duplicate requests in queue for this same device or node
+            dev_id_val = auth_data.get("device_id", "")
+            node_id_val = auth_data.get("node_id", "")
+            client_ip_val = auth_data.get("client_ip", "")
             if hasattr(self, "_wingman_auth_queue") and self._wingman_auth_queue:
                 self._wingman_auth_queue = [
                     q for q in self._wingman_auth_queue
@@ -615,7 +743,6 @@ class ChatApp(App):
                     and (not client_ip_val or client_ip_val in ("127.0.0.1", "::1", "localhost") or q.get("client_ip") != client_ip_val)
                 ]
 
-            # Handle the next queued request back-to-back!
             self.set_timer(0.2, self._process_next_wingman_auth)
 
         self.prompt_wingman_auth(auth_data, _on_decision)
@@ -623,7 +750,8 @@ class ChatApp(App):
     @work(exclusive=True, thread=True)
     def _check_pending_wingman_auth(self) -> None:
         """Polls MothershipServer and local applet for pending Wingman access requests."""
-        handled_times = getattr(self, "_handled_wingman_auth_times", {})
+        now = time.time()
+        boot_time = getattr(self, "_console_boot_time", now)
 
         # Check MothershipServer for requests from satellites
         try:
@@ -631,9 +759,9 @@ class ChatApp(App):
             res = send_mothership_command("get_pending_wingman_auth", timeout=1.0)
             if isinstance(res, dict) and "requests" in res:
                 for req in res.get("requests", []):
-                    rid = req.get("auth_req_id") or req.get("session_id")
-                    if rid and (rid not in handled_times or (time.time() - handled_times[rid]) >= 5.0):
-                        self.call_from_thread(self._handle_wingman_auth_prompt, req)
+                    ts = req.get("timestamp", now)
+                    if (now - ts) <= 60.0 and ts >= (boot_time - 5.0):
+                        self.call_from_thread(self._handle_incoming_wingman_auth, req)
         except Exception:
             pass
 
@@ -641,16 +769,18 @@ class ChatApp(App):
         try:
             if getattr(self, "wingman_applet", None) and hasattr(self.wingman_applet, "security"):
                 for sess in list(self.wingman_applet.security.sessions.values()):
-                    if sess.status == "pending" and (sess.session_id not in handled_times or (time.time() - handled_times[sess.session_id]) >= 5.0):
-                        self.call_from_thread(self._handle_wingman_auth_prompt, {
-                            "auth_req_id": sess.session_id,
-                            "session_id": sess.session_id,
-                            "node_id": "mothership",
-                            "client_ip": sess.client_ip,
-                            "user_agent": sess.user_agent,
-                            "device_id": sess.device_id,
-                            "timestamp": getattr(sess, "last_seen", sess.created_at),
-                        })
+                    if sess.status == "pending":
+                        ts = getattr(sess, "last_seen", sess.created_at)
+                        if (now - ts) <= 60.0 and ts >= (boot_time - 5.0):
+                            self.call_from_thread(self._handle_incoming_wingman_auth, {
+                                "auth_req_id": sess.session_id,
+                                "session_id": sess.session_id,
+                                "node_id": "mothership",
+                                "client_ip": sess.client_ip,
+                                "user_agent": sess.user_agent,
+                                "device_id": sess.device_id,
+                                "timestamp": ts,
+                            })
         except Exception:
             pass
 
@@ -1621,6 +1751,14 @@ class ChatApp(App):
         await self.start_socket_server()
         self._start_wingman_server()
         self._start_upper_mind_server()
+
+        self._console_boot_time = time.time()
+        self._pending_wingman_auth = {}
+        try:
+            from gemini_app.fleet.nodes import send_mothership_command
+            send_mothership_command("prune_wingman_requests", timeout=0.5)
+        except Exception:
+            pass
 
         notes_open_saved = False
         if STATE_FILE.exists():
@@ -3846,9 +3984,14 @@ class ChatApp(App):
             threading.Thread(target=_async_bio, daemon=True, name="bio-cmd").start()
             return True
 
+        elif verb in ("wingman", "auth", "pairing", "pairings"):
+            self.action_open_wingman_manager()
+            return True
+
         elif verb == "help":
             help_text = (
                 "### Console Slash Commands\n"
+                "- `/wingman`: Open Wingman bilateral connection & authorization manager\n"
                 "- `/vault [password|file|secret|sync|change|lock]`: Secure offline credentials & fleet node sync manager\n"
                 "- `/api-key`: Update Google Gemini API key via modal\n"
                 "- `/git-setup`: Configure Real Name & Git credentials\n"

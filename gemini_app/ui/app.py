@@ -518,7 +518,7 @@ class ChatApp(App):
 
         # Non-blocking toast notification: typing and screen stack remain completely untouched!
         self.notify(
-            f"Device {client_ip} ({node_id}) requested access.\nType /wingman to review.",
+            f"Device {client_ip} ({node_id}) requested access.\nType /auth to review.",
             title="🔔 Wingman Pairing Request",
             severity="information",
             timeout=6.0,
@@ -528,7 +528,15 @@ class ChatApp(App):
         """Applies operator authorization decision across local applet and mothership fleet server."""
         if not hasattr(self, "_handled_wingman_auth_times"):
             self._handled_wingman_auth_times = {}
-        self._handled_wingman_auth_times[req_id] = time.time()
+        now = time.time()
+        self._handled_wingman_auth_times[req_id] = now
+        dev_id_val = auth_data.get("device_id", "")
+        if dev_id_val:
+            self._handled_wingman_auth_times[f"dev:{dev_id_val}"] = now
+        client_ip_val = auth_data.get("client_ip", "remote")
+        if client_ip_val and client_ip_val not in ("127.0.0.1", "::1", "localhost"):
+            self._handled_wingman_auth_times[f"ip:{client_ip_val}"] = now
+
         handled_set = getattr(self, "_handled_wingman_auth_reqs", set())
         handled_set.add(req_id)
         self._handled_wingman_auth_reqs = handled_set
@@ -656,17 +664,28 @@ class ChatApp(App):
         if (time.time() - ts) > 45.0:
             return
         handled_times = getattr(self, "_handled_wingman_auth_times", {})
+        now = time.time()
         if req_id in handled_times:
-            if (time.time() - handled_times[req_id]) < 5.0:
+            if (now - handled_times[req_id]) < 300.0:
                 return
             handled_times.pop(req_id, None)
+
+        dev_id = auth_data.get("device_id", "")
+        if dev_id and f"dev:{dev_id}" in handled_times:
+            if (now - handled_times[f"dev:{dev_id}"]) < 300.0:
+                return
+            handled_times.pop(f"dev:{dev_id}", None)
+
+        client_ip = auth_data.get("client_ip", "")
+        if client_ip and client_ip not in ("127.0.0.1", "::1", "localhost") and f"ip:{client_ip}" in handled_times:
+            if (now - handled_times[f"ip:{client_ip}"]) < 300.0:
+                return
+            handled_times.pop(f"ip:{client_ip}", None)
 
         if not hasattr(self, "_wingman_auth_queue"):
             self._wingman_auth_queue = []
 
-        client_ip = auth_data.get("client_ip", "")
         node_id = auth_data.get("node_id", "")
-        dev_id = auth_data.get("device_id", "")
 
         node_id_check = str(node_id).strip().lower()
         if node_id_check.startswith(("test-", "test_")) or node_id_check == "test":
@@ -718,7 +737,14 @@ class ChatApp(App):
             self._process_next_wingman_auth()
             return
         handled_times = getattr(self, "_handled_wingman_auth_times", {})
-        if req_id in handled_times and (time.time() - handled_times[req_id]) < 5.0:
+        now_t = time.time()
+        dev_id = auth_data.get("device_id", "")
+        client_ip = auth_data.get("client_ip", "")
+        if (
+            (req_id in handled_times and (now_t - handled_times[req_id]) < 300.0)
+            or (dev_id and f"dev:{dev_id}" in handled_times and (now_t - handled_times[f"dev:{dev_id}"]) < 300.0)
+            or (client_ip and client_ip not in ("127.0.0.1", "::1", "localhost") and f"ip:{client_ip}" in handled_times and (now_t - handled_times[f"ip:{client_ip}"]) < 300.0)
+        ):
             self._process_next_wingman_auth()
             return
 
@@ -3991,7 +4017,7 @@ class ChatApp(App):
         elif verb == "help":
             help_text = (
                 "### Console Slash Commands\n"
-                "- `/wingman`: Open Wingman bilateral connection & authorization manager\n"
+                "- `/auth` or `/wingman`: Open Wingman bilateral connection & authorization manager\n"
                 "- `/vault [password|file|secret|sync|change|lock]`: Secure offline credentials & fleet node sync manager\n"
                 "- `/api-key`: Update Google Gemini API key via modal\n"
                 "- `/git-setup`: Configure Real Name & Git credentials\n"

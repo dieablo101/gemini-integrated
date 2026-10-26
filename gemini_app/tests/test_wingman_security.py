@@ -1362,7 +1362,7 @@ class TestWingmanSecurity(unittest.TestCase):
         app.notify.assert_called_once()
         toast_msg = app.notify.call_args[0][0]
         self.assertIn("192.168.1.50", toast_msg)
-        self.assertIn("/wingman", toast_msg)
+        self.assertIn("/auth", toast_msg)
         # Pending dictionary stores the request
         self.assertIn("sess-toast-1", app._pending_wingman_auth)
 

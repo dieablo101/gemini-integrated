@@ -155,7 +155,11 @@ class LiveWireSettingsModal(ResponsiveModalScreen[Optional[dict]]):
 
         def _scan():
             devs = discover_nomad_devices(timeout=0.3)
-            self.app.call_from_thread(self._populate_devices, devs)
+            try:
+                if self.is_mounted and self.app:
+                    self.app.call_from_thread(self._populate_devices, devs)
+            except Exception:
+                pass
 
         import threading
         t = threading.Thread(target=_scan, daemon=True)

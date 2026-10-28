@@ -201,14 +201,49 @@ class LiveWireModal(ResponsiveModalScreen[None]):
     #telemetry_box {
         width: 100%;
         height: auto;
-        min-height: 5;
-        background: #08080d;
-        border: solid #1c1c28;
+        min-height: 12;
+        background: #090912;
+        border: tall #2c1e40;
         padding: 0 1;
         margin-bottom: 1;
     }
-    #telemetry_box Label {
-        color: #cccccc;
+    #telem_header_row {
+        width: 100%;
+        height: auto;
+        margin-top: 1;
+        margin-bottom: 0;
+    }
+    #telem_title {
+        text-style: bold;
+        color: #bb55ff;
+        width: 1fr;
+    }
+    #telem_timer {
+        text-style: bold;
+        color: #55ffaa;
+        width: auto;
+    }
+    #telem_stat_grid_1, #telem_stat_grid_2, #telem_stat_grid_3 {
+        width: 100%;
+        height: auto;
+        margin-top: 0;
+    }
+    #telem_stat_grid_1 Label, #telem_stat_grid_2 Label, #telem_stat_grid_3 Label {
+        width: 1fr;
+        color: #dddddd;
+    }
+    #events_divider {
+        color: #443355;
+        margin-top: 1;
+        height: 1;
+    }
+    #events_log_container {
+        width: 100%;
+        height: auto;
+        margin-bottom: 1;
+    }
+    #events_log_container Label {
+        color: #8899aa;
     }
     #action_row {
         width: 100%;
@@ -279,9 +314,23 @@ class LiveWireModal(ResponsiveModalScreen[None]):
                 yield Button("Production", id="mode_production_btn", classes="mode_btn")
 
             with Vertical(id="telemetry_box"):
-                yield Label("Kinetic Telemetry: Inactive", id="telem_line_1")
-                yield Label("Active Mesh Twin: None", id="telem_line_2")
-                yield Label("Camera Inspection Mode: Unknown", id="telem_line_3")
+                with Horizontal(id="telem_header_row"):
+                    yield Label("LIVEWIRE SESSION DATA STREAM", id="telem_title")
+                    yield Label("⏱ 00:00:00", id="telem_timer")
+                with Horizontal(id="telem_stat_grid_1"):
+                    yield Label("Mesh Twin: None (Waiting for Nomad)", id="telem_twin")
+                    yield Label("Stage: Stage 1 Gesture (50%)", id="telem_stage")
+                with Horizontal(id="telem_stat_grid_2"):
+                    yield Label("Kinetic: 0 strokes | Energy: 0.000", id="telem_kinetic")
+                    yield Label("Brush: Standby | Hotspot: None", id="telem_brush")
+                with Horizontal(id="telem_stat_grid_3"):
+                    yield Label("Eye Inspection: Unknown", id="telem_camera")
+                    yield Label("Audio Mic: ⚪ Standby", id="telem_audio")
+                yield Label("── RECENT WIRE EVENTS ──────────────────────────────────", id="events_divider")
+                with Vertical(id="events_log_container"):
+                    yield Label("• LiveWire wire link standing by.", id="event_item_0")
+                    yield Label("• Ready to stream Nomad Sculpt geometry and kinetic strokes.", id="event_item_1")
+                    yield Label("• In-progress snapshots preserve 100% bit-exact geometry.", id="event_item_2")
 
             with Horizontal(id="action_row"):
                 yield Button("Record (p)", id="record_btn")
@@ -291,8 +340,11 @@ class LiveWireModal(ResponsiveModalScreen[None]):
 
     def on_mount(self) -> None:
         super().on_mount()
+        # Auto-connect if Nomad Link is listening
+        if not self.mgr.is_connected:
+            self.mgr.connect_wire()
         self._refresh_ui_state()
-        self.set_interval(0.5, self._tick_ui)
+        self.set_interval(0.25, self._tick_ui)
         self.query_one("#session_name_input", LivewireSessionInput).focus()
 
     def _tick_ui(self) -> None:
@@ -341,20 +393,70 @@ class LiveWireModal(ResponsiveModalScreen[None]):
             prod_btn.remove_class("active")
 
         # 4. Telemetry update
+        telem_title = self.query_one("#telem_title", Label)
+        telem_timer = self.query_one("#telem_timer", Label)
+        telem_twin = self.query_one("#telem_twin", Label)
+        telem_stage = self.query_one("#telem_stage", Label)
+        telem_kinetic = self.query_one("#telem_kinetic", Label)
+        telem_brush = self.query_one("#telem_brush", Label)
+        telem_camera = self.query_one("#telem_camera", Label)
+        telem_audio = self.query_one("#telem_audio", Label)
+
+        # Title & Timer
+        sess_name = self.mgr.current_session_name or "untitled"
+        mode_str = (self.active_mode or "studies").upper()
+        if self.mgr.is_recording:
+            elapsed = int(time.time() - self.mgr.recording_start_epoch)
+            hrs = elapsed // 3600
+            mins = (elapsed % 3600) // 60
+            secs = elapsed % 60
+            telem_title.update(f"SESSION: {sess_name} [{mode_str}]")
+            telem_timer.update(f"● REC [{hrs:02d}:{mins:02d}:{secs:02d}]")
+            telem_timer.styles.color = "#ff3344"
+        else:
+            telem_title.update(f"LIVEWIRE COCKPIT [{mode_str}]")
+            telem_timer.update("○ STANDBY")
+            telem_timer.styles.color = "#55ffaa"
+
+        # Audio status
+        telem_audio.update(self.mgr.get_audio_status_display())
+
+        # Engine vitals
         if self.mgr.engine:
             stats = self.mgr.engine.stats
             twin = self.mgr.engine.twin
             cam = self.mgr.engine.camera_state
-            t1 = self.query_one("#telem_line_1", Label)
-            t2 = self.query_one("#telem_line_2", Label)
-            t3 = self.query_one("#telem_line_3", Label)
 
-            t1.update(f"Kinetic Strokes: {stats.total_strokes} | Energy: {stats.total_kinetic_energy:.3f} | Stage: {stats.current_stage}")
-            t2.update(f"Active Mesh Twin: '{twin.sculpt_id}' ({twin.vertex_count:,} vertices, {twin.face_count:,} faces)")
-            if cam:
-                t3.update(f"Camera: Pos {cam.camera_pos.round(2).tolist()} | Orbit: {cam.orbit_count} | FOV: {cam.fov_y:.1f}°")
+            if twin.vertex_count > 0:
+                telem_twin.update(f"Twin: '{twin.sculpt_id}' ({twin.vertex_count:,} v, {twin.face_count:,} f)")
             else:
-                t3.update("Camera: Waiting for viewpoint sync...")
+                telem_twin.update("Twin: Waiting for scene sync...")
+
+            stage_clean = stats.current_stage.replace("stage_", "Stage ").replace("_", " ").title()
+            telem_stage.update(f"{stage_clean} ({stats.stage_confidence:.0%})")
+
+            telem_kinetic.update(f"Kinetic: {stats.total_strokes} strokes | E: {stats.total_kinetic_energy:.3f}")
+
+            if stats.recent_strokes:
+                last_s = stats.recent_strokes[-1]
+                brush_name = last_s.brush_archetype.replace("_", " ").title()
+                telem_brush.update(f"Brush: {brush_name} ({last_s.brush_confidence:.0%}) | {last_s.anatomical_region}")
+            else:
+                telem_brush.update("Brush: Standby | Hotspot: Awaiting stroke")
+
+            if cam:
+                telem_camera.update(f"Camera: Orbit #{cam.orbit_count} | Pos {cam.camera_pos.round(1).tolist()} | FOV {cam.fov_y:.0f}°")
+            else:
+                telem_camera.update("Camera: Waiting for viewpoint sync...")
+
+        # Update event stream
+        evts = self.mgr.recent_events_log[-3:]
+        for idx in range(3):
+            item = self.query_one(f"#event_item_{idx}", Label)
+            if idx < len(evts):
+                item.update(evts[idx])
+            else:
+                item.update("")
 
     def _check_name_and_collision(self, session_name: str) -> tuple[bool, str, str, str]:
         mode = self.active_mode or "studies"

@@ -640,12 +640,120 @@ class LiveWireSessionManager:
         self.current_mode: str = "studies"
         self.last_pause_camera: Optional[dict] = None
         self.recording_start_epoch: float = 0.0
+        self._poll_thread: Optional[threading.Thread] = None
+        self._stop_polling: bool = False
+        self.recent_events_log: List[str] = [
+            "• LiveWire wire link standing by.",
+            "• Ready to stream Nomad Sculpt geometry and kinetic strokes."
+        ]
+        self.audio_status: str = "standby"
+        self.audio_node_id: Optional[str] = None
+        self._stop_audio: bool = False
+        self.audio_thread: Optional[threading.Thread] = None
 
     @classmethod
     def get_instance(cls) -> "LiveWireSessionManager":
         if cls._instance is None:
             cls._instance = LiveWireSessionManager()
         return cls._instance
+
+    def _on_stroke_received(self, stroke: StrokeKineticEvent) -> None:
+        t_str = time.strftime("%H:%M:%S")
+        evt = f"[{t_str}] Stroke #{stroke.stroke_id}: {stroke.brush_archetype} on {stroke.anatomical_region} (E={stroke.kinetic_energy:.3f})"
+        self.recent_events_log.append(evt)
+        if len(self.recent_events_log) > 40:
+            self.recent_events_log.pop(0)
+
+    def _on_mesh_loaded(self, twin: LiveSculptTwin) -> None:
+        t_str = time.strftime("%H:%M:%S")
+        evt = f"[{t_str}] Mesh Twin Ingested: '{twin.sculpt_id}' ({twin.vertex_count:,} verts, {twin.face_count:,} faces)"
+        self.recent_events_log.append(evt)
+        if len(self.recent_events_log) > 40:
+            self.recent_events_log.pop(0)
+
+    def _on_stage_transition(self, stage: str, conf: float) -> None:
+        t_str = time.strftime("%H:%M:%S")
+        evt = f"[{t_str}] Stage Transition: {stage.replace('_', ' ').title()} ({conf:.0%})"
+        self.recent_events_log.append(evt)
+        if len(self.recent_events_log) > 40:
+            self.recent_events_log.pop(0)
+
+    def _start_poll_thread(self) -> None:
+        if self._poll_thread and self._poll_thread.is_alive():
+            return
+        self._stop_polling = False
+        self._poll_thread = threading.Thread(
+            target=self._wire_poll_worker,
+            name="LiveWirePollWorker",
+            daemon=True
+        )
+        self._poll_thread.start()
+
+    def _wire_poll_worker(self) -> None:
+        while not self._stop_polling and self.is_connected and self.engine:
+            try:
+                self.engine.poll_wire_packet()
+                self.engine.check_idle_cycle()
+            except Exception:
+                pass
+            time.sleep(0.01)
+
+    def get_active_audio_node(self) -> Optional[str]:
+        """Inspects active fleet nodes for a connected Android/Termux microphone node."""
+        try:
+            from gemini_app.fleet.nodes import load_active_nodes
+            active = load_active_nodes()
+            for node in active:
+                nid = node.get("node_id", "")
+                telem = node.get("telemetry", {})
+                if telem.get("is_termux") or "android" in nid or "termux" in nid or "aarch64" in nid:
+                    return nid
+        except Exception:
+            pass
+        return None
+
+    def get_audio_status_display(self) -> str:
+        """Returns formatted status for the UI session data box."""
+        if self.is_recording and self.audio_status.startswith("recording"):
+            return f"Audio Mic: 🔴 {self.audio_status}"
+        active_node = self.get_active_audio_node()
+        if active_node:
+            return f"Audio Mic: 🟢 Ready ({active_node} / Bose QC)"
+        else:
+            return "Audio Mic: 🟡 Awaiting Phone (run 'python3 gemini-integrated.py node 192.168.1.91')"
+
+    def _audio_recording_loop(self, s_dir: Path, filename: str) -> None:
+        """Background worker that captures audio chunks from satellite node while recording is active."""
+        chunk_idx = 1
+        audio_dir = s_dir / "audio"
+        audio_dir.mkdir(parents=True, exist_ok=True)
+
+        while not self._stop_audio and self.is_recording:
+            active_node = self.get_active_audio_node()
+            if not active_node:
+                self.audio_status = "awaiting_phone_node"
+                time.sleep(1.5)
+                continue
+
+            self.audio_status = f"recording ({active_node} chunk #{chunk_idx})"
+            try:
+                from gemini_app.fleet.nodes import record_node_audio
+                # 10s chunk duration
+                res = record_node_audio(node_id=active_node, duration=10, encoder="opus")
+                if res.get("status") == "ok" and res.get("local_path"):
+                    src = Path(res["local_path"])
+                    if src.exists():
+                        target_chunk = audio_dir / f"{filename}_chunk_{chunk_idx:03d}.opus"
+                        try:
+                            import shutil
+                            shutil.copyfile(src, target_chunk)
+                        except Exception:
+                            pass
+                        chunk_idx += 1
+            except Exception:
+                time.sleep(2.0)
+
+        self.audio_status = "finalized" if chunk_idx > 1 else "standby"
 
     def connect_wire(self, host: Optional[str] = None, port: Optional[int] = None) -> bool:
         settings = load_livewire_settings()
@@ -657,21 +765,34 @@ class LiveWireSessionManager:
         else:
             self.engine.host = h
             self.engine.port = p
-        
+
+        # Register callbacks once
+        self.engine.on_stroke_callbacks = [self._on_stroke_received]
+        self.engine.on_mesh_loaded_callbacks = [self._on_mesh_loaded]
+        self.engine.on_stage_change_callbacks = [self._on_stage_transition]
+
         ok = self.engine.connect(timeout=4.0)
         self.is_connected = ok
         if ok:
             self.engine.enable_live_sync()
             self.engine.request_mesh()
+            self._start_poll_thread()
+            t_str = time.strftime("%H:%M:%S")
+            self.recent_events_log.append(f"[{t_str}] Nomad Sculpt Link connected to {h}:{p}")
         return ok
 
     def disconnect_wire(self):
-        if self.engine and self.engine.conn:
-            try:
-                self.engine.conn.disconnect()
-            except Exception:
-                pass
+        self._stop_polling = True
+        if self.engine:
+            self.engine.running = False
+            if self.engine.conn:
+                try:
+                    self.engine.conn.disconnect()
+                except Exception:
+                    pass
         self.is_connected = False
+        t_str = time.strftime("%H:%M:%S")
+        self.recent_events_log.append(f"[{t_str}] Nomad Sculpt Link disconnected.")
 
     def start_recording(self, session_name: str, mode: str) -> Tuple[bool, str]:
         val_ok, err, folder, filename = validate_session_name(session_name)
@@ -683,6 +804,9 @@ class LiveWireSessionManager:
 
         if not self.engine:
             self.engine = LiveWireStudyEngine(host=DEFAULT_HOST, port=DEFAULT_PORT)
+            self.engine.on_stroke_callbacks = [self._on_stroke_received]
+            self.engine.on_mesh_loaded_callbacks = [self._on_mesh_loaded]
+            self.engine.on_stage_change_callbacks = [self._on_stage_transition]
 
         s_dir = get_session_dir(mode, folder, filename)
         s_dir.mkdir(parents=True, exist_ok=True)
@@ -702,14 +826,32 @@ class LiveWireSessionManager:
         self.current_mode = mode
         self.is_recording = True
         self.recording_start_epoch = time.time()
+
+        # Start background audio recording thread
+        self._stop_audio = False
+        self.audio_thread = threading.Thread(
+            target=self._audio_recording_loop,
+            args=(s_dir, filename),
+            name="LiveWireAudioCapture",
+            daemon=True
+        )
+        self.audio_thread.start()
+
+        t_str = time.strftime("%H:%M:%S")
+        self.recent_events_log.append(f"[{t_str}] RECORDING STARTED: '{folder}/{filename}' [{mode.upper()}]")
         return True, f"Recording started for '{self.current_session_name}' [{mode.upper()}]"
 
     def stop_recording(self) -> Tuple[bool, str]:
         if not self.is_recording:
             return False, "Recording was not active."
         self.is_recording = False
+        self._stop_audio = True
+
         if self.engine:
             self.engine.save_telemetry_snapshot()
+
+        t_str = time.strftime("%H:%M:%S")
+        self.recent_events_log.append(f"[{t_str}] RECORDING STOPPED: '{self.current_session_name}'")
         return True, f"Recording stopped for '{self.current_session_name}'."
 
     def in_progress_snapshot(self) -> Tuple[bool, str]:

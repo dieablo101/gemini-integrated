@@ -128,7 +128,7 @@ def ensure_termux_mobile_environment(mothership_host: Optional[str] = None) -> N
         from gemini_app.fleet.autostart import check_autostart_status, install_autostart
         st = check_autostart_status()
         if not st.get("installed"):
-            target = mothership_host or get_saved_mothership() or "192.168.1.90"
+            target = mothership_host or get_saved_mothership() or "192.168.1.91"
             res = install_autostart(mothership=target)
             if res.get("status") == "ok":
                 sys.stdout.write(f"[satellite] Auto-provisioned Termux:Boot autostart service for Mothership ({target}).\n")
@@ -1021,9 +1021,9 @@ def get_saved_mothership(default: Optional[str] = None) -> str:
     """Retrieves the default mothership IP/host."""
     try:
         lan_ip, wan_ip, _ = get_saved_mothership_endpoints()
-        return lan_ip or wan_ip or default or "192.168.1.90"
+        return lan_ip or wan_ip or default or "192.168.1.91"
     except Exception:
-        return default or "192.168.1.90"
+        return default or "192.168.1.91"
 
 
 def get_saved_mothership_port(default: int = DEFAULT_PORT) -> int:
@@ -1096,6 +1096,36 @@ def format_node_error(exc: Any, context: str = "") -> Dict[str, Any]:
     }
 
 
+def discover_mothership_on_lan(port: int = DEFAULT_PORT, timeout: float = 0.35) -> Optional[str]:
+    """Scans local subnet for an active Mothership daemon listening on port 7331."""
+    import concurrent.futures
+    route = get_local_route_info()
+    local_ip = route.get("local_ip", "")
+    if not local_ip or "." not in local_ip:
+        return None
+    prefix = local_ip.rsplit(".", 1)[0] + "."
+    probe_ips = [f"{prefix}{i}" for i in range(1, 255) if f"{prefix}{i}" != local_ip]
+
+    def _probe(ip: str) -> Optional[str]:
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(timeout)
+                if s.connect_ex((ip, port)) == 0:
+                    return ip
+        except Exception:
+            pass
+        return None
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=50) as ex:
+            for res in ex.map(_probe, probe_ips):
+                if res:
+                    return res
+    except Exception:
+        pass
+    return None
+
+
 class SatelliteNode:
     """Satellite client connecting to the Mothership."""
 
@@ -1109,12 +1139,12 @@ class SatelliteNode:
     ) -> None:
         self._explicit_host = mothership_host.strip() if mothership_host else None
         saved_lan, saved_wan, saved_port = get_saved_mothership_endpoints()
-        self.lan_host: Optional[str] = saved_lan or ("192.168.1.90" if self._explicit_host is None else (self._explicit_host if is_lan_address(self._explicit_host) else "192.168.1.90"))
+        self.lan_host: Optional[str] = saved_lan or ("192.168.1.91" if self._explicit_host is None else (self._explicit_host if is_lan_address(self._explicit_host) else "192.168.1.91"))
         self.wan_host: Optional[str] = saved_wan or (self._explicit_host if (self._explicit_host and not is_lan_address(self._explicit_host)) else None)
         self.wan_ipv6: Optional[str] = get_saved_mothership_ipv6()
 
         self.mothership_port = mothership_port if mothership_port is not None else saved_port
-        self.mothership_host = self._explicit_host or self.lan_host or self.wan_host or self.wan_ipv6 or "192.168.1.90"
+        self.mothership_host = self._explicit_host or self.lan_host or self.wan_host or self.wan_ipv6 or "192.168.1.91"
         self.active_host: str = self.mothership_host
         self.active_route_type: str = "LAN" if is_lan_address(self.active_host) else "WAN"
 
@@ -1496,6 +1526,32 @@ class SatelliteNode:
                 if not self.hud:
                     sys.stderr.write(f"[satellite] Connection attempt via {route_type} ({host}:{self.mothership_port}) failed: {exc}\n")
                 continue
+
+        # Automatic LAN Subnet Discovery fallback if initial endpoints failed
+        if not self._explicit_host:
+            discovered = discover_mothership_on_lan(port=self.mothership_port)
+            if discovered:
+                sys.stdout.write(f"[satellite] Discovered active Mothership on LAN at {discovered}:{self.mothership_port}\n")
+                try:
+                    s = socket.create_connection((discovered, self.mothership_port), timeout=timeout)
+                    try:
+                        s.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+                    except Exception:
+                        pass
+                    s.settimeout(None)
+                    self.sock = s
+                    self.active_host = discovered
+                    self.active_route_type = "LAN"
+                    self.mothership_host = discovered
+                    self.lan_host = discovered
+                    save_mothership(discovered, port=self.mothership_port)
+                    if self.hud:
+                        self.hud.mothership_addr = f"{discovered}:{self.mothership_port}"
+                        self.hud.set_endpoints(self.lan_host, self.wan_host)
+                        self.hud.set_connection_status(True, route_info=f"LAN-Discovered ({discovered})")
+                    return True
+                except Exception as exc:
+                    last_exc = exc
 
         if self.hud:
             self.hud.set_connection_status(False)

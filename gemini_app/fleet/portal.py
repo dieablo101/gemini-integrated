@@ -12,7 +12,7 @@ TERMUX_APK = os.path.join(APK_DIR, "termux-app_v0.118.3_arm64.apk")
 API_APK = os.path.join(APK_DIR, "termux-api-app_v0.53.0.apk")
 BOOT_APK = os.path.join(APK_DIR, "termux-boot-app_v0.8.1.apk")
 
-LOCAL_IP = get_local_lan_ip() or "192.168.1.90"
+LOCAL_IP = get_local_lan_ip() or "192.168.1.91"
 
 BOOTSTRAP_CMD = f"""pkg install -y git python termux-api
 termux-wake-lock

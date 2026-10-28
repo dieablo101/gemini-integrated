@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 from textual.app import App, ComposeResult
-from textual.widgets import Label
+from textual.widgets import Checkbox, Label
 
 from gemini_app.ui.modals.live_wire_modal import (
     LivewireSessionInput,
@@ -103,6 +103,143 @@ class TestLiveWireUI(unittest.IsolatedAsyncioTestCase):
             # Dismiss cockpit
             await pilot.press("escape")
             self.assertNotIsInstance(app.screen, LiveWireModal)
+
+    async def test_active_session_pause_resume_and_snapshot_restore(self):
+        """Verifies active session immunity, snapshot auto-sync on pause, and restore trigger."""
+        import numpy as np
+        import shutil
+        from live_wire_engine import (
+            LiveWireSessionManager,
+            LiveSculptTwin,
+            save_in_progress_snapshot,
+            check_in_progress_snapshot_exists,
+            check_snapshot_off_sync,
+            restore_snapshot_for_device,
+            get_session_dir
+        )
+
+        mgr = LiveWireSessionManager.get_instance()
+        test_session = "test_guard/test_alien"
+        s_dir = get_session_dir("studies", "test_guard", "test_alien")
+        if s_dir.exists():
+            shutil.rmtree(s_dir)
+
+        # 1. Start recording
+        ok, msg = mgr.start_recording(test_session, "studies")
+        self.assertTrue(ok)
+        self.assertTrue(mgr.is_recording)
+
+        # 2. Pause recording
+        ok, msg = mgr.stop_recording()
+        self.assertTrue(ok)
+        self.assertFalse(mgr.is_recording)
+
+        # 3. Active Session Immunity: resume recording immediately without collision error
+        ok, msg = mgr.start_recording(test_session, "studies")
+        self.assertTrue(ok, f"Expected active session immunity but got error: {msg}")
+        self.assertTrue(mgr.is_recording)
+
+        # Setup mock twin with geometry
+        twin = LiveSculptTwin(sculpt_id="alien_sculpt")
+        twin.positions = np.array([[0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [-1.0, 0.0, 0.0]])
+        twin.faces = [[0, 1, 2]]
+        mgr.engine.twin = twin
+
+        # 4. Save in-progress snapshot
+        meta_p = save_in_progress_snapshot("studies", "test_guard", "test_alien", twin, None)
+        self.assertTrue(meta_p.exists())
+        self.assertTrue(check_in_progress_snapshot_exists("studies", "test_guard", "test_alien"))
+
+        # Snapshot in-sync check
+        self.assertFalse(check_snapshot_off_sync("studies", "test_guard", "test_alien", twin))
+
+        # 5. Simulate accidental brush stroke divergence (off-sync)
+        diverged_twin = LiveSculptTwin(sculpt_id="alien_sculpt")
+        diverged_twin.positions = np.array([[0.0, 1.5, 0.0], [1.0, 0.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
+        diverged_twin.faces = [[0, 1, 2], [0, 2, 3]]
+        mgr.engine.twin = diverged_twin
+
+        # Verify auto-detection identifies off-sync divergence!
+        self.assertTrue(check_snapshot_off_sync("studies", "test_guard", "test_alien", diverged_twin))
+
+        # 6. Test restore snapshot generates restored .nom and .obj files
+        r_ok, r_msg, r_name = restore_snapshot_for_device("studies", "test_guard", "test_alien")
+        self.assertTrue(r_ok)
+        self.assertEqual(r_name, "test_alien")
+        self.assertTrue((s_dir / "restored" / "test_alien.nom").exists())
+        self.assertTrue((s_dir / "restored" / "test_alien.obj").exists())
+
+        # Cleanup
+        mgr.stop_recording()
+        if s_dir.exists():
+            shutil.rmtree(s_dir)
+
+    async def test_checkbox_session_type_selection(self):
+        """Verifies session type checkboxes default to studies and toggle mutually exclusively."""
+        app = TestLiveWireModalApp()
+        async with app.run_test() as pilot:
+            cockpit = LiveWireModal()
+            await app.push_screen(cockpit)
+
+            studies_cb = cockpit.query_one("#mode_studies_check", Checkbox)
+            prod_cb = cockpit.query_one("#mode_production_check", Checkbox)
+
+            # Default must be studies checked, production unchecked
+            self.assertTrue(studies_cb.value)
+            self.assertFalse(prod_cb.value)
+            self.assertEqual(cockpit.active_mode, "studies")
+
+            # Check production
+            prod_cb.value = True
+            await pilot.pause()
+            self.assertFalse(studies_cb.value)
+            self.assertTrue(prod_cb.value)
+            self.assertEqual(cockpit.active_mode, "production")
+
+            # Check studies again
+            studies_cb.value = True
+            await pilot.pause()
+            self.assertTrue(studies_cb.value)
+            self.assertFalse(prod_cb.value)
+            self.assertEqual(cockpit.active_mode, "studies")
+
+            await pilot.press("escape")
+
+    async def test_record_time_collision_and_snapshot_sync_gates(self):
+        """Tests deferred checking: no premature check while typing; strict gate on record."""
+        app = TestLiveWireModalApp()
+        async with app.run_test() as pilot:
+            cockpit = LiveWireModal()
+            await app.push_screen(cockpit)
+
+            # 1. Existing session with NO snapshot (testing/testing2 in studies)
+            cockpit.active_mode = "studies"
+            ok, msg, f, fn = cockpit._check_name_and_collision("testing/testing2")
+            self.assertFalse(ok)
+            self.assertEqual(msg, "session already exists with no saved snapshot")
+
+            # 2. Switch to production mode -> testing/testing2 does NOT exist under production
+            cockpit.active_mode = "production"
+            ok_prod, msg_prod, f_p, fn_p = cockpit._check_name_and_collision("testing/testing2")
+            self.assertTrue(ok_prod)
+            self.assertEqual(msg_prod, "")
+
+            # 3. Existing session WITH snapshot (testing/testing in studies)
+            cockpit.active_mode = "studies"
+            # If off-sync:
+            import numpy as np
+            from live_wire_engine import LiveSculptTwin
+            twin = LiveSculptTwin("mismatch")
+            twin.positions = np.array([[100.0, 100.0, 100.0]])
+            twin.faces = []
+            cockpit.mgr.engine.twin = twin
+
+            ok_snap, msg_snap, _, _ = cockpit._check_name_and_collision("testing/testing")
+            self.assertFalse(ok_snap)
+            self.assertIn("your snapshot is offsync", msg_snap)
+            self.assertEqual(cockpit.query_one("#snapshot_btn").label, "Restore Snapshot")
+
+            await pilot.press("escape")
 
 
 if __name__ == "__main__":

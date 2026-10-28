@@ -15,7 +15,7 @@ from textual import events, on
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.widgets import Button, Input, Label, Static
+from textual.widgets import Button, Checkbox, Input, Label, Static
 
 from gemini_app.ui.modals.base import ResponsiveModalScreen
 
@@ -30,7 +30,10 @@ from live_wire_engine import (
     PRODUCTION_ROOT,
     validate_session_name,
     check_session_collision,
+    is_session_finalized,
     check_in_progress_snapshot_exists,
+    check_snapshot_off_sync,
+    restore_snapshot_for_device,
     cancel_and_scrub_session,
     finalize_livewire_session,
     load_livewire_settings,
@@ -186,17 +189,19 @@ class LiveWireModal(ResponsiveModalScreen[None]):
         width: 100%;
         height: auto;
         margin-bottom: 1;
+        align-vertical: middle;
     }
-    .mode_btn {
-        margin-right: 1;
-        background: #151520;
-        color: #888888;
-        min-width: 16;
-    }
-    .mode_btn.active {
-        background: #bb55ff;
-        color: #ffffff;
+    #mode_row_label {
+        color: #bb55ff;
         text-style: bold;
+        margin-right: 1;
+        height: auto;
+        align-vertical: middle;
+    }
+    #mode_studies_check, #mode_production_check {
+        margin-right: 2;
+        background: transparent;
+        border: none;
     }
     #telemetry_box {
         width: 100%;
@@ -355,6 +360,7 @@ class LiveWireModal(ResponsiveModalScreen[None]):
         self.mgr = LiveWireSessionManager.get_instance()
         self.active_mode: Optional[str] = self.mgr.current_mode or "studies"
         self._c_c_prefix: bool = False
+        self._off_sync_notified: bool = False
 
     def compose(self) -> ComposeResult:
         with VerticalScroll(id="livewire_dialog"):
@@ -375,8 +381,9 @@ class LiveWireModal(ResponsiveModalScreen[None]):
             )
 
             with Horizontal(id="mode_row"):
-                yield Button("Studies", id="mode_studies_btn", classes="mode_btn")
-                yield Button("Production", id="mode_production_btn", classes="mode_btn")
+                yield Label("Session Type:", id="mode_row_label")
+                yield Checkbox("Studies", value=(self.active_mode == "studies"), id="mode_studies_check")
+                yield Checkbox("Production", value=(self.active_mode == "production"), id="mode_production_check")
 
             with Vertical(id="telemetry_box"):
                 with Horizontal(id="telem_header_row"):
@@ -458,18 +465,19 @@ class LiveWireModal(ResponsiveModalScreen[None]):
             rec_btn.label = "Record (p)"
             rec_btn.remove_class("active")
 
-        # 3. Active Mode Buttons
-        studies_btn = self.query_one("#mode_studies_btn", Button)
-        prod_btn = self.query_one("#mode_production_btn", Button)
+        # 3. Mode checkboxes synchronization
+        studies_cb = self.query_one("#mode_studies_check", Checkbox)
+        prod_cb = self.query_one("#mode_production_check", Checkbox)
         if self.active_mode == "studies":
-            studies_btn.add_class("active")
-            prod_btn.remove_class("active")
+            if not studies_cb.value:
+                studies_cb.value = True
+            if prod_cb.value:
+                prod_cb.value = False
         elif self.active_mode == "production":
-            prod_btn.add_class("active")
-            studies_btn.remove_class("active")
-        else:
-            studies_btn.remove_class("active")
-            prod_btn.remove_class("active")
+            if not prod_cb.value:
+                prod_cb.value = True
+            if studies_cb.value:
+                studies_cb.value = False
 
         # 4. Telemetry update
         telem_title = self.query_one("#telem_title", Label)
@@ -585,6 +593,14 @@ class LiveWireModal(ResponsiveModalScreen[None]):
                 audio_label.update("🎙 Audio: Awaiting stream chunk...")
                 play_btn.disabled = True
 
+        # Snapshot button presentation: maintain neutral standby unless put into restore state
+        snap_btn = self.query_one("#snapshot_btn", Button)
+        if snap_btn.label != "Restore Snapshot":
+            snap_btn.label = "In-Progress Snapshot"
+            snap_btn.disabled = False
+            snap_btn.styles.background = "#182230"
+            snap_btn.styles.color = "#55aaff"
+
     @on(Button.Pressed, "#play_audio_btn")
     def on_play_audio_pressed(self) -> None:
         ok, msg = self.mgr.play_most_recent_audio()
@@ -600,10 +616,30 @@ class LiveWireModal(ResponsiveModalScreen[None]):
             self.app.notify(err, severity="error", timeout=4.0)
             return False, err, "", ""
 
-        if check_session_collision(mode, folder, filename) and not check_in_progress_snapshot_exists(mode, folder, filename):
-            warn_msg = f"Warning: '{session_name}' already exists in that folder"
-            self.app.notify(warn_msg, severity="error", timeout=4.0)
-            return False, warn_msg, folder, filename
+        # ACTIVE SESSION IMMUNITY: If this is the active session in this cockpit, permit freely
+        if self.mgr.current_session_name == f"{folder}/{filename}":
+            return True, "", folder, filename
+
+        if check_session_collision(mode, folder, filename):
+            snap_exists = check_in_progress_snapshot_exists(mode, folder, filename)
+            if not snap_exists:
+                finalized = is_session_finalized(mode, folder, filename)
+                msg = "session already exists with no saved snapshot, and finalized" if finalized else "session already exists with no saved snapshot"
+                self.app.notify(msg, severity="error", timeout=5.0)
+                return False, msg, folder, filename
+            else:
+                # Check off-sync
+                is_off_sync = False
+                if self.mgr.engine and self.mgr.engine.twin and self.mgr.engine.twin.vertex_count > 0:
+                    is_off_sync = check_snapshot_off_sync(mode, folder, filename, self.mgr.engine.twin)
+                if is_off_sync:
+                    snap_btn = self.query_one("#snapshot_btn", Button)
+                    snap_btn.label = "Restore Snapshot"
+                    snap_btn.styles.background = "#882233"
+                    snap_btn.styles.color = "#ffdddd"
+                    warn = "your snapshot is offsync with your local device, click restore snapshot"
+                    self.app.notify(warn, severity="warning", timeout=6.0)
+                    return False, warn, folder, filename
 
         return True, "", folder, filename
 
@@ -617,27 +653,45 @@ class LiveWireModal(ResponsiveModalScreen[None]):
             self.app.notify("Failed to connect to Nomad Sculpt Link. Check iPad IP & port in /livewire --settings", severity="error", timeout=5.0)
         self._refresh_ui_state()
 
-    @on(Button.Pressed, "#mode_studies_btn")
-    def on_mode_studies(self) -> None:
-        self.active_mode = "studies"
+    @on(Checkbox.Changed, "#mode_studies_check")
+    def on_studies_check(self, event: Checkbox.Changed) -> None:
+        if event.value:
+            prod_cb = self.query_one("#mode_production_check", Checkbox)
+            if prod_cb.value:
+                prod_cb.value = False
+            self.active_mode = "studies"
+        else:
+            prod_cb = self.query_one("#mode_production_check", Checkbox)
+            if not prod_cb.value:
+                self.query_one("#mode_studies_check", Checkbox).value = True
+                self.active_mode = "studies"
         self._refresh_ui_state()
 
-    @on(Button.Pressed, "#mode_production_btn")
-    def on_mode_production(self) -> None:
-        self.active_mode = "production"
+    @on(Checkbox.Changed, "#mode_production_check")
+    def on_production_check(self, event: Checkbox.Changed) -> None:
+        if event.value:
+            studies_cb = self.query_one("#mode_studies_check", Checkbox)
+            if studies_cb.value:
+                studies_cb.value = False
+            self.active_mode = "production"
+        else:
+            studies_cb = self.query_one("#mode_studies_check", Checkbox)
+            if not studies_cb.value:
+                self.query_one("#mode_production_check", Checkbox).value = True
+                self.active_mode = "production"
         self._refresh_ui_state()
 
     def action_toggle_recording(self) -> None:
         if self.mgr.is_recording:
-            # Stop recording
+            # Stop recording / Pause (auto-syncs progress to snapshot controller if snapshot active)
             ok, msg = self.mgr.stop_recording()
             self.app.notify(msg, timeout=3.0)
             self._refresh_ui_state()
             return
 
-        # Start recording
+        # Start / Resume recording
         inp = self.query_one("#session_name_input", LivewireSessionInput)
-        raw_name = inp.value.strip()
+        raw_name = inp.value.strip() or self.mgr.current_session_name
         if not raw_name:
             self.app.notify("please name your livewire session", severity="error", timeout=4.0)
             return
@@ -647,9 +701,13 @@ class LiveWireModal(ResponsiveModalScreen[None]):
             return
 
         mode = self.active_mode or "studies"
+        snap_exists = check_in_progress_snapshot_exists(mode, folder, filename)
         ok, msg = self.mgr.start_recording(raw_name, mode)
         if ok:
-            self.app.notify(f"LiveWire recording started! [{mode.upper()}]", timeout=3.0)
+            if snap_exists:
+                self.app.notify(f"Resuming LiveWire session from snapshot! [{mode.upper()}]", timeout=3.5)
+            else:
+                self.app.notify(f"LiveWire recording started! [{mode.upper()}]", timeout=3.0)
         else:
             self.app.notify(msg, severity="error", timeout=4.0)
         self._refresh_ui_state()
@@ -660,12 +718,9 @@ class LiveWireModal(ResponsiveModalScreen[None]):
 
     @on(Button.Pressed, "#snapshot_btn")
     def action_snapshot(self) -> None:
-        if not self.mgr.is_connected:
-            self.app.notify("Nomad Sculpt link must be active to capture snapshot.", severity="warning", timeout=4.0)
-            return
-
+        snap_btn = self.query_one("#snapshot_btn", Button)
         inp = self.query_one("#session_name_input", LivewireSessionInput)
-        raw_name = inp.value.strip()
+        raw_name = inp.value.strip() or self.mgr.current_session_name
         if not raw_name:
             self.app.notify("please name your livewire session", severity="error", timeout=4.0)
             return
@@ -675,15 +730,31 @@ class LiveWireModal(ResponsiveModalScreen[None]):
             self.app.notify(err, severity="error", timeout=4.0)
             return
 
+        mode = self.active_mode or "studies"
+
+        # Check if button is in "Restore Snapshot" state (recovering from accidental brush stroke)
+        if snap_btn.label == "Restore Snapshot":
+            ok, msg, restored_file = self.mgr.restore_snapshot_for_device(mode, folder, filename)
+            if ok:
+                toast_msg = f"snapshot restored and placed in your nomad projects folder as \"{restored_file}\""
+                self.app.notify(toast_msg, timeout=6.0)
+                self._off_sync_notified = False
+            else:
+                self.app.notify(msg, severity="error", timeout=5.0)
+            self._refresh_ui_state()
+            return
+
+        # Normal snapshot capture
+        if not self.mgr.is_connected:
+            self.app.notify("Nomad Sculpt link must be active to capture snapshot.", severity="warning", timeout=4.0)
+            return
+
         self.mgr.current_session_name = raw_name
-        self.mgr.current_mode = self.active_mode or "studies"
+        self.mgr.current_mode = mode
         ok, msg = self.mgr.in_progress_snapshot()
         if ok:
             self.app.notify(f"In-Progress Snapshot saved: '{folder}/{filename}'", timeout=4.0)
-            # Reset modal fields fresh
-            inp.value = ""
-            self.active_mode = None
-            self.mgr.current_session_name = ""
+            self._off_sync_notified = False
         else:
             self.app.notify(msg, severity="error", timeout=4.0)
         self._refresh_ui_state()

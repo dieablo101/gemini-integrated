@@ -167,6 +167,16 @@ def check_session_collision(mode: str, folder: str, filename: str) -> bool:
     return session_dir.exists() and any(session_dir.iterdir())
 
 
+def is_session_finalized(mode: str, folder: str, filename: str) -> bool:
+    s_dir = get_session_dir(mode, folder, filename)
+    if not s_dir.exists():
+        return False
+    if mode == "production":
+        return (s_dir / f"{filename}.fbx").exists() or (s_dir / "production_leniency_audit.json").exists()
+    else:
+        return (s_dir / "study_core").exists() or (s_dir / "final_mesh.glb").exists()
+
+
 def compute_mesh_fingerprint(twin: LiveSculptTwin) -> dict:
     import hashlib
     positions = twin.positions
@@ -373,6 +383,117 @@ def check_in_progress_snapshot_exists(mode: str, folder: str, filename: str) -> 
     if not snap_dir.exists():
         return False
     return len(list(snap_dir.glob("*_meta.json"))) > 0
+
+
+def check_snapshot_off_sync(mode: str, folder: str, filename: str, twin: LiveSculptTwin) -> bool:
+    """Returns True if the active Nomad twin geometry has diverged from the saved snapshot checkpoint."""
+    if not twin or twin.vertex_count == 0:
+        return False
+    latest_snap = get_latest_snapshot(mode, folder, filename)
+    if not latest_snap:
+        return False
+    snap_fp = latest_snap.get("fingerprint", {})
+    if not snap_fp or not snap_fp.get("vertex_count"):
+        return False
+
+    curr_fp = compute_mesh_fingerprint(twin)
+    # Check if vertex count, face count, or positions hash diverged
+    if curr_fp.get("vertex_count") != snap_fp.get("vertex_count"):
+        return True
+    if curr_fp.get("face_count") != snap_fp.get("face_count"):
+        return True
+    if curr_fp.get("sha256") != snap_fp.get("sha256"):
+        return True
+    return False
+
+
+def export_mesh_obj(positions: np.ndarray, faces: Any, out_path: Path) -> Path:
+    """Exports raw positions and faces to standard Wavefront OBJ."""
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write(f"# Nomad Sculpt Snapshot Restored Mesh: {out_path.name}\n")
+        for v in positions:
+            f.write(f"v {v[0]:.6f} {v[1]:.6f} {v[2]:.6f}\n")
+        for face in faces:
+            if hasattr(face, "__iter__") and len(face) >= 3:
+                f_indices = " ".join(str(int(idx) + 1) for idx in face)
+                f.write(f"f {f_indices}\n")
+    return out_path
+
+
+def export_mesh_nom(positions: np.ndarray, faces: Any, out_nom_path: Path, filename: str) -> Path:
+    """Packages restored snapshot geometry into a Nomad project package (.nom zip archive)."""
+    import zipfile
+    out_nom_path.parent.mkdir(parents=True, exist_ok=True)
+    obj_path = out_nom_path.with_suffix(".obj")
+    export_mesh_obj(positions, faces, obj_path)
+
+    manifest = {
+        "version": "1.0",
+        "name": filename,
+        "generator": "Gemini LiveWire Nomad Bridge",
+        "created_at": time.time(),
+        "vertex_count": len(positions)
+    }
+    with zipfile.ZipFile(out_nom_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.write(obj_path, arcname=f"{filename}.obj")
+        zf.writestr("project.json", json.dumps(manifest, indent=2))
+    return out_nom_path
+
+
+def restore_snapshot_for_device(mode: str, folder: str, filename: str) -> Tuple[bool, str, str]:
+    """Recovers pristine snapshot checkpoint and places restored file onto local workspace and iPad Nomad folder."""
+    s_dir = get_session_dir(mode, folder, filename)
+    snap_dir = s_dir / "snapshots"
+    if not snap_dir.exists():
+        return False, f"No snapshot directory found for '{folder}/{filename}'", filename
+
+    geo_files = sorted(list(snap_dir.glob("*_geo.npz")))
+    if not geo_files:
+        return False, f"No geometric snapshot checkpoints found for '{folder}/{filename}'", filename
+
+    latest_geo = geo_files[-1]
+    try:
+        geo = np.load(latest_geo, allow_pickle=True)
+        positions = geo["positions"]
+        faces = geo["faces"]
+    except Exception as e:
+        return False, f"Failed to load snapshot geometry: {e}", filename
+
+    # 1. Save restored file locally in session directory
+    restored_dir = s_dir / "restored"
+    restored_dir.mkdir(parents=True, exist_ok=True)
+    restored_nom = restored_dir / f"{filename}.nom"
+    export_mesh_nom(positions, faces, restored_nom, filename)
+
+    # Keep direct .obj alongside for universal import
+    restored_obj = restored_dir / f"{filename}.obj"
+    export_mesh_obj(positions, faces, restored_obj)
+
+    # 2. Push to iPad device Nomad projects folder via satellite link if connected
+    placed_on_node = False
+    try:
+        from gemini_app.fleet.nodes import send_mothership_command
+        res = send_mothership_command("exec_node", {
+            "node_id": "ipad-ish-localhost",
+            "command": "test -d /mnt/ipad && echo MOUNT_EXISTS"
+        })
+        if res.get("status") == "ok" and "MOUNT_EXISTS" in res.get("exec_result", {}).get("stdout", ""):
+            import base64
+            nom_bytes = restored_nom.read_bytes()
+            b64_str = base64.b64encode(nom_bytes).decode("ascii")
+            py_write_cmd = f"python3 -c 'import base64, os; path = \"/mnt/ipad/Nomad/projects/{filename}.nom\" if os.path.exists(\"/mnt/ipad/Nomad/projects\") else \"/mnt/ipad/{filename}.nom\"; open(path, \"wb\").write(base64.b64decode(\"{b64_str}\"))'"
+            w_res = send_mothership_command("exec_node", {
+                "node_id": "ipad-ish-localhost",
+                "command": py_write_cmd,
+                "timeout": 15.0
+            })
+            if w_res.get("status") == "ok" and w_res.get("exec_result", {}).get("exit_code") == 0:
+                placed_on_node = True
+    except Exception:
+        pass
+
+    return True, f"Snapshot restored as '{filename}'", filename
 
 
 def get_latest_snapshot(mode: str, folder: str, filename: str) -> Optional[dict]:
@@ -916,8 +1037,16 @@ class LiveWireSessionManager:
         if not val_ok:
             return False, err
 
-        if check_session_collision(mode, folder, filename) and not check_in_progress_snapshot_exists(mode, folder, filename):
-            return False, f"Warning: '{session_name}' already exists in that folder"
+        # Active Session Immunity: If resuming the current session or a snapshot exists, permit freely
+        is_current_active = (self.current_session_name == f"{folder}/{filename}")
+        snap_exists = check_in_progress_snapshot_exists(mode, folder, filename)
+
+        if not is_current_active and check_session_collision(mode, folder, filename) and not snap_exists:
+            finalized = is_session_finalized(mode, folder, filename)
+            if finalized:
+                return False, "session already exists with no saved snapshot, and finalized"
+            else:
+                return False, "session already exists with no saved snapshot"
 
         if not self.engine:
             self.engine = LiveWireStudyEngine(host=DEFAULT_HOST, port=DEFAULT_PORT)
@@ -975,9 +1104,31 @@ class LiveWireSessionManager:
         if self.engine:
             self.engine.save_telemetry_snapshot()
 
+        # Auto-sync snapshot on pause if a snapshot exists for this session
+        if self.current_session_name and self.current_mode:
+            val_ok, err, folder, filename = validate_session_name(self.current_session_name)
+            if val_ok and check_in_progress_snapshot_exists(self.current_mode, folder, filename):
+                if self.engine and self.engine.twin:
+                    try:
+                        save_in_progress_snapshot(
+                            mode=self.current_mode,
+                            folder=folder,
+                            filename=filename,
+                            twin=self.engine.twin,
+                            camera=self.engine.camera_state,
+                            stats=self.engine.stats
+                        )
+                        t_str = time.strftime("%H:%M:%S")
+                        self.recent_events_log.append(f"[{t_str}] Auto-synced snapshot on pause for '{folder}/{filename}'")
+                    except Exception:
+                        pass
+
         t_str = time.strftime("%H:%M:%S")
         self.recent_events_log.append(f"[{t_str}] RECORDING STOPPED: '{self.current_session_name}'")
         return True, f"Recording stopped for '{self.current_session_name}'."
+
+    def restore_snapshot_for_device(self, mode: str, folder: str, filename: str) -> Tuple[bool, str, str]:
+        return restore_snapshot_for_device(mode, folder, filename)
 
     def in_progress_snapshot(self) -> Tuple[bool, str]:
         if not self.is_connected or not self.engine:

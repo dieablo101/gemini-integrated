@@ -281,6 +281,31 @@ class TestLiveWireUI(unittest.IsolatedAsyncioTestCase):
 
             await pilot.press("escape")
 
+    async def test_open_full_view_image_button_and_action(self):
+        """Verifies that the Open Full View Image button and 'o' binding exist and function."""
+        app = TestLiveWireModalApp()
+        async with app.run_test() as pilot:
+            cockpit = LiveWireModal()
+            await app.push_screen(cockpit)
+            await pilot.pause()
+
+            # 1. Verify Open Full View Image button exists
+            open_btn = cockpit.query_one("#open_image_btn")
+            self.assertIsNotNone(open_btn)
+            self.assertIn("Open Full View Image", str(open_btn.label))
+
+            # 2. Verify 'o' binding exists
+            binding_keys = [b.key for b in cockpit.BINDINGS]
+            self.assertIn("o", binding_keys)
+
+            # 3. Trigger action when no image exists -> warning notification
+            cockpit.action_open_full_view_image()
+            await pilot.pause()
+            notifs = [n.message for n in app._notifications]
+            self.assertTrue(any("No snapshot image available" in str(msg) or "Launched viewer" in str(msg) for msg in notifs))
+
+            await pilot.press("escape")
+
 
 if __name__ == "__main__":
     unittest.main()

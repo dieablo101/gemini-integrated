@@ -19,7 +19,8 @@ from live_wire_engine import (
     validate_session_name, compute_mesh_fingerprint, verify_mesh_match,
     save_in_progress_snapshot, check_in_progress_snapshot_exists,
     record_camera_snapto, cancel_and_scrub_session, finalize_livewire_session,
-    list_all_livewire_sessions, LiveWireSessionManager, STUDIES_ROOT, PRODUCTION_ROOT
+    list_all_livewire_sessions, LiveWireSessionManager, STUDIES_ROOT, PRODUCTION_ROOT,
+    MidpointSnapshotRenderer, open_snapshot_viewer
 )
 
 class TestLiveWireStudyEngine(unittest.TestCase):
@@ -233,6 +234,37 @@ class TestLiveWireStudyEngine(unittest.TestCase):
         # Clean up test session
         cancel_and_scrub_session("production", folder, filename)
         self.assertFalse(sess_dir.exists())
+
+    def test_high_res_snapshot_and_viewer(self):
+        folder = "test_sculpt"
+        filename = "high_res_test"
+        twin = self.engine.twin
+        snap_meta = save_in_progress_snapshot(
+            mode="studies",
+            folder=folder,
+            filename=filename,
+            twin=twin,
+            camera=CameraState(),
+            stats=self.engine.stats
+        )
+        snap_dir = snap_meta.parent
+        preview_png = snap_dir / "chkpt_001_preview.png"
+        self.assertTrue(preview_png.exists())
+        self.assertGreater(preview_png.stat().st_size, 500)
+
+        # Test open_snapshot_viewer
+        ok_view, msg_view = open_snapshot_viewer(preview_png)
+        self.assertTrue(ok_view)
+        self.assertIn("chkpt_001_preview.png", msg_view)
+
+        # Test ANSI preview generation
+        from PIL import Image
+        im = Image.open(preview_png)
+        ansi_text = MidpointSnapshotRenderer._generate_ansi_halfblocks(im, 36, 8)
+        self.assertIn("▀", ansi_text)
+
+        # Clean up
+        cancel_and_scrub_session("studies", folder, filename)
 
 if __name__ == "__main__":
     unittest.main()

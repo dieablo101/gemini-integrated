@@ -40,6 +40,7 @@ from live_wire_engine import (
     finalize_livewire_session,
     load_livewire_settings,
     save_in_progress_snapshot,
+    open_snapshot_viewer,
     DEFAULT_HOST,
     DEFAULT_PORT
 )
@@ -331,6 +332,22 @@ class LiveWireModal(ResponsiveModalScreen[None]):
         color: #ffaa33;
         margin-bottom: 0;
     }
+    #recent_btn_row {
+        width: 100%;
+        height: auto;
+        margin-top: 0;
+    }
+    #open_image_btn {
+        background: #251c36;
+        color: #dd88ff;
+        text-style: bold;
+        min-width: 25;
+        margin-right: 1;
+    }
+    #open_image_btn:hover {
+        background: #3b285c;
+        color: #ffffff;
+    }
     #play_audio_btn {
         background: #1e3328;
         color: #55ffaa;
@@ -374,6 +391,7 @@ class LiveWireModal(ResponsiveModalScreen[None]):
     BINDINGS = [
         Binding("escape", "dismiss_modal", "Close Modal"),
         Binding("p", "toggle_recording", "Toggle Record/Stop"),
+        Binding("o", "open_full_view_image", "Open Full View Image"),
         Binding("f12", "take_svg_screenshot", "Snapshot", show=False),
         Binding("ctrl+c", "c_c_prefix_stub", "^c Commands", show=False),
     ]
@@ -440,7 +458,9 @@ class LiveWireModal(ResponsiveModalScreen[None]):
                         with Vertical(id="recent_meta_column"):
                             yield Label("No gestures or voice captured yet in this session.", id="recent_desc_label")
                             yield Label("Audio: Standby", id="recent_audio_label")
-                            yield Button("▶ Play Synced Audio (Headphones)", id="play_audio_btn")
+                            with Horizontal(id="recent_btn_row"):
+                                yield Button("🖼 Open Full View Image (o)", id="open_image_btn")
+                                yield Button("▶ Play Synced Audio (Headphones)", id="play_audio_btn")
 
             with Horizontal(id="action_row"):
                 yield Button("Record (p)", id="record_btn")
@@ -620,6 +640,21 @@ class LiveWireModal(ResponsiveModalScreen[None]):
                 audio_label.update("🎙 Audio: Awaiting stream chunk...")
                 play_btn.disabled = True
 
+        # Update Open Full View Image button state
+        open_btn = self.query_one("#open_image_btn", Button)
+        has_img = False
+        if v_events and v_events[-1].snapshot_png_path and Path(v_events[-1].snapshot_png_path).exists():
+            has_img = True
+        else:
+            mode = self.active_mode or "studies"
+            s_name = self.query_one("#session_name_input", LivewireSessionInput).value.strip() or self.mgr.current_session_name
+            if "/" in s_name:
+                f, fn = s_name.split("/", 1)
+                s_dir = get_session_dir(mode, f, fn)
+                if list((s_dir / "snapshots").glob("*_preview.png")):
+                    has_img = True
+        open_btn.disabled = not has_img
+
         # Snapshot button presentation: maintain neutral standby unless put into restore state
         snap_btn = self.query_one("#snapshot_btn", Button)
         if snap_btn.label != "Restore Snapshot":
@@ -627,6 +662,35 @@ class LiveWireModal(ResponsiveModalScreen[None]):
             snap_btn.disabled = False
             snap_btn.styles.background = "#182230"
             snap_btn.styles.color = "#55aaff"
+
+    @on(Button.Pressed, "#open_image_btn")
+    def on_open_image_pressed(self) -> None:
+        self.action_open_full_view_image()
+
+    def action_open_full_view_image(self) -> None:
+        recent = self.mgr.get_most_recent_event()
+        img_path = None
+        if recent and recent.snapshot_png_path and Path(recent.snapshot_png_path).exists():
+            img_path = Path(recent.snapshot_png_path)
+        else:
+            mode = self.active_mode or "studies"
+            session_name = self.query_one("#session_name_input", LivewireSessionInput).value.strip() or self.mgr.current_session_name
+            if "/" in session_name:
+                folder, filename = session_name.split("/", 1)
+                s_dir = get_session_dir(mode, folder, filename)
+                pngs = sorted(list((s_dir / "snapshots").glob("*_preview.png")), key=lambda p: p.stat().st_mtime)
+                if pngs:
+                    img_path = pngs[-1]
+
+        if not img_path:
+            self.app.notify("No snapshot image available yet to view.", severity="warning", timeout=4.0)
+            return
+
+        ok, msg = open_snapshot_viewer(img_path)
+        if ok:
+            self.app.notify(f"Launched viewer for {img_path.name}", timeout=4.0)
+        else:
+            self.app.notify(msg, severity="error", timeout=6.0)
 
     @on(Button.Pressed, "#play_audio_btn")
     def on_play_audio_pressed(self) -> None:

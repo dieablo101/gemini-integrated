@@ -360,6 +360,22 @@ def save_in_progress_snapshot(
         colors=twin.colors if twin.colors is not None else np.empty(0)
     )
 
+    # Render high-resolution preview PNG on disk and preview
+    preview_png = snap_dir / f"{snap_id}_preview.png"
+    if len(twin.positions) > 0:
+        try:
+            MidpointSnapshotRenderer.render_midpoint_snapshot(
+                twin=twin,
+                camera=camera,
+                output_png_path=preview_png,
+                width=1024,
+                height=768,
+                ansi_width=36,
+                ansi_height=8
+            )
+        except Exception:
+            pass
+
     session_json = s_dir / f"{filename}_session.json"
     s_data = {}
     if session_json.exists():
@@ -375,6 +391,36 @@ def save_in_progress_snapshot(
         json.dump(s_data, f, indent=2)
 
     return meta_file
+
+
+def open_snapshot_viewer(image_path: Union[str, Path]) -> Tuple[bool, str]:
+    """
+    Opens a high-resolution snapshot preview in the system image viewer (e.g. Loupe / xdg-open / Preview).
+    Executes in a detached process to avoid blocking the cockpit event loop.
+    """
+    import os, shutil, subprocess, sys
+    p = Path(image_path).resolve()
+    if not p.exists():
+        return False, f"Snapshot image not found: {p}"
+
+    viewers = []
+    if sys.platform.startswith("darwin"):
+        viewers = ["open"]
+    elif sys.platform.startswith("win"):
+        viewers = ["start"]
+    else:
+        for cmd in ["xdg-open", "loupe", "eog", "feh", "viewnior", "gwenview", "display"]:
+            if shutil.which(cmd):
+                viewers.append(cmd)
+
+    for v in viewers:
+        try:
+            subprocess.Popen([v, str(p)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+            return True, f"Opened full view in {v}: {p.name}"
+        except Exception:
+            continue
+
+    return False, f"Image path: {p} (no image viewer found on system)"
 
 
 def check_in_progress_snapshot_exists(mode: str, folder: str, filename: str) -> bool:
@@ -1312,11 +1358,19 @@ class LiveWireSessionManager:
                 s_strokes = smeta.get("total_strokes", self.engine.stats.total_strokes)
 
                 ansi_preview = None
-                if len(self.engine.twin.positions) > 0:
+                preview_file = mf.parent / f"{s_id}_preview.png"
+                if preview_file.exists():
+                    try:
+                        from PIL import Image
+                        im = Image.open(preview_file)
+                        ansi_preview = MidpointSnapshotRenderer._generate_ansi_halfblocks(im, 36, 8)
+                    except Exception:
+                        ansi_preview = None
+                elif len(self.engine.twin.positions) > 0:
                     _, ansi_str = MidpointSnapshotRenderer.render_midpoint_snapshot(
                         self.engine.twin,
                         self.engine.camera_state,
-                        s_dir / f"{s_id}_preview.png"
+                        preview_file
                     )
                     ansi_preview = ansi_str
 
@@ -1328,7 +1382,7 @@ class LiveWireSessionManager:
                     duration_seconds=0.0,
                     title=f"IN-PROGRESS SNAPSHOT ({s_id.upper()})",
                     summary=f"100% Bit-Exact Checkpoint ({s_verts:,} v, {s_strokes} strokes)",
-                    snapshot_png_path=str(s_dir / f"{s_id}_preview.png") if ansi_preview else None,
+                    snapshot_png_path=str(preview_file) if preview_file.exists() else None,
                     snapshot_ansi_preview=ansi_preview or MidpointSnapshotRenderer.generate_voice_only_banner(36, 8),
                     audio_filename=audio_files[-1].name if audio_files else None,
                     audio_local_path=str(audio_files[-1]) if audio_files else None
@@ -1373,6 +1427,42 @@ class LiveWireSessionManager:
             camera=self.engine.camera_state,
             stats=self.engine.stats
         )
+        snap_id = meta_p.stem.replace("_meta", "")
+        preview_png = meta_p.parent / f"{snap_id}_preview.png"
+        ansi_str = None
+        if preview_png.exists():
+            try:
+                from PIL import Image
+                im = Image.open(preview_png)
+                ansi_str = MidpointSnapshotRenderer._generate_ansi_halfblocks(im, 36, 8)
+            except Exception:
+                ansi_str = None
+
+        v_evt = VerificationEvent(
+            event_id=self.current_event_id,
+            event_type="in_progress_snapshot",
+            timestamp=time.time(),
+            iso_time=time.strftime("%H:%M:%S"),
+            duration_seconds=0.0,
+            title=f"IN-PROGRESS SNAPSHOT ({snap_id.upper()})",
+            summary=f"100% Bit-Exact Checkpoint ({self.engine.twin.vertex_count:,} v, {self.engine.stats.total_strokes if self.engine else 0} strokes)",
+            snapshot_png_path=str(preview_png) if preview_png.exists() else None,
+            snapshot_ansi_preview=ansi_str or MidpointSnapshotRenderer.generate_voice_only_banner(36, 8),
+            audio_filename=self.audio_ledger[-1]["filename"] if self.audio_ledger else None,
+            audio_local_path=self.audio_ledger[-1]["local_path"] if self.audio_ledger else None,
+            camera_pos=self.engine.camera_state.camera_pos if self.engine and self.engine.camera_state else None,
+            camera_view_dir=self.engine.camera_state.view_dir if self.engine and self.engine.camera_state else None
+        )
+        self.current_event_id += 1
+        self.verification_events.append(v_evt)
+        if len(self.verification_events) > 50:
+            self.verification_events.pop(0)
+
+        t_str = time.strftime("%H:%M:%S")
+        self.recent_events_log.append(f"[{t_str}] [Event #{v_evt.event_id}] In-Progress Snapshot saved: {snap_id.upper()} ({self.engine.twin.vertex_count:,} v)")
+        if len(self.recent_events_log) > 40:
+            self.recent_events_log.pop(0)
+
         return True, f"In-Progress Snapshot saved: {meta_p.name}"
 
     def cancel_current_session(self) -> Tuple[bool, str]:
@@ -1552,15 +1642,15 @@ class VerificationEvent:
 class MidpointSnapshotRenderer:
     """
     Renders clay matcap viewport snapshots at the midpoint of stroke gestures.
-    Generates PNG on disk and truecolor ANSI half-block characters for terminal cockpit.
+    Generates high-res PNG on disk and truecolor ANSI half-block characters for terminal cockpit.
     """
     @staticmethod
     def render_midpoint_snapshot(
         twin: Any,
         camera: Optional[Any],
         output_png_path: Path,
-        width: int = 160,
-        height: int = 120,
+        width: int = 1024,
+        height: int = 768,
         ansi_width: int = 36,
         ansi_height: int = 8
     ) -> Tuple[bool, str]:
@@ -1568,7 +1658,7 @@ class MidpointSnapshotRenderer:
             from PIL import Image
             verts = twin.positions
             if len(verts) == 0:
-                im = Image.new("RGB", (width, height), (12, 12, 20))
+                im = Image.new("RGB", (width, height), (16, 17, 24))
                 output_png_path.parent.mkdir(parents=True, exist_ok=True)
                 im.save(output_png_path)
                 return True, MidpointSnapshotRenderer._generate_ansi_halfblocks(im, ansi_width, ansi_height)
@@ -1594,33 +1684,82 @@ class MidpointSnapshotRenderer:
             vy = np.dot(rel, true_up)
             vz = np.dot(rel, view_dir)
 
-            step = max(1, len(verts) // 8000)
-            vx_sub = vx[::step]
-            vy_sub = vy[::step]
-            vz_sub = vz[::step]
+            # Cap vertex sampling to ensure real-time responsiveness while keeping dense surfels
+            max_pts = 35000
+            if len(verts) > max_pts:
+                step = len(verts) // max_pts
+                vx_sub = vx[::step]
+                vy_sub = vy[::step]
+                vz_sub = vz[::step]
+            else:
+                vx_sub = vx
+                vy_sub = vy
+                vz_sub = vz
 
             scale = max(float(np.max(np.abs(vx_sub))), float(np.max(np.abs(vy_sub))), 1e-4)
-            px = np.clip(((vx_sub / scale * 0.44 + 0.5) * (width - 1)).astype(int), 0, width - 1)
-            py = np.clip((((-vy_sub / scale) * 0.44 + 0.5) * (height - 1)).astype(int), 0, height - 1)
+            px = np.clip(((vx_sub / scale * 0.42 + 0.5) * (width - 1)).astype(int), 0, width - 1)
+            py = np.clip((((-vy_sub / scale) * 0.42 + 0.5) * (height - 1)).astype(int), 0, height - 1)
+
+            # Surfel radius adaptively scaled to guarantee solid manifold with 0 holes
+            n_pts = max(1, len(vx_sub))
+            surfel_r = max(2, min(14, int(np.sqrt((width * height) / (n_pts * 1.8)))))
 
             zbuf = np.full((height, width), -1e9, dtype=np.float32)
-            shaded = np.full((height, width, 3), 16, dtype=np.uint8)
-            shaded[:, :, 2] = 24
+            for dy in range(-surfel_r, surfel_r + 1):
+                for dx in range(-surfel_r, surfel_r + 1):
+                    dist_sq = dx * dx + dy * dy
+                    if dist_sq <= surfel_r * surfel_r:
+                        drop = 0.04 * (dist_sq / (surfel_r * surfel_r))
+                        qx = np.clip(px + dx, 0, width - 1)
+                        qy = np.clip(py + dy, 0, height - 1)
+                        np.maximum.at(zbuf, (qy, qx), vz_sub - drop)
 
-            z_min = float(np.min(vz_sub))
-            z_max = float(np.max(vz_sub))
-            z_range = max(z_max - z_min, 1e-5)
-            z_norm = (vz_sub - z_min) / z_range
+            mask = zbuf > -1e8
+            z_valid = np.where(mask, zbuf, 0.0)
 
-            for x, y, z, zn in zip(px, py, vz_sub, z_norm):
-                if z > zbuf[y, x]:
-                    zbuf[y, x] = z
-                    intensity = 0.52 + 0.48 * zn
-                    shaded[y, x] = [
-                        int(np.clip(195 * intensity, 0, 255)),
-                        int(np.clip(135 * intensity, 0, 255)),
-                        int(np.clip(105 * intensity, 0, 255))
-                    ]
+            # Reconstruct surface normals via screen-space depth gradients
+            dz_dx = (np.roll(z_valid, -1, axis=1) - np.roll(z_valid, 1, axis=1)) * 0.5
+            dz_dy = (np.roll(z_valid, -1, axis=0) - np.roll(z_valid, 1, axis=0)) * 0.5
+            nx = -dz_dx * 10.0
+            ny = dz_dy * 10.0
+            nz = np.ones_like(nx)
+            norm = np.maximum(np.sqrt(nx * nx + ny * ny + nz * nz), 1e-6)
+            nx /= norm
+            ny /= norm
+            nz /= norm
+
+            # Nomad Sculpt Studio Key Light & Halfway vector for Blinn-Phong specular sheen
+            lx, ly, lz = 0.42, 0.58, 0.70
+            l_norm = np.sqrt(lx * lx + ly * ly + lz * lz)
+            lx /= l_norm
+            ly /= l_norm
+            lz /= l_norm
+
+            diff = np.clip(nx * lx + ny * ly + nz * lz, 0.0, 1.0)
+            hx, hy, hz = lx, ly, lz + 1.0
+            h_norm = np.sqrt(hx * hx + hy * hy + hz * hz)
+            hx /= h_norm
+            hy /= h_norm
+            hz /= h_norm
+            spec = np.power(np.clip(nx * hx + ny * hy + nz * hz, 0.0, 1.0), 24)
+            rim = np.power(np.clip(1.0 - nz, 0.0, 1.0), 2.4)
+
+            # Studio clay matcap palette
+            shaded = np.zeros((height, width, 3), dtype=np.uint8)
+            shaded[:] = [16, 17, 24]  # Sleek studio dark background
+
+            base_r, base_g, base_b = 195, 125, 95
+            shadow_r, shadow_g, shadow_b = 65, 38, 30
+            spec_r, spec_g, spec_b = 245, 235, 220
+            rim_r, rim_g, rim_b = 220, 175, 150
+
+            cr = shadow_r * (1.0 - diff) + base_r * diff + spec_r * spec * 0.55 + rim_r * rim * 0.42
+            cg = shadow_g * (1.0 - diff) + base_g * diff + spec_g * spec * 0.55 + rim_g * rim * 0.42
+            cb = shadow_b * (1.0 - diff) + base_b * diff + spec_b * spec * 0.55 + rim_b * rim * 0.42
+
+            shaded[mask, 0] = np.clip(cr[mask], 0, 255).astype(np.uint8)
+            shaded[mask, 1] = np.clip(cg[mask], 0, 255).astype(np.uint8)
+            shaded[mask, 2] = np.clip(cb[mask], 0, 255).astype(np.uint8)
 
             im = Image.fromarray(shaded)
             output_png_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1634,7 +1773,7 @@ class MidpointSnapshotRenderer:
     @staticmethod
     def _generate_ansi_halfblocks(im: Any, target_w: int = 36, target_h: int = 14) -> str:
         from PIL import Image
-        resized = im.resize((target_w, target_h * 2), Image.Resampling.BILINEAR)
+        resized = im.resize((target_w, target_h * 2), Image.Resampling.LANCZOS)
         arr = np.array(resized)
         lines = []
         for y in range(0, target_h * 2, 2):

@@ -1528,9 +1528,8 @@ class SatelliteNode:
                 continue
 
         # Automatic LAN Subnet Discovery fallback if initial endpoints failed
-        if not self._explicit_host:
-            discovered = discover_mothership_on_lan(port=self.mothership_port)
-            if discovered:
+        discovered = discover_mothership_on_lan(port=self.mothership_port)
+        if discovered:
                 sys.stdout.write(f"[satellite] Discovered active Mothership on LAN at {discovered}:{self.mothership_port}\n")
                 try:
                     s = socket.create_connection((discovered, self.mothership_port), timeout=timeout)

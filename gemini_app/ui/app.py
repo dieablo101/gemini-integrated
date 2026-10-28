@@ -1507,7 +1507,7 @@ class ChatApp(App):
             self.action_emergency_interrupt()
             return True
         elif key in ("ctrl+l", "l") or char == "l":
-            self.action_repaint_screen()
+            self.action_toggle_livewire_modal()
             return True
         # for later exploration by gemini
         # elif key in ("period", "full_stop", ".") or char == ".":
@@ -1525,6 +1525,13 @@ class ChatApp(App):
 
     def action_open_commands_modal(self) -> None:
         self.push_screen(CommandsModal())
+
+    def action_toggle_livewire_modal(self) -> None:
+        from gemini_app.ui.modals.live_wire_modal import LiveWireModal
+        if isinstance(self.screen, LiveWireModal):
+            self.pop_screen()
+        else:
+            self.push_screen(LiveWireModal())
 
     def action_open_mind_map(self) -> None:
         self.trigger_nav_indicator("mind")
@@ -3843,6 +3850,43 @@ class ChatApp(App):
                 for p in sorted(projs):
                     lines.append(f"- **{p}** (`{proj_dir / p}`)")
                 self.call_after_refresh(lambda: self.append_to_feed("system", "\n".join(lines), jump_to_start=False))
+            return True
+
+        elif verb == "livewire":
+            sub = arg.strip().lower()
+            if not sub:
+                self.action_toggle_livewire_modal()
+            elif sub in ("--settings", "-s", "settings"):
+                from gemini_app.ui.modals.live_wire_settings import LiveWireSettingsModal
+                self.push_screen(LiveWireSettingsModal())
+            elif sub in ("--list", "-l", "list"):
+                from live_wire_engine import list_all_livewire_sessions
+                prod_sess, study_sess = list_all_livewire_sessions()
+                lines = []
+                lines.append("### 🏭 Production LiveWire Packages")
+                if not prod_sess:
+                    lines.append("_No production assets found on disk._\n")
+                else:
+                    lines.append("| Session Path | FBX Asset | File Size | Kinetics | Status |")
+                    lines.append("| :--- | :--- | :--- | :--- | :--- |")
+                    for p in prod_sess:
+                        lines.append(f"| `{p['session_path']}` | `{p['fbx_name']}` | {p['fbx_size_mb']} MB | {p['strokes']} strokes | {p['status']} |")
+                    lines.append("")
+
+                lines.append("### 🔬 Study Engine Datasets")
+                if not study_sess:
+                    lines.append("_No study engine datasets found on disk._\n")
+                else:
+                    lines.append("| Session Path | Base Snapshot | Kinetics | Study Core | Status |")
+                    lines.append("| :--- | :--- | :--- | :--- | :--- |")
+                    for s in study_sess:
+                        lines.append(f"| `{s['session_path']}` | `{s['base_snapshot']}` | {s['strokes']} strokes | {s['study_core']} | {s['status']} |")
+                    lines.append("")
+
+                output = "\n".join(lines)
+                self.call_after_refresh(lambda: self.append_to_feed("system", output, jump_to_start=False))
+            else:
+                self.notify("Usage: /livewire [--list | --settings]", severity="warning")
             return True
 
         elif verb in ("vault", "passkey", "password"):

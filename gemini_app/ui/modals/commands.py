@@ -111,6 +111,7 @@ class CommandsModal(ResponsiveModalScreen[None]):
             yield Label("[bold]C-c r[/]          : Save selected code snippet directly to disk", classes="cmd_row")
             yield Label("[bold]C-c f[/]          : Insert file content from disk as snippet", classes="cmd_row")
             yield Label("[bold]C-c g[/]          : Scan repository & open Git tree selector", classes="cmd_row")
+            yield Label("[bold]C-c l[/]          : Toggle LiveWire Nomad Link Interactive Cockpit", classes="cmd_row")
             yield Label("[bold]C-c k[/]          : Emergency Interrupt (halt active generation / retry)", classes="cmd_row")
             # for later exploration by gemini
             # yield Label("[bold]C-c .[/]          : Toggle Fork mode to fork turns", classes="cmd_row")
@@ -123,6 +124,7 @@ class CommandsModal(ResponsiveModalScreen[None]):
             yield Label("Clicking any [bold]T#<num>[/] chip jumps 10-card slider directly to that note", classes="cmd_row")
 
             yield Label("Slash Commands:", classes="cmd_section_title")
+            yield Label("[bold]/livewire [opt][/]   : LiveWire 3D cockpit (--list packages, --settings)", classes="cmd_row")
             yield Label("[bold]/vault [cmd][/]      : Master vault manager (password, file, secret, sync, change, lock)", classes="cmd_row")
             yield Label("[bold]/facescan [reason][/]: Trigger Apple TrueDepth Face ID scan on iPad Wingman", classes="cmd_row")
             yield Label("[bold]/fingerprint [r][/]  : Prompt Android hardware fingerprint sensor (Termux)", classes="cmd_row")

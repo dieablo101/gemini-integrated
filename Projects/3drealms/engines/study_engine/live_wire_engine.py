@@ -922,7 +922,7 @@ class LiveWireSessionManager:
         ]
 
         if not overlapping_stroke_events:
-            banner = MidpointSnapshotRenderer.generate_voice_only_banner(36, 14)
+            banner = MidpointSnapshotRenderer.generate_voice_only_banner(36, 8)
             v_evt = VerificationEvent(
                 event_id=self.current_event_id,
                 event_type="voice_only",
@@ -1283,7 +1283,7 @@ class LiveWireSessionManager:
                 "duration": dur,
                 "node_id": "satellite-audio"
             })
-            banner = MidpointSnapshotRenderer.generate_voice_only_banner(36, 14)
+            banner = MidpointSnapshotRenderer.generate_voice_only_banner(36, 8)
             v_evt = VerificationEvent(
                 event_id=len(self.verification_events) + 1,
                 event_type="voice_only",
@@ -1329,7 +1329,7 @@ class LiveWireSessionManager:
                     title=f"IN-PROGRESS SNAPSHOT ({s_id.upper()})",
                     summary=f"100% Bit-Exact Checkpoint ({s_verts:,} v, {s_strokes} strokes)",
                     snapshot_png_path=str(s_dir / f"{s_id}_preview.png") if ansi_preview else None,
-                    snapshot_ansi_preview=ansi_preview or MidpointSnapshotRenderer.generate_voice_only_banner(36, 14),
+                    snapshot_ansi_preview=ansi_preview or MidpointSnapshotRenderer.generate_voice_only_banner(36, 8),
                     audio_filename=audio_files[-1].name if audio_files else None,
                     audio_local_path=str(audio_files[-1]) if audio_files else None
                 )
@@ -1562,7 +1562,7 @@ class MidpointSnapshotRenderer:
         width: int = 160,
         height: int = 120,
         ansi_width: int = 36,
-        ansi_height: int = 14
+        ansi_height: int = 8
     ) -> Tuple[bool, str]:
         try:
             from PIL import Image
@@ -1648,7 +1648,7 @@ class MidpointSnapshotRenderer:
         return "\n".join(lines)
 
     @staticmethod
-    def generate_voice_only_banner(target_w: int = 36, target_h: int = 14) -> str:
+    def generate_voice_only_banner(target_w: int = 36, target_h: int = 8) -> str:
         lines = []
         lines.append("┌" + "─" * (target_w - 2) + "┐")
         for i in range(target_h - 2):

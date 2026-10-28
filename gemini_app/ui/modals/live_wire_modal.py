@@ -16,6 +16,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Button, Checkbox, Input, Label, Static
+from rich.text import Text
 
 from gemini_app.ui.modals.base import ResponsiveModalScreen
 
@@ -129,11 +130,11 @@ class LiveWireModal(ResponsiveModalScreen[None]):
         background: rgba(0, 0, 0, 0.85);
     }
     #livewire_dialog {
-        padding: 1 2;
-        width: 90;
-        max-width: 96vw;
+        padding: 0 1;
+        width: 94;
+        max-width: 98vw;
         height: auto;
-        max-height: 92vh;
+        max-height: 94vh;
         overflow-y: auto;
         overflow-x: hidden;
         background: #000000;
@@ -142,7 +143,7 @@ class LiveWireModal(ResponsiveModalScreen[None]):
     #header_row {
         width: 100%;
         height: auto;
-        margin-bottom: 1;
+        margin-bottom: 0;
     }
     #modal_title {
         text-style: bold;
@@ -163,7 +164,7 @@ class LiveWireModal(ResponsiveModalScreen[None]):
         padding: 0 1;
         background: #0d0d14;
         border: solid #222233;
-        margin-bottom: 1;
+        margin-bottom: 0;
         align-vertical: middle;
     }
     #link_status_label {
@@ -178,13 +179,13 @@ class LiveWireModal(ResponsiveModalScreen[None]):
     #session_name_label {
         text-style: bold;
         color: #bb55ff;
-        margin-top: 1;
+        margin-top: 0;
     }
     #session_input_row {
         width: 100%;
         height: auto;
         layout: horizontal;
-        margin-bottom: 1;
+        margin-bottom: 0;
     }
     #session_input_row #session_name_input {
         width: 1fr;
@@ -209,7 +210,7 @@ class LiveWireModal(ResponsiveModalScreen[None]):
     #mode_row {
         width: 100%;
         height: auto;
-        margin-bottom: 1;
+        margin-bottom: 0;
         align-vertical: middle;
     }
     #mode_row_label {
@@ -227,16 +228,15 @@ class LiveWireModal(ResponsiveModalScreen[None]):
     #telemetry_box {
         width: 100%;
         height: auto;
-        min-height: 12;
         background: #090912;
-        border: tall #2c1e40;
+        border: solid #2c1e40;
         padding: 0 1;
-        margin-bottom: 1;
+        margin-bottom: 0;
     }
     #telem_header_row {
         width: 100%;
         height: auto;
-        margin-top: 1;
+        margin-top: 0;
         margin-bottom: 0;
     }
     #telem_title {
@@ -260,13 +260,13 @@ class LiveWireModal(ResponsiveModalScreen[None]):
     }
     #events_divider {
         color: #443355;
-        margin-top: 1;
+        margin-top: 0;
         height: 1;
     }
     #events_log_container {
         width: 100%;
         height: auto;
-        margin-bottom: 1;
+        margin-bottom: 0;
     }
     #events_log_container Label {
         color: #8899aa;
@@ -275,19 +275,19 @@ class LiveWireModal(ResponsiveModalScreen[None]):
         width: 100%;
         height: auto;
         background: #090912;
-        border: tall #2c1e40;
+        border: solid #2c1e40;
         padding: 0 1;
-        margin-bottom: 1;
+        margin-bottom: 0;
     }
     #reel_divider {
         color: #bb55ff;
         text-style: bold;
-        margin-top: 1;
+        margin-top: 0;
     }
     #event_history_list {
         width: 100%;
         height: auto;
-        margin-bottom: 1;
+        margin-bottom: 0;
     }
     #event_history_list Label {
         color: #8899aa;
@@ -297,13 +297,13 @@ class LiveWireModal(ResponsiveModalScreen[None]):
         height: auto;
         background: #11111c;
         border: solid #442a66;
-        padding: 1;
-        margin-bottom: 1;
+        padding: 0 1;
+        margin-bottom: 0;
     }
     #recent_card_title {
         text-style: bold;
         color: #55ffaa;
-        margin-bottom: 1;
+        margin-bottom: 0;
     }
     #recent_card_content {
         width: 100%;
@@ -311,10 +311,11 @@ class LiveWireModal(ResponsiveModalScreen[None]):
     }
     #recent_snapshot_preview {
         width: 38;
-        height: 14;
+        height: 10;
         background: #07070f;
         border: solid #222238;
-        margin-right: 2;
+        margin-right: 1;
+        overflow: hidden;
     }
     #recent_meta_column {
         width: 1fr;
@@ -324,11 +325,11 @@ class LiveWireModal(ResponsiveModalScreen[None]):
     #recent_desc_label {
         color: #ffffff;
         text-style: bold;
-        margin-bottom: 1;
+        margin-bottom: 0;
     }
     #recent_audio_label {
         color: #ffaa33;
-        margin-bottom: 1;
+        margin-bottom: 0;
     }
     #play_audio_btn {
         background: #1e3328;
@@ -340,7 +341,7 @@ class LiveWireModal(ResponsiveModalScreen[None]):
         width: 100%;
         height: auto;
         align-horizontal: right;
-        margin-top: 1;
+        margin-top: 0;
     }
     #action_row Button {
         margin-left: 1;
@@ -373,6 +374,7 @@ class LiveWireModal(ResponsiveModalScreen[None]):
     BINDINGS = [
         Binding("escape", "dismiss_modal", "Close Modal"),
         Binding("p", "toggle_recording", "Toggle Record/Stop"),
+        Binding("f12", "take_svg_screenshot", "Snapshot", show=False),
         Binding("ctrl+c", "c_c_prefix_stub", "^c Commands", show=False),
     ]
 
@@ -380,7 +382,6 @@ class LiveWireModal(ResponsiveModalScreen[None]):
         super().__init__()
         self.mgr = LiveWireSessionManager.get_instance()
         self.active_mode: Optional[str] = self.mgr.current_mode or "studies"
-        self._c_c_prefix: bool = False
         self._off_sync_notified: bool = False
 
     def compose(self) -> ComposeResult:
@@ -602,7 +603,10 @@ class LiveWireModal(ResponsiveModalScreen[None]):
 
             recent = v_events[-1]
             card_title.update(f"✦ MOST RECENT: Event #{recent.event_id} ── {recent.title}")
-            snap_preview.update(recent.snapshot_ansi_preview or "")
+            if recent.snapshot_ansi_preview:
+                snap_preview.update(Text.from_ansi(recent.snapshot_ansi_preview))
+            else:
+                snap_preview.update("")
             desc_label.update(f"● {recent.summary}")
 
             if recent.audio_filename:
@@ -891,19 +895,3 @@ class LiveWireModal(ResponsiveModalScreen[None]):
 
     def action_dismiss_modal(self) -> None:
         self.dismiss()
-
-    async def _on_key(self, event: events.Key) -> None:
-        key = event.key.lower()
-        if self._c_c_prefix:
-            self._c_c_prefix = False
-            if key == "l":
-                event.prevent_default()
-                event.stop()
-                self.dismiss()
-                return
-        if key == "ctrl+c":
-            self._c_c_prefix = True
-            event.prevent_default()
-            event.stop()
-            return
-        await super()._on_key(event)

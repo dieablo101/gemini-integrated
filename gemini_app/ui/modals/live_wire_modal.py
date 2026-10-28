@@ -245,6 +245,71 @@ class LiveWireModal(ResponsiveModalScreen[None]):
     #events_log_container Label {
         color: #8899aa;
     }
+    #verification_reel_container {
+        width: 100%;
+        height: auto;
+        background: #090912;
+        border: tall #2c1e40;
+        padding: 0 1;
+        margin-bottom: 1;
+    }
+    #reel_divider {
+        color: #bb55ff;
+        text-style: bold;
+        margin-top: 1;
+    }
+    #event_history_list {
+        width: 100%;
+        height: auto;
+        margin-bottom: 1;
+    }
+    #event_history_list Label {
+        color: #8899aa;
+    }
+    #most_recent_card {
+        width: 100%;
+        height: auto;
+        background: #11111c;
+        border: solid #442a66;
+        padding: 1;
+        margin-bottom: 1;
+    }
+    #recent_card_title {
+        text-style: bold;
+        color: #55ffaa;
+        margin-bottom: 1;
+    }
+    #recent_card_content {
+        width: 100%;
+        height: auto;
+    }
+    #recent_snapshot_preview {
+        width: 38;
+        height: 14;
+        background: #07070f;
+        border: solid #222238;
+        margin-right: 2;
+    }
+    #recent_meta_column {
+        width: 1fr;
+        height: auto;
+        align-vertical: middle;
+    }
+    #recent_desc_label {
+        color: #ffffff;
+        text-style: bold;
+        margin-bottom: 1;
+    }
+    #recent_audio_label {
+        color: #ffaa33;
+        margin-bottom: 1;
+    }
+    #play_audio_btn {
+        background: #1e3328;
+        color: #55ffaa;
+        text-style: bold;
+        min-width: 24;
+    }
     #action_row {
         width: 100%;
         height: auto;
@@ -331,6 +396,20 @@ class LiveWireModal(ResponsiveModalScreen[None]):
                     yield Label("• LiveWire wire link standing by.", id="event_item_0")
                     yield Label("• Ready to stream Nomad Sculpt geometry and kinetic strokes.", id="event_item_1")
                     yield Label("• In-progress snapshots preserve 100% bit-exact geometry.", id="event_item_2")
+
+            with Vertical(id="verification_reel_container"):
+                yield Label("── VERIFICATION & CHRONOLOGICAL REEL (LAST 3 EVENTS) ──────", id="reel_divider")
+                with Vertical(id="event_history_list"):
+                    yield Label("• [Event #1] Standby - Waiting for first stroke or voice monologue...", id="hist_event_1")
+                    yield Label("• [Event #2] Standby", id="hist_event_2")
+                with Vertical(id="most_recent_card"):
+                    yield Label("✦ MOST RECENT EVENT (STANDBY)", id="recent_card_title")
+                    with Horizontal(id="recent_card_content"):
+                        yield Static("", id="recent_snapshot_preview")
+                        with Vertical(id="recent_meta_column"):
+                            yield Label("No gestures or voice captured yet in this session.", id="recent_desc_label")
+                            yield Label("Audio: Standby", id="recent_audio_label")
+                            yield Button("▶ Play Synced Audio (Headphones)", id="play_audio_btn")
 
             with Horizontal(id="action_row"):
                 yield Button("Record (p)", id="record_btn")
@@ -457,6 +536,62 @@ class LiveWireModal(ResponsiveModalScreen[None]):
                 item.update(evts[idx])
             else:
                 item.update("")
+
+        # Update verification reel & chronological snapshots
+        v_events = self.mgr.verification_events
+        hist_1 = self.query_one("#hist_event_1", Label)
+        hist_2 = self.query_one("#hist_event_2", Label)
+        card_title = self.query_one("#recent_card_title", Label)
+        snap_preview = self.query_one("#recent_snapshot_preview", Static)
+        desc_label = self.query_one("#recent_desc_label", Label)
+        audio_label = self.query_one("#recent_audio_label", Label)
+        play_btn = self.query_one("#play_audio_btn", Button)
+
+        if not v_events:
+            hist_1.update("• [Event #1] Standby - Waiting for first stroke or voice monologue...")
+            hist_2.update("• [Event #2] Standby")
+            card_title.update("✦ MOST RECENT EVENT (STANDBY)")
+            snap_preview.update("")
+            desc_label.update("No gestures or voice captured yet in this session.")
+            audio_label.update("Audio: Standby")
+            play_btn.disabled = True
+        else:
+            if len(v_events) >= 3:
+                e1 = v_events[-3]
+                e2 = v_events[-2]
+                hist_1.update(f"• [{e1.iso_time}] Event #{e1.event_id}: {e1.title} ── {e1.summary}")
+                hist_2.update(f"• [{e2.iso_time}] Event #{e2.event_id}: {e2.title} ── {e2.summary}")
+            elif len(v_events) == 2:
+                e1 = v_events[-2]
+                hist_1.update(f"• [{e1.iso_time}] Event #{e1.event_id}: {e1.title} ── {e1.summary}")
+                hist_2.update("• [Session Initialized] Recording in progress...")
+            else:
+                hist_1.update("• [Prior Event] None (First event active)")
+                hist_2.update("• [Session Initialized] Recording in progress...")
+
+            recent = v_events[-1]
+            card_title.update(f"✦ MOST RECENT: Event #{recent.event_id} ── {recent.title}")
+            snap_preview.update(recent.snapshot_ansi_preview or "")
+            desc_label.update(f"● {recent.summary}")
+
+            if recent.audio_filename:
+                audio_label.update(f"🎙 Synced Audio: {recent.audio_filename}")
+                play_btn.disabled = False
+                if recent.event_type == "stroke_chunk":
+                    play_btn.label = "▶ Play Synced Audio (Headphones)"
+                else:
+                    play_btn.label = "▶ Play Audio Snippet (Headphones)"
+            else:
+                audio_label.update("🎙 Audio: Awaiting stream chunk...")
+                play_btn.disabled = True
+
+    @on(Button.Pressed, "#play_audio_btn")
+    def on_play_audio_pressed(self) -> None:
+        ok, msg = self.mgr.play_most_recent_audio()
+        if ok:
+            self.app.notify(msg, timeout=5.0)
+        else:
+            self.app.notify(msg, severity="warning", timeout=5.0)
 
     def _check_name_and_collision(self, session_name: str) -> tuple[bool, str, str, str]:
         mode = self.active_mode or "studies"

@@ -1928,6 +1928,55 @@ class SatelliteNode:
                     result_payload["status"] = "unsupported"
                     result_payload["error"] = "Audio recording is currently only supported on Termux nodes with termux-api"
 
+        elif action in ("play_audio", "play_node_audio", "playback_audio"):
+            import base64
+            data_b64 = params.get("data_b64")
+            remote_file = params.get("file_path")
+            tmp_play = None
+            if data_b64:
+                try:
+                    fname = params.get("filename") or f"playback_{int(time.time())}.opus"
+                    tmp_play = Path.home() / fname
+                    tmp_play.write_bytes(base64.b64decode(data_b64))
+                    remote_file = str(tmp_play)
+                except Exception as e:
+                    result_payload["status"] = "error"
+                    result_payload["error"] = f"Failed to unpack audio bytes: {e}"
+
+            if remote_file and Path(remote_file).exists():
+                if is_termux_platform() and shutil.which("termux-media-player"):
+                    try:
+                        subprocess.run(["termux-media-player", "play", str(remote_file)], capture_output=True, timeout=5)
+                        result_payload["status"] = "ok"
+                        result_payload["message"] = f"Audio playback dispatched on node: {Path(remote_file).name}"
+                        result_payload["file"] = str(remote_file)
+                    except Exception as e:
+                        result_payload["status"] = "error"
+                        result_payload["error"] = f"termux-media-player execution error: {e}"
+                elif shutil.which("mpv"):
+                    try:
+                        subprocess.Popen(["mpv", "--no-video", str(remote_file)])
+                        result_payload["status"] = "ok"
+                        result_payload["message"] = f"Audio playback dispatched via mpv: {Path(remote_file).name}"
+                    except Exception as e:
+                        result_payload["status"] = "error"
+                        result_payload["error"] = f"mpv execution error: {e}"
+                elif shutil.which("play"):
+                    try:
+                        subprocess.Popen(["play", "-q", str(remote_file)])
+                        result_payload["status"] = "ok"
+                        result_payload["message"] = f"Audio playback dispatched via sox: {Path(remote_file).name}"
+                    except Exception as e:
+                        result_payload["status"] = "error"
+                        result_payload["error"] = f"sox execution error: {e}"
+                else:
+                    result_payload["status"] = "unsupported"
+                    result_payload["error"] = "No supported audio player found on node (termux-media-player, mpv, or sox)"
+            else:
+                if not result_payload.get("error"):
+                    result_payload["status"] = "error"
+                    result_payload["error"] = f"Audio file not found: {remote_file}"
+
         elif action in ("tts_speak", "whisper", "say"):
             text = params.get("text") or params.get("message") or ""
             stream = str(params.get("stream") or "MUSIC").upper().strip()

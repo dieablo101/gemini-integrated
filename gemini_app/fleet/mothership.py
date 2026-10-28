@@ -804,6 +804,24 @@ class MothershipServer:
                                 else:
                                     resp_payload["status"] = sub_resp.get("status", "error")
                                     resp_payload["error"] = sub_resp.get("error", "Audio recording failed or node unresponsive")
+                            elif action in ("play_node_audio", "play_audio", "playback_audio"):
+                                import base64
+                                target_nid = msg.payload.get("params", {}).get("node_id", "") or "android-termux-localhost"
+                                p_params = dict(msg.payload.get("params", {}))
+                                loc_p = p_params.get("local_path")
+                                if loc_p and os.path.exists(loc_p):
+                                    p_params["data_b64"] = base64.b64encode(Path(loc_p).read_bytes()).decode("ascii")
+                                    p_params["filename"] = Path(loc_p).name
+                                sub_resp = self.send_command(
+                                    target_nid,
+                                    "play_audio",
+                                    p_params,
+                                    timeout=20.0,
+                                )
+                                resp_payload["status"] = sub_resp.get("status", "error")
+                                resp_payload["playback_result"] = sub_resp
+                                if "error" in sub_resp:
+                                    resp_payload["error"] = sub_resp["error"]
                             elif action in ("speak_node_tts", "tts_speak", "whisper", "say"):
                                 target_nid = msg.payload.get("params", {}).get("node_id", "") or "android-termux-localhost"
                                 resp_payload["tts_result"] = self.send_command(

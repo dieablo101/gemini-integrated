@@ -650,6 +650,10 @@ class LiveWireSessionManager:
         self.audio_node_id: Optional[str] = None
         self._stop_audio: bool = False
         self.audio_thread: Optional[threading.Thread] = None
+        # Non-assumption audio & verification ledgers
+        self.audio_ledger: List[dict] = []
+        self.verification_events: List[VerificationEvent] = []
+        self.current_event_id: int = 1
 
     @classmethod
     def get_instance(cls) -> "LiveWireSessionManager":
@@ -718,12 +722,114 @@ class LiveWireSessionManager:
             return f"Audio Mic: 🔴 {self.audio_status}"
         active_node = self.get_active_audio_node()
         if active_node:
-            return f"Audio Mic: 🟢 Ready ({active_node} / Bose QC)"
+            return f"Audio Mic: 🟢 Ready ({active_node} / Headphone Mic)"
         else:
             return "Audio Mic: 🟡 Awaiting Phone (run 'python3 gemini-integrated.py node 192.168.1.91')"
 
+    def register_audio_chunk(
+        self,
+        chunk_id: str,
+        filename: str,
+        local_path: str,
+        start_epoch: float,
+        end_epoch: float,
+        duration: float,
+        node_id: Optional[str] = None
+    ) -> None:
+        """Registers a completed chronological voice chunk and logs voice-only event if no strokes occurred."""
+        chunk_info = {
+            "chunk_id": chunk_id,
+            "filename": filename,
+            "local_path": local_path,
+            "start_epoch": start_epoch,
+            "end_epoch": end_epoch,
+            "duration": duration,
+            "node_id": node_id
+        }
+        self.audio_ledger.append(chunk_info)
+
+        # Check if any stroke chunks overlapped this window
+        overlapping_stroke_events = [
+            ev for ev in self.verification_events
+            if ev.event_type == "stroke_chunk" and (
+                (ev.timestamp >= start_epoch - 1.0 and ev.timestamp <= end_epoch + 1.0)
+            )
+        ]
+
+        if not overlapping_stroke_events:
+            banner = MidpointSnapshotRenderer.generate_voice_only_banner(36, 14)
+            v_evt = VerificationEvent(
+                event_id=self.current_event_id,
+                event_type="voice_only",
+                timestamp=start_epoch,
+                iso_time=time.strftime("%H:%M:%S", time.localtime(start_epoch)),
+                duration_seconds=round(duration, 1),
+                title=f"VOICE ONLY ({duration:.1f}s)",
+                summary=f"Continuous voice monologue | {filename}",
+                snapshot_png_path=None,
+                snapshot_ansi_preview=banner,
+                audio_filename=filename,
+                audio_local_path=local_path,
+                audio_node_id=node_id
+            )
+            self.current_event_id += 1
+            self.verification_events.append(v_evt)
+            if len(self.verification_events) > 50:
+                self.verification_events.pop(0)
+
+            t_str = time.strftime("%H:%M:%S")
+            self.recent_events_log.append(f"[{t_str}] [Event #{v_evt.event_id}] Voice Only ({duration:.1f}s) ── Audio: {filename}")
+            if len(self.recent_events_log) > 40:
+                self.recent_events_log.pop(0)
+
+    def get_most_recent_event(self) -> Optional[VerificationEvent]:
+        if self.verification_events:
+            return self.verification_events[-1]
+        return None
+
+    def play_most_recent_audio(self) -> Tuple[bool, str]:
+        if not self.verification_events:
+            return False, "No recorded events in session yet."
+        recent = self.verification_events[-1]
+        return self.play_event_audio(recent)
+
+    def play_event_audio(self, event: VerificationEvent) -> Tuple[bool, str]:
+        """Plays audio snippet directly through the satellite node connection (headphones)."""
+        loc = event.audio_local_path
+        if not loc or not os.path.exists(loc):
+            if self.engine and self.engine.output_dir:
+                audio_files = sorted(list((self.engine.output_dir / "audio").glob("*.opus")))
+                if audio_files:
+                    loc = str(audio_files[-1])
+            if not loc or not os.path.exists(loc):
+                return False, "No audio recording file found for this event."
+
+        active_node = self.get_active_audio_node()
+        if active_node:
+            try:
+                from gemini_app.fleet.nodes import play_node_audio
+                res = play_node_audio(node_id=active_node, local_path=loc)
+                if res.get("status") == "ok":
+                    return True, f"Playing on {active_node} (headphones): {Path(loc).name}"
+                else:
+                    return False, f"Playback on node failed: {res.get('error', 'error')}"
+            except Exception as e:
+                return False, f"Node audio dispatch error: {e}"
+        else:
+            try:
+                import subprocess, shutil
+                if shutil.which("mpv"):
+                    subprocess.Popen(["mpv", "--no-video", loc])
+                    return True, f"Playing locally: {Path(loc).name}"
+                elif shutil.which("paplay"):
+                    subprocess.Popen(["paplay", loc])
+                    return True, f"Playing locally: {Path(loc).name}"
+            except Exception:
+                pass
+            return False, "No active phone node connected (connect phone for headphone playback)."
+
     def _audio_recording_loop(self, s_dir: Path, filename: str) -> None:
-        """Background worker that captures audio chunks from satellite node while recording is active."""
+        """Background worker that captures continuous chronological audio chunks from satellite node."""
         chunk_idx = 1
         audio_dir = s_dir / "audio"
         audio_dir.mkdir(parents=True, exist_ok=True)
@@ -736,10 +842,11 @@ class LiveWireSessionManager:
                 continue
 
             self.audio_status = f"recording ({active_node} chunk #{chunk_idx})"
+            chunk_start = time.time()
             try:
                 from gemini_app.fleet.nodes import record_node_audio
-                # 10s chunk duration
                 res = record_node_audio(node_id=active_node, duration=10, encoder="opus")
+                chunk_end = time.time()
                 if res.get("status") == "ok" and res.get("local_path"):
                     src = Path(res["local_path"])
                     if src.exists():
@@ -749,6 +856,16 @@ class LiveWireSessionManager:
                             shutil.copyfile(src, target_chunk)
                         except Exception:
                             pass
+
+                        self.register_audio_chunk(
+                            chunk_id=f"chunk_{chunk_idx:03d}",
+                            filename=target_chunk.name,
+                            local_path=str(target_chunk),
+                            start_epoch=chunk_start,
+                            end_epoch=chunk_end,
+                            duration=chunk_end - chunk_start,
+                            node_id=active_node
+                        )
                         chunk_idx += 1
             except Exception:
                 time.sleep(2.0)
@@ -826,6 +943,14 @@ class LiveWireSessionManager:
         self.current_mode = mode
         self.is_recording = True
         self.recording_start_epoch = time.time()
+
+        # Reset verification reel & audio ledgers
+        self.audio_ledger.clear()
+        self.verification_events.clear()
+        self.current_event_id = 1
+        if self.engine:
+            self.engine.stroke_chunk_counter = 1
+            self.engine.active_stroke_chunk = None
 
         # Start background audio recording thread
         self._stop_audio = False
@@ -1006,6 +1131,216 @@ class LiveSessionStats:
     stage_confidence: float = 0.0
     last_stroke_time: float = 0.0
     last_brush_archetype: Optional[str] = None
+
+
+@dataclass
+class StrokeChunk:
+    chunk_id: int
+    start_epoch: float
+    end_epoch: float
+    last_delta_epoch: float
+    sub_strokes: int = 1
+    touched_vertex_set: set = field(default_factory=set)
+    cumulative_energy: float = 0.0
+    hotspot_center: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+    rel_bbox_coord: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+    camera_pos: Tuple[float, float, float] = (0.0, 0.0, 3.0)
+    camera_view_dir: Tuple[float, float, float] = (0.0, 0.0, -1.0)
+    snapshot_png: Optional[str] = None
+    snapshot_ansi: Optional[str] = None
+    synced_audio_chunk: Optional[str] = None
+    synced_audio_path: Optional[str] = None
+
+
+@dataclass
+class VerificationEvent:
+    event_id: int
+    event_type: str  # "stroke_chunk" or "voice_only"
+    timestamp: float
+    iso_time: str
+    duration_seconds: float
+    title: str
+    summary: str
+    snapshot_png_path: Optional[str] = None
+    snapshot_ansi_preview: Optional[str] = None
+    audio_filename: Optional[str] = None
+    audio_local_path: Optional[str] = None
+    audio_node_id: Optional[str] = None
+    sub_stroke_count: int = 0
+    touched_vertices: int = 0
+    cumulative_energy: float = 0.0
+    camera_pos: Tuple[float, float, float] = (0.0, 0.0, 3.0)
+    camera_view_dir: Tuple[float, float, float] = (0.0, 0.0, -1.0)
+    hotspot_center: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+
+
+class MidpointSnapshotRenderer:
+    """
+    Renders clay matcap viewport snapshots at the midpoint of stroke gestures.
+    Generates PNG on disk and truecolor ANSI half-block characters for terminal cockpit.
+    """
+    @staticmethod
+    def render_midpoint_snapshot(
+        twin: Any,
+        camera: Optional[Any],
+        output_png_path: Path,
+        width: int = 160,
+        height: int = 120,
+        ansi_width: int = 36,
+        ansi_height: int = 14
+    ) -> Tuple[bool, str]:
+        try:
+            from PIL import Image
+            verts = twin.positions
+            if len(verts) == 0:
+                im = Image.new("RGB", (width, height), (12, 12, 20))
+                output_png_path.parent.mkdir(parents=True, exist_ok=True)
+                im.save(output_png_path)
+                return True, MidpointSnapshotRenderer._generate_ansi_halfblocks(im, ansi_width, ansi_height)
+
+            if camera:
+                cam_pos = camera.camera_pos
+                view_dir = camera.view_dir
+            else:
+                cam_pos = np.array([0.0, 0.0, 3.0], dtype=np.float32)
+                view_dir = np.array([0.0, 0.0, -1.0], dtype=np.float32)
+
+            up = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+            right = np.cross(view_dir, up)
+            r_norm = np.linalg.norm(right)
+            if r_norm > 1e-6:
+                right /= r_norm
+            else:
+                right = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+            true_up = np.cross(right, view_dir)
+
+            rel = verts - twin.bbox_center
+            vx = np.dot(rel, right)
+            vy = np.dot(rel, true_up)
+            vz = np.dot(rel, view_dir)
+
+            step = max(1, len(verts) // 8000)
+            vx_sub = vx[::step]
+            vy_sub = vy[::step]
+            vz_sub = vz[::step]
+
+            scale = max(float(np.max(np.abs(vx_sub))), float(np.max(np.abs(vy_sub))), 1e-4)
+            px = np.clip(((vx_sub / scale * 0.44 + 0.5) * (width - 1)).astype(int), 0, width - 1)
+            py = np.clip((((-vy_sub / scale) * 0.44 + 0.5) * (height - 1)).astype(int), 0, height - 1)
+
+            zbuf = np.full((height, width), -1e9, dtype=np.float32)
+            shaded = np.full((height, width, 3), 16, dtype=np.uint8)
+            shaded[:, :, 2] = 24
+
+            z_min = float(np.min(vz_sub))
+            z_max = float(np.max(vz_sub))
+            z_range = max(z_max - z_min, 1e-5)
+            z_norm = (vz_sub - z_min) / z_range
+
+            for x, y, z, zn in zip(px, py, vz_sub, z_norm):
+                if z > zbuf[y, x]:
+                    zbuf[y, x] = z
+                    intensity = 0.52 + 0.48 * zn
+                    shaded[y, x] = [
+                        int(np.clip(195 * intensity, 0, 255)),
+                        int(np.clip(135 * intensity, 0, 255)),
+                        int(np.clip(105 * intensity, 0, 255))
+                    ]
+
+            im = Image.fromarray(shaded)
+            output_png_path.parent.mkdir(parents=True, exist_ok=True)
+            im.save(output_png_path)
+            ansi_str = MidpointSnapshotRenderer._generate_ansi_halfblocks(im, ansi_width, ansi_height)
+            return True, ansi_str
+        except Exception as e:
+            fallback = MidpointSnapshotRenderer._fallback_text_banner("SNAPSHOT ERROR")
+            return False, fallback
+
+    @staticmethod
+    def _generate_ansi_halfblocks(im: Any, target_w: int = 36, target_h: int = 14) -> str:
+        from PIL import Image
+        resized = im.resize((target_w, target_h * 2), Image.Resampling.BILINEAR)
+        arr = np.array(resized)
+        lines = []
+        for y in range(0, target_h * 2, 2):
+            row_str = ""
+            for x in range(target_w):
+                r1, g1, b1 = arr[y, x][:3]
+                r2, g2, b2 = arr[y+1, x][:3] if y+1 < target_h * 2 else (0, 0, 0)
+                row_str += f"\x1b[38;2;{r1};{g1};{b1}m\x1b[48;2;{r2};{g2};{b2}m▀"
+            row_str += "\x1b[0m"
+            lines.append(row_str)
+        return "\n".join(lines)
+
+    @staticmethod
+    def generate_voice_only_banner(target_w: int = 36, target_h: int = 14) -> str:
+        lines = []
+        lines.append("┌" + "─" * (target_w - 2) + "┐")
+        for i in range(target_h - 2):
+            if i == (target_h // 2) - 2:
+                content = "🎙 VOICE RECORDING"
+                pad = max(0, target_w - 2 - len(content))
+                lines.append("│" + " " * (pad // 2) + content + " " * (pad - pad // 2) + "│")
+            elif i == (target_h // 2) - 1:
+                content = "(Continuous Audio Stream)"
+                pad = max(0, target_w - 2 - len(content))
+                lines.append("│" + " " * (pad // 2) + content + " " * (pad - pad // 2) + "│")
+            elif i == (target_h // 2):
+                content = "No stroke activity in chunk"
+                pad = max(0, target_w - 2 - len(content))
+                lines.append("│" + " " * (pad // 2) + content + " " * (pad - pad // 2) + "│")
+            else:
+                lines.append("│" + " " * (target_w - 2) + "│")
+        lines.append("└" + "─" * (target_w - 2) + "┘")
+        return "\x1b[38;2;120;180;255m" + "\n".join(lines) + "\x1b[0m"
+
+    @staticmethod
+    def _fallback_text_banner(msg: str) -> str:
+        return f"\n   [ {msg} ]\n"
+
+
+class ProgressiveHeuristicEngine:
+    """
+    Maintains a silent, non-assumption mathematical correlation network.
+    Records objective topology invariants, differential curvature flows,
+    and temporal audio-geometry cross references without semantic heuristics.
+    """
+    def __init__(self, base_topology_type: str = "quad_sphere"):
+        self.base_topology_type = base_topology_type
+        self.geometry_cadence_records: List[dict] = []
+        self.audio_cross_references: List[dict] = []
+        self.total_deformation_flux: float = 0.0
+
+    def record_stroke_chunk(self, chunk: StrokeChunk, synced_audio: Optional[dict] = None) -> None:
+        rec = {
+            "chunk_id": chunk.chunk_id,
+            "start_epoch": chunk.start_epoch,
+            "end_epoch": chunk.end_epoch,
+            "duration": round(chunk.end_epoch - chunk.start_epoch, 3),
+            "sub_strokes": chunk.sub_strokes,
+            "touched_vertices": len(chunk.touched_vertex_set),
+            "cumulative_energy": round(chunk.cumulative_energy, 4),
+            "hotspot_center": list(chunk.hotspot_center),
+            "camera_pos": list(chunk.camera_pos),
+            "camera_view_dir": list(chunk.camera_view_dir),
+            "synced_audio": synced_audio["filename"] if synced_audio else None
+        }
+        self.geometry_cadence_records.append(rec)
+        self.total_deformation_flux += chunk.cumulative_energy
+
+    def export_progressive_heuristics(self, s_dir: Path) -> Path:
+        out_file = s_dir / "progressive_heuristics.json"
+        payload = {
+            "topology_ground_truth": {
+                "base_primitive": self.base_topology_type,
+                "assumption_free_policy": "100% Non-Assumption Mathematical Correlation Graph",
+                "total_stroke_chunks": len(self.geometry_cadence_records),
+                "total_deformation_flux": round(self.total_deformation_flux, 4)
+            },
+            "temporal_audio_geometry_ledger": self.geometry_cadence_records
+        }
+        out_file.write_text(json.dumps(payload, indent=2))
+        return out_file
 
 
 # ---------------------------------------------------------------------------
@@ -1412,50 +1747,13 @@ class LiveSculptTwin:
         hotspot_center = np.mean(new_positions, axis=0)
         hotspot_radius = float(np.max(np.linalg.norm(new_positions - hotspot_center, axis=1))) if len(new_positions) > 0 else 0.0
 
-        # Classify anatomical region relative to bounding box
-        # DEDICATED ALIEN CRANIOFACIAL & HEAD ANATOMY SCHEMA:
-        # Macro-Cranium, Occipital Dome, Supraorbital Brow, Orbital Cavities,
-        # Nasal/Olfactory Aperture, Zygomatic Flanges, Maxilla, Mandible/Chin, Throat
-        rel_y = (hotspot_center[1] - self.bbox_min[1]) / max(self.dimensions[1], 1e-4)
-        rel_x = abs(hotspot_center[0] - self.bbox_center[0]) / max(self.dimensions[0] * 0.5, 1e-4)
-        rel_z = (hotspot_center[2] - self.bbox_center[2]) / max(self.dimensions[2] * 0.5, 1e-4)
-
-        if rel_y > 0.68:
-            if rel_z < -0.15:
-                anatomical_region = "Occipital / Elongated Cranial Dome"
-            elif rel_x > 0.50:
-                anatomical_region = "Temporal Ridge / Cranial Flange"
-            else:
-                anatomical_region = "Cranial Vault / Upper Head"
-        elif rel_y > 0.45:
-            if rel_z > 0.10:
-                if rel_x < 0.25:
-                    anatomical_region = "Nasal Bridge / Olfactory Aperture"
-                elif rel_x < 0.65:
-                    anatomical_region = "Orbital Socket / Supraorbital Brow"
-                else:
-                    anatomical_region = "Zygomatic Arch / Alien Cheek Flange"
-            else:
-                if rel_x > 0.50:
-                    anatomical_region = "Temporal / Lateral Cranial Wall"
-                else:
-                    anatomical_region = "Mid-Cranial Parietal Core"
-        elif rel_y > 0.22:
-            if rel_z > 0.05:
-                if rel_y > 0.35:
-                    anatomical_region = "Maxilla / Upper Labial Margin"
-                else:
-                    anatomical_region = "Mandible / Mental Apex (Alien Chin)"
-            else:
-                if rel_x > 0.45:
-                    anatomical_region = "Mandibular Angle / Jaw Flange"
-                else:
-                    anatomical_region = "Cranial Base / Nuchal Crest"
-        else:
-            if rel_z > 0.05:
-                anatomical_region = "Gular Throat / Submandibular Plane"
-            else:
-                anatomical_region = "Cervical Column / Neck Anchor"
+        # 100% Non-Assumption Spatial Ground Truth:
+        # Pure objective geometric localization relative to bounding box.
+        # Zero semantic guessing or projected anatomical assumptions.
+        rel_y = float((hotspot_center[1] - self.bbox_min[1]) / max(self.dimensions[1], 1e-4))
+        rel_x = float(abs(hotspot_center[0] - self.bbox_center[0]) / max(self.dimensions[0] * 0.5, 1e-4))
+        rel_z = float((hotspot_center[2] - self.bbox_center[2]) / max(self.dimensions[2] * 0.5, 1e-4))
+        anatomical_region = f"Surface Region [{hotspot_center[0]:.2f}, {hotspot_center[1]:.2f}, {hotspot_center[2]:.2f}] (BBox: [{rel_x:.2f}, {rel_y:.2f}, {rel_z:.2f}])"
 
         # Action classification (inflation vs carve vs smooth)
         centroid_rays = old_positions - self.bbox_center
@@ -1488,7 +1786,8 @@ class LiveSculptTwin:
             is_paint_only=False
         )
 
-        # Allow explicit user override if passed from Nomad tool channel
+        # Allow explicit user override if passed from Nomad tool channel,
+        # otherwise provide kinematic classifier hypothesis
         if active_brush_override:
             brush_val = active_brush_override
         else:
@@ -1649,6 +1948,12 @@ class LiveWireStudyEngine:
         self.last_activity_time = time.time()
         self.idle_study_triggered = False
 
+        # Non-assumption cadence & stroke chunk grouping
+        self.cadence_idle_window: float = 1.5
+        self.active_stroke_chunk: Optional[StrokeChunk] = None
+        self.stroke_chunk_counter: int = 1
+        self.progressive_heuristics = ProgressiveHeuristicEngine()
+
     def set_active_brush(self, brush_name: Optional[str]):
         """Explicitly declares or overrides the active brush tool (e.g. from UI)."""
         self.active_brush_override = brush_name
@@ -1725,19 +2030,141 @@ class LiveWireStudyEngine:
             self.camera_state = cam
             self.last_activity_time = time.time()
 
+    def _close_current_stroke_chunk(self):
+        """Finalizes the active stroke chunk, renders midpoint snapshot, and registers verification event."""
+        if not self.active_stroke_chunk:
+            return
+        chunk = self.active_stroke_chunk
+        self.active_stroke_chunk = None
+
+        duration = max(0.1, chunk.end_epoch - chunk.start_epoch)
+        midpoint = chunk.start_epoch + duration * 0.5
+
+        mgr = LiveWireSessionManager.get_instance()
+
+        # Find matching chronological audio chunk from audio ledger
+        synced_audio = None
+        for a in reversed(mgr.audio_ledger):
+            if (chunk.start_epoch >= a["start_epoch"] - 1.5 and chunk.start_epoch <= a["end_epoch"] + 1.5) or \
+               (midpoint >= a["start_epoch"] - 1.0 and midpoint <= a["end_epoch"] + 1.0) or \
+               (chunk.end_epoch >= a["start_epoch"] and chunk.end_epoch <= a["end_epoch"]):
+                synced_audio = a
+                break
+
+        if synced_audio:
+            chunk.synced_audio_chunk = synced_audio["filename"]
+            chunk.synced_audio_path = synced_audio["local_path"]
+
+        # Render midpoint snapshot
+        snap_dir = self.output_dir / "snapshots"
+        snap_dir.mkdir(parents=True, exist_ok=True)
+        snap_png = snap_dir / f"chunk_{chunk.chunk_id:03d}_midpoint.png"
+        ok_snap, ansi_snap = MidpointSnapshotRenderer.render_midpoint_snapshot(
+            twin=self.twin,
+            camera=self.camera_state,
+            output_png_path=snap_png,
+            width=160,
+            height=120,
+            ansi_width=36,
+            ansi_height=14
+        )
+        chunk.snapshot_png = str(snap_png) if snap_png.exists() else None
+        chunk.snapshot_ansi = ansi_snap
+
+        # Update progressive heuristic engine
+        self.progressive_heuristics.record_stroke_chunk(chunk, synced_audio)
+
+        v_evt = VerificationEvent(
+            event_id=mgr.current_event_id,
+            event_type="stroke_chunk",
+            timestamp=midpoint,
+            iso_time=time.strftime("%H:%M:%S", time.localtime(midpoint)),
+            duration_seconds=round(duration, 1),
+            title=f"STROKE CHUNK #{chunk.chunk_id:03d} ({duration:.1f}s)",
+            summary=f"{chunk.sub_strokes} strokes | Δ {len(chunk.touched_vertex_set):,} verts | E={chunk.cumulative_energy:.3f}",
+            snapshot_png_path=chunk.snapshot_png,
+            snapshot_ansi_preview=ansi_snap,
+            audio_filename=synced_audio["filename"] if synced_audio else "pending_stream",
+            audio_local_path=synced_audio["local_path"] if synced_audio else None,
+            audio_node_id=synced_audio["node_id"] if synced_audio else None,
+            sub_stroke_count=chunk.sub_strokes,
+            touched_vertices=len(chunk.touched_vertex_set),
+            cumulative_energy=chunk.cumulative_energy,
+            camera_pos=chunk.camera_pos,
+            camera_view_dir=chunk.camera_view_dir,
+            hotspot_center=chunk.hotspot_center
+        )
+        mgr.current_event_id += 1
+        mgr.verification_events.append(v_evt)
+        if len(mgr.verification_events) > 50:
+            mgr.verification_events.pop(0)
+
+        t_str = time.strftime("%H:%M:%S")
+        evt_log = f"[{t_str}] [Event #{v_evt.event_id}] Stroke Chunk #{chunk.chunk_id:03d} ({duration:.1f}s | {chunk.sub_strokes} sub-strokes | Δ {len(chunk.touched_vertex_set)} verts)"
+        mgr.recent_events_log.append(evt_log)
+        if len(mgr.recent_events_log) > 40:
+            mgr.recent_events_log.pop(0)
+
     def process_stroke_event(self, stroke_event: StrokeKineticEvent):
-        """Updates live statistics, transitions, heatmaps, and stage classification."""
+        """Updates live statistics, transitions, heatmaps, and cadence stroke chunking."""
         self.stats.total_strokes += 1
         self.stats.total_kinetic_energy += stroke_event.kinetic_energy
         self.stats.recent_strokes.append(stroke_event)
         if len(self.stats.recent_strokes) > 200:
             self.stats.recent_strokes.pop(0)
 
-        # 1. Update anatomical region heatmap
+        # 1. Update stroke chunk cadence
+        now = stroke_event.timestamp
+        cam_pos = tuple(self.camera_state.camera_pos.tolist()) if self.camera_state else (0.0, 0.0, 3.0)
+        cam_view = tuple(self.camera_state.view_dir.tolist()) if self.camera_state else (0.0, 0.0, -1.0)
+
+        if self.active_stroke_chunk is None:
+            self.active_stroke_chunk = StrokeChunk(
+                chunk_id=self.stroke_chunk_counter,
+                start_epoch=now,
+                end_epoch=now,
+                last_delta_epoch=now,
+                sub_strokes=1,
+                touched_vertex_set=set(range(stroke_event.touched_vertices)),
+                cumulative_energy=stroke_event.kinetic_energy,
+                hotspot_center=stroke_event.hotspot_center,
+                camera_pos=cam_pos,
+                camera_view_dir=cam_view
+            )
+            self.stroke_chunk_counter += 1
+        else:
+            time_since_last = now - self.active_stroke_chunk.last_delta_epoch
+            if time_since_last <= self.cadence_idle_window:
+                # Within cadence threshold: accumulate gesture
+                self.active_stroke_chunk.end_epoch = now
+                self.active_stroke_chunk.last_delta_epoch = now
+                self.active_stroke_chunk.sub_strokes += 1
+                self.active_stroke_chunk.cumulative_energy += stroke_event.kinetic_energy
+                self.active_stroke_chunk.hotspot_center = stroke_event.hotspot_center
+                self.active_stroke_chunk.camera_pos = cam_pos
+                self.active_stroke_chunk.camera_view_dir = cam_view
+            else:
+                # Cadence window expired: finalize previous chunk and start fresh
+                self._close_current_stroke_chunk()
+                self.active_stroke_chunk = StrokeChunk(
+                    chunk_id=self.stroke_chunk_counter,
+                    start_epoch=now,
+                    end_epoch=now,
+                    last_delta_epoch=now,
+                    sub_strokes=1,
+                    touched_vertex_set=set(range(stroke_event.touched_vertices)),
+                    cumulative_energy=stroke_event.kinetic_energy,
+                    hotspot_center=stroke_event.hotspot_center,
+                    camera_pos=cam_pos,
+                    camera_view_dir=cam_view
+                )
+                self.stroke_chunk_counter += 1
+
+        # 2. Update region heatmap
         reg = stroke_event.anatomical_region
         self.stats.region_heatmaps[reg] = self.stats.region_heatmaps.get(reg, 0.0) + stroke_event.kinetic_energy
 
-        # 2. Update brush distribution and transition matrix
+        # 3. Update brush distribution and transition matrix
         brush = stroke_event.brush_archetype
         self.stats.brush_stroke_counts[brush] = self.stats.brush_stroke_counts.get(brush, 0) + 1
         self.stats.brush_time_distribution[brush] = self.stats.brush_time_distribution.get(brush, 0.0) + stroke_event.duration_ms
@@ -1753,7 +2180,7 @@ class LiveWireStudyEngine:
         self.last_activity_time = stroke_event.timestamp
         self.idle_study_triggered = False
 
-        # 3. Infer Human Sculpting Stage
+        # 4. Infer Human Sculpting Stage
         new_stage, conf = SculptingStageInferrer.infer_stage(
             self.stats.recent_strokes, self.twin.model_radius
         )
@@ -1767,7 +2194,7 @@ class LiveWireStudyEngine:
         else:
             self.stats.stage_confidence = conf
 
-        # 4. Fire stroke callbacks
+        # 5. Fire stroke callbacks
         for cb in self.on_stroke_callbacks:
             cb(stroke_event)
 
@@ -1825,8 +2252,14 @@ class LiveWireStudyEngine:
                 self.config_revision = header.get("revision", self.config_revision)
 
     def check_idle_cycle(self):
-        """Monitors pause in sculpting to trigger data-driven study analyses."""
+        """Monitors pause in sculpting to seal stroke chunks and trigger data-driven study analyses."""
         now = time.time()
+
+        # Seal stroke chunk if hand lifted / paused beyond cadence window (1.5s)
+        if self.active_stroke_chunk is not None:
+            if now - self.active_stroke_chunk.last_delta_epoch >= self.cadence_idle_window:
+                self._close_current_stroke_chunk()
+
         idle_duration = now - self.last_activity_time
 
         if (
@@ -1841,8 +2274,14 @@ class LiveWireStudyEngine:
                 cb(idle_duration)
 
     def save_telemetry_snapshot(self):
-        """Flushes live wire telemetry, brush distribution, and stage progress to disk."""
+        """Flushes live wire telemetry, progressive heuristics, and stage progress to disk."""
         snapshot_file = self.output_dir / "live_wire_telemetry.json"
+        # Export silent non-assumption progressive heuristics
+        try:
+            self.progressive_heuristics.export_progressive_heuristics(self.output_dir)
+        except Exception:
+            pass
+
         payload = {
             "sculpt_id": self.stats.sculpt_id,
             "vertex_count": self.twin.vertex_count,

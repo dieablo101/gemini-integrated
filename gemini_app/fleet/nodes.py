@@ -501,6 +501,20 @@ def record_node_audio(
     return send_mothership_command("record_node_audio", params, timeout=float(duration) + 20.0)
 
 
+def play_node_audio(
+    node_id: str = "android-termux-localhost",
+    local_path: Optional[str] = None,
+    data_b64: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Plays an audio file or base64 stream directly through satellite node output or active Bluetooth earbuds."""
+    params: Dict[str, Any] = {"node_id": node_id}
+    if local_path:
+        params["local_path"] = str(local_path)
+    if data_b64:
+        params["data_b64"] = data_b64
+    return send_mothership_command("play_node_audio", params, timeout=25.0)
+
+
 def speak_node_tts(
     node_id: str = "android-termux-localhost",
     text: str = "",

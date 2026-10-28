@@ -19,7 +19,7 @@ from live_wire_engine import (
     validate_session_name, compute_mesh_fingerprint, verify_mesh_match,
     save_in_progress_snapshot, check_in_progress_snapshot_exists,
     record_camera_snapto, cancel_and_scrub_session, finalize_livewire_session,
-    list_all_livewire_sessions, STUDIES_ROOT, PRODUCTION_ROOT
+    list_all_livewire_sessions, LiveWireSessionManager, STUDIES_ROOT, PRODUCTION_ROOT
 )
 
 class TestLiveWireStudyEngine(unittest.TestCase):
@@ -55,7 +55,29 @@ class TestLiveWireStudyEngine(unittest.TestCase):
         self.assertAlmostEqual(stroke.kinetic_energy, 0.25, places=4)
         self.assertEqual(self.engine.stats.total_strokes, 1)
         self.assertGreater(self.engine.stats.total_kinetic_energy, 0.0)
-        self.assertTrue("Cranial" in stroke.anatomical_region or "Flange" in stroke.anatomical_region)
+        self.assertTrue("Surface Region" in stroke.anatomical_region)
+
+    def test_cadence_stroke_chunking_and_verification_events(self):
+        # 1. Stroke chunk grouping within 1.5s
+        s1 = self.engine.simulate_mock_stroke([0, 1], (0.0, 0.2, 0.0))
+        self.assertIsNotNone(self.engine.active_stroke_chunk)
+        self.assertEqual(self.engine.active_stroke_chunk.sub_strokes, 1)
+
+        # 2. Rapid follow-up stroke within 1.5s
+        s2 = self.engine.simulate_mock_stroke([2, 3], (0.0, 0.2, 0.0))
+        self.assertEqual(self.engine.active_stroke_chunk.sub_strokes, 2)
+
+        # 3. Idle triggers chunk close
+        self.engine.active_stroke_chunk.last_delta_epoch -= 2.0
+        self.engine.check_idle_cycle()
+        self.assertIsNone(self.engine.active_stroke_chunk)
+
+        mgr = LiveWireSessionManager.get_instance()
+        self.assertGreaterEqual(len(mgr.verification_events), 1)
+        recent = mgr.get_most_recent_event()
+        self.assertIsNotNone(recent)
+        self.assertEqual(recent.event_type, "stroke_chunk")
+        self.assertEqual(recent.sub_stroke_count, 2)
 
     def test_topology_guard(self):
         # Mismatched vertex count should return None (safeguard for remeshing)

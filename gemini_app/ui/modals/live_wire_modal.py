@@ -28,6 +28,7 @@ from live_wire_engine import (
     LiveWireSessionManager,
     STUDIES_ROOT,
     PRODUCTION_ROOT,
+    get_session_dir,
     validate_session_name,
     check_session_collision,
     is_session_finalized,
@@ -179,11 +180,31 @@ class LiveWireModal(ResponsiveModalScreen[None]):
         color: #bb55ff;
         margin-top: 1;
     }
-    #session_name_input {
+    #session_input_row {
+        width: 100%;
+        height: auto;
+        layout: horizontal;
+        margin-bottom: 1;
+    }
+    #session_input_row #session_name_input {
+        width: 1fr;
         background: #0c0c12;
         color: #ffffff;
         border: tall #333344;
-        margin-bottom: 1;
+        margin-bottom: 0;
+    }
+    #scan_session_btn {
+        width: 12;
+        min-width: 10;
+        margin-left: 1;
+        background: #1e2c3d;
+        color: #77ccff;
+        border: tall #335577;
+        text-style: bold;
+    }
+    #scan_session_btn:hover {
+        background: #2a3d54;
+        color: #aaddff;
     }
     #mode_row {
         width: 100%;
@@ -373,12 +394,14 @@ class LiveWireModal(ResponsiveModalScreen[None]):
                 yield Button("Connect", id="connect_btn")
 
             yield Label("Livewire Session Name (folder/filename):", id="session_name_label")
-            yield LivewireSessionInput(
-                mode_getter=lambda: self.active_mode or "studies",
-                value=self.mgr.current_session_name,
-                placeholder="e.g. pirates/oldcrazypirate or alien/alien2",
-                id="session_name_input"
-            )
+            with Horizontal(id="session_input_row"):
+                yield LivewireSessionInput(
+                    mode_getter=lambda: self.active_mode or "studies",
+                    value=self.mgr.current_session_name,
+                    placeholder="e.g. pirates/oldcrazypirate or alien/alien2",
+                    id="session_name_input"
+                )
+                yield Button("Scan", id="scan_session_btn")
 
             with Horizontal(id="mode_row"):
                 yield Label("Session Type:", id="mode_row_label")
@@ -571,10 +594,10 @@ class LiveWireModal(ResponsiveModalScreen[None]):
                 hist_2.update(f"• [{e2.iso_time}] Event #{e2.event_id}: {e2.title} ── {e2.summary}")
             elif len(v_events) == 2:
                 e1 = v_events[-2]
-                hist_1.update(f"• [{e1.iso_time}] Event #{e1.event_id}: {e1.title} ── {e1.summary}")
-                hist_2.update("• [Session Initialized] Recording in progress...")
+                hist_1.update("• [Prior Event] None")
+                hist_2.update(f"• [{e1.iso_time}] Event #{e1.event_id}: {e1.title} ── {e1.summary}")
             else:
-                hist_1.update("• [Prior Event] None (First event active)")
+                hist_1.update("• [Prior Event] None")
                 hist_2.update("• [Session Initialized] Recording in progress...")
 
             recent = v_events[-1]
@@ -628,10 +651,15 @@ class LiveWireModal(ResponsiveModalScreen[None]):
                 self.app.notify(msg, severity="error", timeout=5.0)
                 return False, msg, folder, filename
             else:
-                # Check off-sync
+                # Check off-sync FIRST before potentially loading geometry
                 is_off_sync = False
                 if self.mgr.engine and self.mgr.engine.twin and self.mgr.engine.twin.vertex_count > 0:
                     is_off_sync = check_snapshot_off_sync(mode, folder, filename, self.mgr.engine.twin)
+
+                # If they didn't click Scan first, populate cockpit now upon Record
+                if len(self.mgr.verification_events) == 0 or self.mgr.current_session_name != f"{folder}/{filename}":
+                    self.mgr.load_session_from_disk(mode, folder, filename, preserve_live_twin=True)
+
                 if is_off_sync:
                     snap_btn = self.query_one("#snapshot_btn", Button)
                     snap_btn.label = "Restore Snapshot"
@@ -642,6 +670,57 @@ class LiveWireModal(ResponsiveModalScreen[None]):
                     return False, warn, folder, filename
 
         return True, "", folder, filename
+
+    @on(Button.Pressed, "#scan_session_btn")
+    def on_scan_session_pressed(self) -> None:
+        inp = self.query_one("#session_name_input", LivewireSessionInput)
+        raw_name = inp.value.strip() or self.mgr.current_session_name
+        if not raw_name:
+            self.app.notify("please enter a session name to scan", severity="warning", timeout=3.0)
+            return
+
+        val_ok, err, folder, filename = validate_session_name(raw_name)
+        if not val_ok:
+            self.app.notify(err, severity="error", timeout=4.0)
+            return
+
+        mode = self.active_mode or "studies"
+        s_dir = get_session_dir(mode, folder, filename)
+        if not s_dir.exists():
+            # Check alternative mode
+            alt_mode = "production" if mode == "studies" else "studies"
+            alt_dir = get_session_dir(alt_mode, folder, filename)
+            if alt_dir.exists():
+                mode = alt_mode
+                self.active_mode = mode
+                s_dir = alt_dir
+                studies_cb = self.query_one("#mode_studies_check", Checkbox)
+                prod_cb = self.query_one("#mode_production_check", Checkbox)
+                studies_cb.value = (mode == "studies")
+                prod_cb.value = (mode == "production")
+            else:
+                self.app.notify("no such session exists on disk yet", severity="warning", timeout=4.0)
+                return
+
+        # Load session data into cockpit
+        ok, msg = self.mgr.load_session_from_disk(mode, folder, filename)
+        if not ok:
+            self.app.notify(msg, severity="warning", timeout=4.0)
+            return
+
+        # Check if snapshot off-sync with live device
+        if check_in_progress_snapshot_exists(mode, folder, filename):
+            if self.mgr.engine and self.mgr.engine.twin and self.mgr.engine.twin.vertex_count > 0:
+                is_off_sync = check_snapshot_off_sync(mode, folder, filename, self.mgr.engine.twin)
+                if is_off_sync:
+                    snap_btn = self.query_one("#snapshot_btn", Button)
+                    snap_btn.label = "Restore Snapshot"
+                    snap_btn.styles.background = "#882233"
+                    snap_btn.styles.color = "#ffdddd"
+                    self.app.notify("your snapshot is offsync with your local device, click restore snapshot", severity="warning", timeout=6.0)
+
+        self._refresh_ui_state()
+        self.app.notify(f"✓ Scanned session '{folder}/{filename}' successfully.", timeout=3.5)
 
     @on(Button.Pressed, "#connect_btn")
     def action_connect(self) -> None:

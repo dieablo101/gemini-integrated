@@ -482,14 +482,58 @@ def restore_snapshot_for_device(mode: str, folder: str, filename: str) -> Tuple[
             import base64
             nom_bytes = restored_nom.read_bytes()
             b64_str = base64.b64encode(nom_bytes).decode("ascii")
-            py_write_cmd = f"python3 -c 'import base64, os; path = \"/mnt/ipad/Nomad/projects/{filename}.nom\" if os.path.exists(\"/mnt/ipad/Nomad/projects\") else \"/mnt/ipad/{filename}.nom\"; open(path, \"wb\").write(base64.b64decode(\"{b64_str}\"))'"
+            obj_bytes = restored_obj.read_bytes()
+            b64_obj = base64.b64encode(obj_bytes).decode("ascii")
+
+            inner_py = f"""import base64, os
+nom_data = base64.b64decode('{b64_str}')
+obj_data = base64.b64decode('{b64_obj}')
+
+target_dirs = []
+for p in ['/mnt/nomad/projects', '/mnt/nomad', '/mnt/ipad/Nomad/projects', '/mnt/ipad/projects']:
+    if os.path.exists(p) and os.path.isdir(p):
+        target_dirs.append(p)
+
+if os.path.exists('/mnt/ipad') and not target_dirs:
+    try:
+        os.makedirs('/mnt/ipad/projects', exist_ok=True)
+        target_dirs.append('/mnt/ipad/projects')
+    except Exception:
+        pass
+
+if os.path.exists('/mnt/nomad') and '/mnt/nomad/projects' not in target_dirs:
+    try:
+        os.makedirs('/mnt/nomad/projects', exist_ok=True)
+        target_dirs.append('/mnt/nomad/projects')
+    except Exception:
+        pass
+
+# Ensure base mount folders also receive copies
+for base in ['/mnt/ipad', '/mnt/nomad']:
+    if os.path.exists(base) and base not in target_dirs:
+        target_dirs.append(base)
+
+for tdir in target_dirs:
+    try:
+        with open(os.path.join(tdir, '{filename}.nom'), 'wb') as f:
+            f.write(nom_data)
+        with open(os.path.join(tdir, '{filename}.obj'), 'wb') as f:
+            f.write(obj_data)
+    except Exception:
+        pass
+print('WRITTEN_TO_TARGETS')
+"""
+            encoded_script = base64.b64encode(inner_py.encode("utf-8")).decode("ascii")
+            py_write_cmd = f"python3 -c \"import base64; exec(base64.b64decode('{encoded_script}').decode('utf-8'))\""
             w_res = send_mothership_command("exec_node", {
                 "node_id": "ipad-ish-localhost",
                 "command": py_write_cmd,
                 "timeout": 15.0
             })
-            if w_res.get("status") == "ok" and w_res.get("exec_result", {}).get("exit_code") == 0:
-                placed_on_node = True
+            if w_res.get("status") == "ok":
+                stdout = w_res.get("exec_result", {}).get("stdout", "")
+                if "WRITTEN_TO_TARGETS" in stdout or w_res.get("exec_result", {}).get("exit_code") == 0:
+                    placed_on_node = True
     except Exception:
         pass
 
@@ -1040,8 +1084,9 @@ class LiveWireSessionManager:
         # Active Session Immunity: If resuming the current session or a snapshot exists, permit freely
         is_current_active = (self.current_session_name == f"{folder}/{filename}")
         snap_exists = check_in_progress_snapshot_exists(mode, folder, filename)
+        session_exists = check_session_collision(mode, folder, filename)
 
-        if not is_current_active and check_session_collision(mode, folder, filename) and not snap_exists:
+        if not is_current_active and session_exists and not snap_exists:
             finalized = is_session_finalized(mode, folder, filename)
             if finalized:
                 return False, "session already exists with no saved snapshot, and finalized"
@@ -1073,12 +1118,20 @@ class LiveWireSessionManager:
         self.is_recording = True
         self.recording_start_epoch = time.time()
 
-        # Reset verification reel & audio ledgers
-        self.audio_ledger.clear()
-        self.verification_events.clear()
-        self.current_event_id = 1
+        # If resuming an existing session (with snapshot or telemetry on disk), load data into cockpit
+        if session_exists and (snap_exists or (s_dir / "live_wire_telemetry.json").exists()):
+            if len(self.verification_events) == 0:
+                self.load_session_from_disk(mode, folder, filename)
+            else:
+                self.current_event_id = max([ev.event_id for ev in self.verification_events], default=0) + 1
+        else:
+            # Reset verification reel & audio ledgers for fresh session
+            self.audio_ledger.clear()
+            self.verification_events.clear()
+            self.current_event_id = 1
+
         if self.engine:
-            self.engine.stroke_chunk_counter = 1
+            self.engine.stroke_chunk_counter = max(1, self.engine.stats.total_strokes)
             self.engine.active_stroke_chunk = None
 
         # Start background audio recording thread
@@ -1129,6 +1182,177 @@ class LiveWireSessionManager:
 
     def restore_snapshot_for_device(self, mode: str, folder: str, filename: str) -> Tuple[bool, str, str]:
         return restore_snapshot_for_device(mode, folder, filename)
+
+    def load_session_from_disk(self, mode: str, folder: str, filename: str, preserve_live_twin: bool = False) -> Tuple[bool, str]:
+        """Loads telemetry vitals and last 3 records/turns from on-disk session into cockpit."""
+        s_dir = get_session_dir(mode, folder, filename)
+        if not s_dir.exists():
+            return False, "no such session exists on disk yet"
+
+        if not self.engine:
+            self.engine = LiveWireStudyEngine(host=DEFAULT_HOST, port=DEFAULT_PORT)
+        self.engine.output_dir = s_dir
+        self.current_session_name = f"{folder}/{filename}"
+        self.current_mode = mode
+
+        has_live_twin = len(self.engine.twin.positions) > 0 and (preserve_live_twin or self.is_connected)
+
+        # 1. Load telemetry vitals from live_wire_telemetry.json
+        telem_path = s_dir / "live_wire_telemetry.json"
+        if telem_path.exists():
+            try:
+                with open(telem_path, "r", encoding="utf-8") as f:
+                    tdata = json.load(f)
+                if not has_live_twin:
+                    self.engine.twin.sculpt_id = tdata.get("sculpt_id", "quad_sphere")
+                    self.engine.twin.vertex_count = tdata.get("vertex_count", 0)
+                    self.engine.twin.face_count = tdata.get("face_count", 0)
+                self.engine.stats.total_strokes = tdata.get("total_strokes", 0)
+                self.engine.stats.total_kinetic_energy = float(tdata.get("total_kinetic_energy", 0.0))
+                self.engine.stats.current_stage = tdata.get("current_stage", "stage_1_gesture_silhouette")
+                self.engine.stats.stage_confidence = float(tdata.get("stage_confidence", 1.0))
+                if tdata.get("brush_stroke_counts"):
+                    self.engine.stats.brush_stroke_counts = tdata["brush_stroke_counts"]
+                if tdata.get("camera_state"):
+                    c_data = tdata["camera_state"]
+                    self.engine.camera_state = CameraState(
+                        camera_pos=np.array(c_data.get("camera_pos", [0.0, 0.0, 3.0]), dtype=np.float32),
+                        view_dir=np.array(c_data.get("view_dir", [0.0, 0.0, -1.0]), dtype=np.float32),
+                        fov_y=float(c_data.get("fov_y", 25.0)),
+                        orthographic=bool(c_data.get("orthographic", False)),
+                        orbit_count=int(c_data.get("orbit_count", 0))
+                    )
+                if tdata.get("recent_strokes"):
+                    parsed_strokes = []
+                    for st in tdata["recent_strokes"]:
+                        parsed_strokes.append(StrokeTelemetry(
+                            stroke_id=st.get("stroke_id", 0),
+                            timestamp=st.get("timestamp", time.time()),
+                            touched_vertices=st.get("touched_vertices", 0),
+                            kinetic_energy=st.get("kinetic_energy", 0.0),
+                            max_displacement=st.get("max_displacement", 0.0),
+                            mean_displacement=st.get("mean_displacement", 0.0),
+                            hotspot_center=np.array(st.get("hotspot_center", [0, 0, 0]), dtype=np.float32),
+                            hotspot_radius=st.get("hotspot_radius", 0.0),
+                            anatomical_region=st.get("anatomical_region", "General Form"),
+                            action_type=st.get("action_type", "sculpt"),
+                            brush_archetype=st.get("brush_archetype", "move_grab"),
+                            brush_confidence=st.get("brush_confidence", 1.0),
+                            directional_coherence=st.get("directional_coherence", 1.0),
+                            normal_alignment=st.get("normal_alignment", 1.0),
+                            tangential_convergence=st.get("tangential_convergence", 0.0),
+                            inspection_mode=st.get("inspection_mode", "orthogonal_direct"),
+                            inspection_angle_deg=st.get("inspection_angle_deg", 0.0),
+                            sculpt_stage=st.get("sculpt_stage", "stage_1_gesture_silhouette"),
+                            duration_ms=st.get("duration_ms", 0.0)
+                        ))
+                    self.engine.stats.recent_strokes = parsed_strokes
+            except Exception:
+                pass
+
+        # 2. Check snapshot geometry & checkpoints
+        snap_dir = s_dir / "snapshots"
+        meta_files = sorted(list(snap_dir.glob("*_meta.json"))) if snap_dir.exists() else []
+        geo_files = sorted(list(snap_dir.glob("*_geo.npz"))) if snap_dir.exists() else []
+        if geo_files and not has_live_twin:
+            try:
+                geo = np.load(geo_files[-1], allow_pickle=True)
+                self.engine.twin.positions = geo["positions"]
+                self.engine.twin.faces = geo["faces"]
+                self.engine.twin.vertex_count = len(geo["positions"])
+                self.engine.twin.face_count = len(geo["faces"])
+            except Exception:
+                pass
+
+        # 3. Assemble Chronological Verification Events and Audio Ledger
+        self.verification_events.clear()
+        self.audio_ledger.clear()
+
+        # Load audio ledger entries
+        audio_dir = s_dir / "audio"
+        audio_files = sorted(list(audio_dir.glob("*.opus")) + list(audio_dir.glob("*.wav"))) if audio_dir.exists() else []
+        for idx, af in enumerate(audio_files, start=1):
+            mtime = af.stat().st_mtime
+            dur = 5.0
+            self.audio_ledger.append({
+                "chunk_id": idx,
+                "filename": af.name,
+                "local_path": str(af),
+                "start_epoch": mtime - dur,
+                "end_epoch": mtime,
+                "duration": dur,
+                "node_id": "satellite-audio"
+            })
+            banner = MidpointSnapshotRenderer.generate_voice_only_banner(36, 14)
+            v_evt = VerificationEvent(
+                event_id=len(self.verification_events) + 1,
+                event_type="voice_only",
+                timestamp=mtime,
+                iso_time=time.strftime("%H:%M:%S", time.localtime(mtime)),
+                duration_seconds=dur,
+                title=f"VOICE & AUDIO CHUNK #{idx:03d}",
+                summary=f"Continuous voice stream chunk | {af.name}",
+                snapshot_png_path=None,
+                snapshot_ansi_preview=banner,
+                audio_filename=af.name,
+                audio_local_path=str(af),
+                audio_node_id="satellite-audio"
+            )
+            self.verification_events.append(v_evt)
+
+        # If snapshots exist, add snapshot checkpoint events
+        for mf in meta_files:
+            try:
+                with open(mf, "r", encoding="utf-8") as f:
+                    smeta = json.load(f)
+                s_id = smeta.get("snapshot_id", "chkpt")
+                s_epoch = smeta.get("epoch", time.time())
+                s_iso = smeta.get("iso_time", time.strftime("%H:%M:%S", time.localtime(s_epoch)))
+                s_verts = smeta.get("fingerprint", {}).get("vertex_count", self.engine.twin.vertex_count)
+                s_strokes = smeta.get("total_strokes", self.engine.stats.total_strokes)
+
+                ansi_preview = None
+                if len(self.engine.twin.positions) > 0:
+                    _, ansi_str = MidpointSnapshotRenderer.render_midpoint_snapshot(
+                        self.engine.twin,
+                        self.engine.camera_state,
+                        s_dir / f"{s_id}_preview.png"
+                    )
+                    ansi_preview = ansi_str
+
+                v_evt = VerificationEvent(
+                    event_id=len(self.verification_events) + 1,
+                    event_type="in_progress_snapshot",
+                    timestamp=s_epoch,
+                    iso_time=s_iso.split("T")[-1].rstrip("Z") if "T" in s_iso else s_iso,
+                    duration_seconds=0.0,
+                    title=f"IN-PROGRESS SNAPSHOT ({s_id.upper()})",
+                    summary=f"100% Bit-Exact Checkpoint ({s_verts:,} v, {s_strokes} strokes)",
+                    snapshot_png_path=str(s_dir / f"{s_id}_preview.png") if ansi_preview else None,
+                    snapshot_ansi_preview=ansi_preview or MidpointSnapshotRenderer.generate_voice_only_banner(36, 14),
+                    audio_filename=audio_files[-1].name if audio_files else None,
+                    audio_local_path=str(audio_files[-1]) if audio_files else None
+                )
+                self.verification_events.append(v_evt)
+            except Exception:
+                pass
+
+        # Sort verification events chronologically
+        self.verification_events.sort(key=lambda ev: ev.timestamp)
+        for idx, ev in enumerate(self.verification_events, start=1):
+            ev.event_id = idx
+
+        self.current_event_id = len(self.verification_events) + 1
+
+        # Log event stream entries
+        t_str = time.strftime("%H:%M:%S")
+        self.recent_events_log.append(f"[{t_str}] Scanned session '{folder}/{filename}' from disk.")
+        self.recent_events_log.append(f"[{t_str}] Restored topology: {self.engine.twin.vertex_count:,} v, {self.engine.stats.total_strokes} strokes, {len(audio_files)} audio chunks.")
+        self.recent_events_log.append(f"[{t_str}] LiveWire Cockpit ready with {len(self.verification_events)} chronological records.")
+        if len(self.recent_events_log) > 40:
+            self.recent_events_log = self.recent_events_log[-40:]
+
+        return True, f"Session '{folder}/{filename}' loaded from disk."
 
     def in_progress_snapshot(self) -> Tuple[bool, str]:
         if not self.is_connected or not self.engine:
@@ -1792,7 +2016,7 @@ class LiveSculptTwin:
 
     @property
     def face_count(self) -> int:
-        return len(self.faces) if self.faces else len(self.face_sizes)
+        return len(self.faces) if len(self.faces) > 0 else len(self.face_sizes)
 
     def update_bounds(self):
         if len(self.positions) > 0:

@@ -241,6 +241,46 @@ class TestLiveWireUI(unittest.IsolatedAsyncioTestCase):
 
             await pilot.press("escape")
 
+    async def test_scan_session_fills_cockpit_and_toast_if_nonexistent(self):
+        """Tests Scan button next to session name: fills cockpit with data & records, toasts if nonexistent."""
+        app = TestLiveWireModalApp()
+        async with app.run_test() as pilot:
+            cockpit = LiveWireModal()
+            await app.push_screen(cockpit)
+
+            # 1. Verify Scan button exists
+            scan_btn = cockpit.query_one("#scan_session_btn")
+            self.assertIsNotNone(scan_btn)
+            self.assertEqual(scan_btn.label, "Scan")
+
+            # 2. Scan nonexistent session -> notifications contain 'no such session exists on disk yet'
+            inp = cockpit.query_one("#session_name_input", LivewireSessionInput)
+            inp.value = "nonexistent/ghost_session"
+            await pilot.click("#scan_session_btn")
+            await pilot.pause()
+
+            # Verify notification
+            notifs = [n.message for n in app._notifications]
+            self.assertTrue(any("no such session exists on disk yet" in str(msg) for msg in notifs))
+
+            # 3. Scan existing session with telemetry & records (testing/testing)
+            inp.value = "testing/testing"
+            await pilot.click("#scan_session_btn")
+            await pilot.pause()
+
+            # Cockpit should be filled with accurate data from disk
+            self.assertGreater(cockpit.mgr.engine.twin.vertex_count, 0)
+            self.assertEqual(cockpit.mgr.engine.stats.total_strokes, 7)
+            self.assertGreaterEqual(len(cockpit.mgr.verification_events), 3)
+
+            # Verification reel labels should reflect loaded records
+            hist_1 = cockpit.query_one("#hist_event_1", Label)
+            card_title = cockpit.query_one("#recent_card_title", Label)
+            self.assertNotIn("Standby - Waiting for first stroke", str(hist_1.render()))
+            self.assertNotIn("✦ MOST RECENT EVENT (STANDBY)", str(card_title.render()))
+
+            await pilot.press("escape")
+
 
 if __name__ == "__main__":
     unittest.main()

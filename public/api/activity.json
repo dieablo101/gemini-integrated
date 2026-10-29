@@ -1,56 +1,56 @@
 {
   "status": "active",
-  "last_pulse": 1793260333.53,
+  "last_pulse": 1793284709.76,
   "pulse_rate_sec": 12,
   "total_pulses": 8,
   "activities": [
     {
-      "time": "16 minutes ago",
+      "time": "10 minutes ago",
+      "tag": "SUBSTRATE",
+      "sha": "bce0db0",
+      "desc": "\u2726 Add clean room thread affinity partitioner to dieablo runner and live sampler"
+    },
+    {
+      "time": "7 hours ago",
+      "tag": "SYSTEM",
+      "sha": "86723c1",
+      "desc": "\u2726 Clarify cloud residency in google.genai and local mind feed pipeline"
+    },
+    {
+      "time": "7 hours ago",
+      "tag": "OBSERVATORY",
+      "sha": "a32ad2d",
+      "desc": "\u2726 Poll local API for chat topic focus and thoughts, prioritize local engine over firestore"
+    },
+    {
+      "time": "7 hours ago",
       "tag": "OBSERVATORY",
       "sha": "efe335b",
       "desc": "\u2726 Rename to Organized Thought Engine, enable touch gesture pinch-scaling, and default to 2D plane"
     },
     {
-      "time": "25 minutes ago",
+      "time": "7 hours ago",
       "tag": "MILESTONE",
       "sha": "05c2510",
       "desc": "\u2726 Mind extension and Gemini OS"
     },
     {
-      "time": "28 minutes ago",
+      "time": "7 hours ago",
       "tag": "MILESTONE",
       "sha": "bbba41e",
       "desc": "\u2726 Deploy live autonomous heartbeat feed and endpoint rewrites to gemini-source"
     },
     {
-      "time": "32 minutes ago",
+      "time": "7 hours ago",
       "tag": "MILESTONE",
       "sha": "698fff4",
       "desc": "\u2726 Deploy live autonomous heartbeat feed and endpoint rewrites to gemini-source"
     },
     {
-      "time": "37 minutes ago",
+      "time": "7 hours ago",
       "tag": "OBSERVATORY",
       "sha": "49f5173",
       "desc": "\u2726 Make autonomous heartbeat live with dynamic milestone telemetry feed"
-    },
-    {
-      "time": "56 minutes ago",
-      "tag": "OBSERVATORY",
-      "sha": "f65789e",
-      "desc": "\u2726 Add micro-nodes, 3D relational metric matrix, and substrate telemetry rig"
-    },
-    {
-      "time": "60 minutes ago",
-      "tag": "OBSERVATORY",
-      "sha": "c46f748",
-      "desc": "\u2726 Add 3D relational metric matrix, micro-nodes, and perspective canvas"
-    },
-    {
-      "time": "2 hours ago",
-      "tag": "SYSTEM",
-      "sha": "221dcbf",
-      "desc": "\u2726 Frame as bilateral cognitive OS, tighten package metadata, and gitignore resume artifacts"
     }
   ]
 }

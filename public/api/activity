@@ -1,35 +1,47 @@
 {
   "status": "active",
-  "last_pulse": 1793258600.15,
+  "last_pulse": 1793259368.27,
   "pulse_rate_sec": 12,
   "total_pulses": 8,
   "activities": [
     {
-      "time": "3 minutes ago",
+      "time": "9 minutes ago",
+      "tag": "MILESTONE",
+      "sha": "05c2510",
+      "desc": "\u2726 Mind extension and Gemini OS"
+    },
+    {
+      "time": "12 minutes ago",
+      "tag": "MILESTONE",
+      "sha": "bbba41e",
+      "desc": "\u2726 Deploy live autonomous heartbeat feed and endpoint rewrites to gemini-source"
+    },
+    {
+      "time": "16 minutes ago",
       "tag": "MILESTONE",
       "sha": "698fff4",
       "desc": "\u2726 Deploy live autonomous heartbeat feed and endpoint rewrites to gemini-source"
     },
     {
-      "time": "8 minutes ago",
+      "time": "21 minutes ago",
       "tag": "OBSERVATORY",
       "sha": "49f5173",
       "desc": "\u2726 Make autonomous heartbeat live with dynamic milestone telemetry feed"
     },
     {
-      "time": "27 minutes ago",
+      "time": "40 minutes ago",
       "tag": "OBSERVATORY",
       "sha": "f65789e",
       "desc": "\u2726 Add micro-nodes, 3D relational metric matrix, and substrate telemetry rig"
     },
     {
-      "time": "31 minutes ago",
+      "time": "44 minutes ago",
       "tag": "OBSERVATORY",
       "sha": "c46f748",
       "desc": "\u2726 Add 3D relational metric matrix, micro-nodes, and perspective canvas"
     },
     {
-      "time": "74 minutes ago",
+      "time": "87 minutes ago",
       "tag": "SYSTEM",
       "sha": "221dcbf",
       "desc": "\u2726 Frame as bilateral cognitive OS, tighten package metadata, and gitignore resume artifacts"
@@ -39,18 +51,6 @@
       "tag": "FLEET",
       "sha": "f01a9a6",
       "desc": "\u2726 Embed mothership server into app lifecycle, filter control clients, fix mindmap telemetries and rendering jitter"
-    },
-    {
-      "time": "4 hours ago",
-      "tag": "MILESTONE",
-      "sha": "88889b8",
-      "desc": "\u2726 Resolve play audio modal freeze with async worker and GStreamer detached local playback"
-    },
-    {
-      "time": "5 hours ago",
-      "tag": "3D ENGINE",
-      "sha": "a609397",
-      "desc": "\u2726 Add dedicated show_ansi_card CLI viewer and re-render 98k vertex clay matcap preview"
     }
   ]
 }

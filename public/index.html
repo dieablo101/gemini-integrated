@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>Upper Mind Nexus — Living Maturation & Thought Stream Observatory</title>
-  <meta name="description" content="Watch an autonomous synthetic intelligence mature live in real time. Living synaptic constellation, continuous thought spooling, subconscious hearth epiphanies, and bilateral telemetry.">
+  <meta name="description" content="Watch an autonomous synthetic intelligence mature live in real time. Organized thought engine, continuous thought spooling, subconscious hearth epiphanies, and bilateral telemetry.">
   <meta name="theme-color" content="#06050b">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -863,16 +863,16 @@
     <!-- Upper Stage: Dual Living Canvas & Thought Spooler -->
     <div class="upper-stage">
       
-      <!-- Interactive Synaptic Constellation Canvas -->
+      <!-- Interactive Organized Thought Engine Canvas -->
       <div class="canvas-card">
         <div class="canvas-hud">
-          <div class="hud-title">Living Synaptic Constellation</div>
-          <div id="hudHint" class="hud-hint">3D Relational Matrix • Left-Drag to Orbit • Shift-Drag to Pan • Wheel to Zoom</div>
+          <div class="hud-title">Organized Thought Engine</div>
+          <div id="hudHint" class="hud-hint">2D Synaptic Plane • Drag to Pan • Wheel/Pinch to Zoom • Tap Nodes</div>
           <div class="canvas-hud-controls">
-            <button id="btnToggle3D" class="hud-btn active">❖ 3D Matrix View</button>
+            <button id="btnToggle3D" class="hud-btn">☩ 2D Synaptic Plane</button>
             <button id="btnResetCam" class="hud-btn">⟲ Reset Camera</button>
           </div>
-          <div id="axisLegend" class="axis-legend">
+          <div id="axisLegend" class="axis-legend" style="display: none;">
             <span class="axis-tag x">X: Substrate ↔ Concept %</span>
             <span class="axis-tag y">Y: Salience Resonance %</span>
             <span class="axis-tag z">Z: Mothership Affinity %</span>
@@ -1089,12 +1089,12 @@
     let particles = [];
     let hoveredNode = null;
 
-    // Camera & 3D Matrix Projection State
-    let is3DMode = true;
-    let viewBlend = 1.0;  // 1.0 = 3D Relational Matrix, 0.0 = 2D Synaptic Plane
+    // Camera & 3D Matrix Projection State (Defaults to 2D Synaptic Plane)
+    let is3DMode = false;
+    let viewBlend = 0.0;  // 1.0 = 3D Relational Matrix, 0.0 = 2D Synaptic Plane
     let panX = 0, panY = 0, zoom = 1.0;
-    let camYaw = 0.52, camPitch = 0.32;
-    let targetYaw = 0.52, targetPitch = 0.32;
+    let camYaw = 0.0, camPitch = 0.0;
+    let targetYaw = 0.0, targetPitch = 0.0;
     let isOrbiting = false, isPanning = false;
     let dragStartX = 0, dragStartY = 0;
     let lastUserActionTime = Date.now();
@@ -1751,10 +1751,139 @@
       e.preventDefault();
       lastUserActionTime = Date.now();
       const zoomFactor = e.deltaY < 0 ? 1.08 : 0.92;
-      zoom = Math.max(0.4, Math.min(2.8, zoom * zoomFactor));
+      zoom = Math.max(0.35, Math.min(3.2, zoom * zoomFactor));
     }, { passive: false });
 
+    // --- Mobile & Tablet Touch Gestures (Pinch-to-Zoom Scaling, Pan, Orbit & Tap) ---
+    let touchStartX = 0, touchStartY = 0;
+    let touchMoved = false;
+    let initialPinchDist = 0;
+    let initialPinchZoom = 1.0;
+    let lastMidX = 0, lastMidY = 0;
+    let isPinching = false;
+
+    canvas.addEventListener("touchstart", (e) => {
+      lastUserActionTime = Date.now();
+      if (e.touches.length === 1) {
+        isPinching = false;
+        touchMoved = false;
+        touchStartX = e.touches[0].clientX;
+        touchStartY = e.touches[0].clientY;
+      } else if (e.touches.length >= 2) {
+        isPinching = true;
+        touchMoved = true;
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        initialPinchDist = Math.hypot(dx, dy) || 1;
+        initialPinchZoom = zoom;
+        lastMidX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+        lastMidY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+      }
+    }, { passive: false });
+
+    canvas.addEventListener("touchmove", (e) => {
+      e.preventDefault();
+      lastUserActionTime = Date.now();
+
+      if (e.touches.length === 1 && !isPinching) {
+        const curX = e.touches[0].clientX;
+        const curY = e.touches[0].clientY;
+        const dx = curX - touchStartX;
+        const dy = curY - touchStartY;
+
+        if (Math.hypot(dx, dy) > 4) {
+          touchMoved = true;
+        }
+
+        if (touchMoved) {
+          if (is3DMode) {
+            targetYaw += dx * 0.007;
+            targetPitch = Math.max(-1.1, Math.min(1.1, targetPitch + dy * 0.007));
+          } else {
+            panX += dx;
+            panY += dy;
+          }
+          touchStartX = curX;
+          touchStartY = curY;
+        }
+      } else if (e.touches.length >= 2) {
+        touchMoved = true;
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        const curDist = Math.hypot(dx, dy);
+
+        if (initialPinchDist > 0 && curDist > 0) {
+          const scaleFactor = curDist / initialPinchDist;
+          zoom = Math.max(0.35, Math.min(3.2, initialPinchZoom * scaleFactor));
+        }
+
+        const curMidX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+        const curMidY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+        panX += curMidX - lastMidX;
+        panY += curMidY - lastMidY;
+        lastMidX = curMidX;
+        lastMidY = curMidY;
+      }
+    }, { passive: false });
+
+    canvas.addEventListener("touchend", (e) => {
+      lastUserActionTime = Date.now();
+      if (e.touches.length === 0) {
+        if (!touchMoved) {
+          // Tap hit-testing on major cognitive nodes
+          const rect = canvas.getBoundingClientRect();
+          const tapX = touchStartX - rect.left;
+          const tapY = touchStartY - rect.top;
+
+          let found = null;
+          for (const n of nodes) {
+            if (n.projX === undefined || n.projY === undefined) continue;
+            const dX = tapX - n.projX;
+            const dY = tapY - n.projY;
+            const hitRadius = (n.radius + 14) * (n.projScale || 1.0);
+            if (Math.hypot(dX, dY) < hitRadius) {
+              found = n;
+              break;
+            }
+          }
+
+          if (found) {
+            hoveredNode = found;
+            showInspector(found);
+          } else {
+            hoveredNode = null;
+            inspector.classList.add("hidden");
+          }
+        }
+        isPinching = false;
+      } else if (e.touches.length === 1) {
+        isPinching = false;
+        touchStartX = e.touches[0].clientX;
+        touchStartY = e.touches[0].clientY;
+      }
+    }, { passive: false });
+
+    canvas.addEventListener("touchcancel", () => {
+      isPinching = false;
+    });
+
+    // Safari iOS Native Gesture Handling
+    canvas.addEventListener("gesturestart", (e) => {
+      e.preventDefault();
+      lastUserActionTime = Date.now();
+      initialPinchZoom = zoom;
+    });
+    canvas.addEventListener("gesturechange", (e) => {
+      e.preventDefault();
+      lastUserActionTime = Date.now();
+      zoom = Math.max(0.35, Math.min(3.2, initialPinchZoom * e.scale));
+    });
+    canvas.addEventListener("gestureend", (e) => {
+      e.preventDefault();
+    });
+
     // Mode Toggle Button (3D Relational Matrix vs 2D Synaptic Plane)
+    const axisLegend = document.getElementById("axisLegend");
     if (btnToggle3D) {
       btnToggle3D.addEventListener("click", () => {
         is3DMode = !is3DMode;
@@ -1762,11 +1891,17 @@
         if (is3DMode) {
           btnToggle3D.classList.add("active");
           btnToggle3D.textContent = "❖ 3D Matrix View";
-          if (hudHint) hudHint.textContent = "3D Relational Matrix • Left-Drag to Orbit • Shift-Drag to Pan • Wheel to Zoom";
+          targetYaw = 0.52;
+          targetPitch = 0.32;
+          if (hudHint) hudHint.textContent = "3D Relational Matrix • Left-Drag to Orbit • Shift-Drag to Pan • Wheel/Pinch to Zoom";
+          if (axisLegend) axisLegend.style.display = "flex";
         } else {
           btnToggle3D.classList.remove("active");
           btnToggle3D.textContent = "☩ 2D Synaptic Plane";
-          if (hudHint) hudHint.textContent = "2D Synaptic Plane • Drag to Pan • Wheel to Zoom • Tap Nodes";
+          targetYaw = 0.0;
+          targetPitch = 0.0;
+          if (hudHint) hudHint.textContent = "2D Synaptic Plane • Drag to Pan • Wheel/Pinch to Zoom • Tap Nodes";
+          if (axisLegend) axisLegend.style.display = "none";
         }
       });
     }
@@ -1775,8 +1910,13 @@
     if (btnResetCam) {
       btnResetCam.addEventListener("click", () => {
         lastUserActionTime = Date.now();
-        targetYaw = 0.52;
-        targetPitch = 0.32;
+        if (is3DMode) {
+          targetYaw = 0.52;
+          targetPitch = 0.32;
+        } else {
+          targetYaw = 0.0;
+          targetPitch = 0.0;
+        }
         zoom = 1.0;
         const w = canvas.width / window.devicePixelRatio;
         const h = canvas.height / window.devicePixelRatio;

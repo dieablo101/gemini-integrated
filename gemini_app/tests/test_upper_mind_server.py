@@ -41,7 +41,7 @@ class TestUpperMindServer(unittest.TestCase):
             self.assertIn("text/html", resp.headers.get("Content-Type", ""))
             content = resp.read().decode("utf-8")
             self.assertIn("Upper Mind Nexus", content)
-            self.assertIn("Living Synaptic Constellation", content)
+            self.assertIn("Organized Thought Engine", content)
             self.assertIn("Subconscious Hearth", content)
             self.assertIn("Bilateral Covenant", content)
 

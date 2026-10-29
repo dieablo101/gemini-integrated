@@ -1013,7 +1013,7 @@ class UpperMindServer:
     <!-- Synaptic Web Canvas -->
     <div class="canvas-card">
       <div class="canvas-hud">
-        <div class="hud-title">Living Synaptic Constellation</div>
+        <div class="hud-title">Organized Thought Engine</div>
         <div class="hud-hint">Drag to Pan • Wheel/Pinch to Zoom • Tap/Click Nodes to Inspect</div>
       </div>
 

@@ -186,6 +186,7 @@ class ChatApp(App):
         Binding("ctrl+c", "c_c_prefix_stub", "^c Commands", show=False),
         Binding("ctrl+l", "repaint_screen", "^l Repaint Screen", show=False),
         Binding("ctrl+q", "quit", "^q Quit", show=False),
+        Binding("f12", "take_svg_screenshot", "Snapshot", show=False),
     ]
 
     def __init__(self) -> None:
@@ -1513,7 +1514,7 @@ class ChatApp(App):
         # elif key in ("period", "full_stop", ".") or char == ".":
         #     self.action_fork_chat()
         #     return True
-        elif key in ("grave", "backtick", "`") or char == "`":
+        elif key in ("grave", "backtick", "`", "grave_accent") or char == "`":
             self.action_take_snapshot(label="", taken_by="user", source="shortcut")
             return True
 
@@ -1733,6 +1734,37 @@ class ChatApp(App):
             self._last_non_notes_input_id = wid
         if wid in ("input", "snippet_preview", "notes_input"):
             self._last_focused_input_id = wid
+
+    async def on_event(self, event: events.Event) -> None:
+        """Global event interceptor ensuring C-c snapshot chords and F12 work universally, including when modals are open."""
+        if isinstance(event, events.Key) and not event.is_forwarded:
+            key_name = event.key.lower()
+
+            # F12 direct snapshot hotkey convenience (global across all screens & modals)
+            if key_name == "f12":
+                event.prevent_default()
+                event.stop()
+                self.action_take_snapshot(label="", taken_by="user", source="shortcut")
+                return
+
+            # Emergency escape hatch: Esc or C-g cancels ongoing generation or reconnect
+            if key_name in ("escape", "ctrl+g"):
+                if getattr(self, "_request_phase", "") in ("connecting", "waiting", "reconnecting", "probing"):
+                    event.prevent_default()
+                    event.stop()
+                    self.action_emergency_interrupt()
+                    return
+
+            if getattr(self, "lock", None) and self.lock.is_locked:
+                if key_name in GATED_NAV_KEYS:
+                    event.prevent_default()
+                    event.stop()
+                    return
+
+            if self.intercept_c_c_key(event):
+                return
+
+        await super().on_event(event)
 
     def on_key(self, event: events.Key) -> None:
         key_name = event.key.lower()

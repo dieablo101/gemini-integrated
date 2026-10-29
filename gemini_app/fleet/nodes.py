@@ -510,9 +510,17 @@ def play_node_audio(
     params: Dict[str, Any] = {"node_id": node_id}
     if local_path:
         params["local_path"] = str(local_path)
+        if not data_b64 and os.path.exists(local_path):
+            try:
+                import base64
+                from pathlib import Path
+                params["data_b64"] = base64.b64encode(Path(local_path).read_bytes()).decode("ascii")
+                params["filename"] = Path(local_path).name
+            except Exception:
+                pass
     if data_b64:
         params["data_b64"] = data_b64
-    return send_mothership_command("play_node_audio", params, timeout=25.0)
+    return send_mothership_command("play_node_audio", params, timeout=12.0)
 
 
 def speak_node_tts(

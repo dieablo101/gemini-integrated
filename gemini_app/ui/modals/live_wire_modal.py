@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Callable
 
-from textual import events, on
+from textual import events, on, work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -470,12 +470,20 @@ class LiveWireModal(ResponsiveModalScreen[None]):
 
     def on_mount(self) -> None:
         super().on_mount()
-        # Auto-connect if Nomad Link is listening
+        # Auto-connect asynchronously if Nomad Link is listening
         if not self.mgr.is_connected:
-            self.mgr.connect_wire()
+            self.action_auto_connect()
         self._refresh_ui_state()
         self.set_interval(0.25, self._tick_ui)
         self.query_one("#session_name_input", LivewireSessionInput).focus()
+
+    @work(exclusive=True, thread=True)
+    def action_auto_connect(self) -> None:
+        self.mgr.connect_wire()
+        try:
+            self.app.call_from_thread(self._refresh_ui_state)
+        except Exception:
+            pass
 
     def _tick_ui(self) -> None:
         self._refresh_ui_state()
@@ -693,7 +701,9 @@ class LiveWireModal(ResponsiveModalScreen[None]):
             self.app.notify(msg, severity="error", timeout=6.0)
 
     @on(Button.Pressed, "#play_audio_btn")
+    @work(exclusive=True, thread=True)
     def on_play_audio_pressed(self) -> None:
+        self.app.notify("▶ Dispatching headphone audio...", timeout=2.0)
         ok, msg = self.mgr.play_most_recent_audio()
         if ok:
             self.app.notify(msg, timeout=5.0)

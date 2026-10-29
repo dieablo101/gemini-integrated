@@ -107,7 +107,7 @@ class MindMapScreen(Screen):
     MindMapScreen {
         layout: vertical;
         background: #000000;
-        layers: base toasts overlay;
+        layers: base overlay toasts;
     }
     #mind_pulse_bar {
         width: 100%;

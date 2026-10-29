@@ -254,6 +254,8 @@ class MothershipServer:
                 pass
 
     def _handle_client(self, conn: socket.socket, addr: tuple[str, int]) -> None:
+        import base64
+        from pathlib import Path
         buf = ""
         node_id: Optional[str] = None
         satellite: Optional[ConnectedSatellite] = None

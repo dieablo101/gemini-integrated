@@ -1016,6 +1016,7 @@ class LiveWireSessionManager:
                 return False, "No audio recording file found for this event."
 
         active_node = self.get_active_audio_node()
+        node_error = None
         if active_node:
             try:
                 from gemini_app.fleet.nodes import play_node_audio
@@ -1023,21 +1024,43 @@ class LiveWireSessionManager:
                 if res.get("status") == "ok":
                     return True, f"Playing on {active_node} (headphones): {Path(loc).name}"
                 else:
-                    return False, f"Playback on node failed: {res.get('error', 'error')}"
+                    node_error = res.get("error", "playback failed")
             except Exception as e:
-                return False, f"Node audio dispatch error: {e}"
-        else:
-            try:
-                import subprocess, shutil
-                if shutil.which("mpv"):
-                    subprocess.Popen(["mpv", "--no-video", loc])
-                    return True, f"Playing locally: {Path(loc).name}"
-                elif shutil.which("paplay"):
-                    subprocess.Popen(["paplay", loc])
-                    return True, f"Playing locally: {Path(loc).name}"
-            except Exception:
-                pass
-            return False, "No active phone node connected (connect phone for headphone playback)."
+                node_error = str(e)
+
+        # Fallback to local audio playback on host machine
+        try:
+            import subprocess, shutil
+            if shutil.which("mpv"):
+                subprocess.Popen(["mpv", "--no-video", loc], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+                msg = f"Playing locally: {Path(loc).name}"
+                if node_error:
+                    msg += f" (Node: {node_error})"
+                return True, msg
+            elif shutil.which("gst-play-1.0"):
+                subprocess.Popen(["gst-play-1.0", "--no-interactive", "-q", loc], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+                msg = f"Playing locally: {Path(loc).name}"
+                if node_error:
+                    msg += f" (Node: {node_error})"
+                return True, msg
+            elif shutil.which("paplay"):
+                subprocess.Popen(["paplay", loc], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+                msg = f"Playing locally: {Path(loc).name}"
+                if node_error:
+                    msg += f" (Node: {node_error})"
+                return True, msg
+            elif shutil.which("aplay") and loc.endswith(".wav"):
+                subprocess.Popen(["aplay", "-q", loc], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+                msg = f"Playing locally: {Path(loc).name}"
+                if node_error:
+                    msg += f" (Node: {node_error})"
+                return True, msg
+        except Exception:
+            pass
+
+        if node_error:
+            return False, f"Playback failed on {active_node}: {node_error}"
+        return False, "No active phone node connected (connect phone for headphone playback)."
 
     def _audio_recording_loop(self, s_dir: Path, filename: str) -> None:
         """Background worker that captures continuous chronological audio chunks from satellite node."""

@@ -5,8 +5,11 @@ from gemini_app.config import generate_theme_css_rules
 BASE_CSS = """
 Screen {
         layout: vertical;
-        layers: base toasts overlay;
+        layers: base overlay toasts;
         background: #000000;
+    }
+    ModalScreen {
+        layers: base overlay toasts;
     }
     ToastRack {
         dock: top;
@@ -15,7 +18,10 @@ Screen {
         background: transparent;
     }
     ModalScreen ToastRack {
-        display: none;
+        layer: toasts;
+        dock: top;
+        align: right top;
+        background: transparent;
     }
     Toast {
         background: #141414;

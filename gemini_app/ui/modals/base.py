@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Generic, TypeVar
+from typing import Any, Generic, TypeVar
 
 from textual import events
+from textual.binding import Binding
 from textual.screen import ModalScreen
 
 from gemini_app.config import MOBILE_BREAKPOINT
@@ -14,6 +15,20 @@ ModalResultType = TypeVar("ModalResultType")
 
 class ResponsiveModalScreen(ModalScreen[ModalResultType], Generic[ModalResultType]):
     """Base class for all modal screens with automatic palette themes and mobile responsive sizing."""
+
+    DEFAULT_CSS = """
+    ResponsiveModalScreen {
+        layers: base overlay toasts;
+    }
+    ToastRack {
+        layer: toasts;
+    }
+    """
+
+    BINDINGS = [
+        Binding("ctrl+c", "c_c_prefix_stub", "^c Commands", show=False),
+        Binding("f12", "take_svg_screenshot", "Snapshot", show=False),
+    ]
 
     def _update_screen_classes(self, width: int | None = None) -> None:
         current_w = width if width is not None else (self.size.width or (self.app.size.width if self.app else 100))
@@ -28,6 +43,28 @@ class ResponsiveModalScreen(ModalScreen[ModalResultType], Generic[ModalResultTyp
 
     def on_resize(self, event: events.Resize) -> None:
         self._update_screen_classes(event.size.width)
+
+    def action_c_c_prefix_stub(self) -> None:
+        if hasattr(self.app, "set_c_c_prefix"):
+            self.app.set_c_c_prefix()
+
+    def on_key(self, event: events.Key) -> None:
+        if hasattr(self.app, "intercept_c_c_key") and self.app.intercept_c_c_key(event):
+            event.stop()
+            event.prevent_default()
+
+    def action_take_snapshot(self, label: str = "") -> dict[str, Any] | None:
+        """Captures snapshot delegating directly to app."""
+        if hasattr(self.app, "action_take_snapshot"):
+            return self.app.action_take_snapshot(label=label, taken_by="user", source="shortcut")
+        return None
+
+    def action_take_svg_screenshot(self) -> None:
+        """Takes UI snapshot via direct binding or action."""
+        if hasattr(self.app, "action_take_svg_screenshot"):
+            self.app.action_take_svg_screenshot()
+        elif hasattr(self.app, "action_take_snapshot"):
+            self.app.action_take_snapshot(label="", taken_by="user", source="shortcut")
 
     def dismiss(self, result: ModalResultType | None = None) -> None:
         """Safely dismisses the modal, guarding against ScreenStackError if not top screen or stack <= 1."""

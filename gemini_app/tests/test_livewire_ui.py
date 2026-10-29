@@ -306,6 +306,29 @@ class TestLiveWireUI(unittest.IsolatedAsyncioTestCase):
 
             await pilot.press("escape")
 
+    async def test_play_audio_button_non_blocking(self):
+        """Verifies play audio button executes asynchronously without freezing event loop."""
+        app = TestLiveWireModalApp()
+        async with app.run_test() as pilot:
+            cockpit = LiveWireModal()
+            await app.push_screen(cockpit)
+            await pilot.pause()
+
+            # Load testing/testing session
+            cockpit.mgr.load_session_from_disk("studies", "testing", "testing")
+            cockpit._refresh_ui_state()
+            play_btn = cockpit.query_one("#play_audio_btn")
+            self.assertFalse(play_btn.disabled)
+
+            # Trigger play button pressed - must not raise or hang event loop
+            cockpit.on_play_audio_pressed()
+            await pilot.pause()
+
+            notifs = [n.message for n in app._notifications]
+            self.assertTrue(any("Dispatching headphone audio" in str(msg) or "Playing" in str(msg) for msg in notifs))
+
+            await pilot.press("escape")
+
 
 if __name__ == "__main__":
     unittest.main()

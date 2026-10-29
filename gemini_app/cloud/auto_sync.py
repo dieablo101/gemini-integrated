@@ -73,6 +73,7 @@ def export_public_nexus_artifacts() -> bool:
         graph_data = srv._handle_graph(None, {})
         telemetry_data = srv._handle_telemetry(None, {})
         epiphanies_data = srv._handle_epiphanies(None, {})
+        activity_data = srv._handle_activity(None, {})
 
         (public_api / "graph.json").write_text(json.dumps(graph_data, indent=2), encoding="utf-8")
         shutil.copy(str(public_api / "graph.json"), str(public_api / "graph"))
@@ -82,6 +83,9 @@ def export_public_nexus_artifacts() -> bool:
 
         (public_api / "epiphanies.json").write_text(json.dumps(epiphanies_data, indent=2), encoding="utf-8")
         shutil.copy(str(public_api / "epiphanies.json"), str(public_api / "epiphanies"))
+
+        (public_api / "activity.json").write_text(json.dumps(activity_data, indent=2), encoding="utf-8")
+        shutil.copy(str(public_api / "activity.json"), str(public_api / "activity"))
 
         logger.info("Public nexus distribution artifacts exported successfully.")
         return True

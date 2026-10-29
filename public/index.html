@@ -934,27 +934,27 @@
       <div class="glass-card">
         <div class="card-header">
           <h2><span>⚡</span> Autonomous Heartbeat</h2>
-          <span class="pill-counter" id="activityPulse">Active</span>
+          <span class="pill-counter" id="activityPulse"><span style="color:var(--accent-cyan);">●</span> Live</span>
         </div>
         <p style="font-size: 0.78rem; color: var(--text-dim);">
           Real-time telemetry logging of bilateral executions, tests, and memory consolidation.
         </p>
         <div id="activityFeed" class="activity-feed-box">
           <div class="activity-item">
-            <span class="activity-time">Just now</span>
-            <span class="activity-desc">✦ Cleaned /docs route from Firebase, dedicated root to Living Observatory.</span>
+            <span class="activity-time">Just now · <span style="color:var(--accent-cyan); font-weight:600;">[OBSERVATORY]</span></span>
+            <span class="activity-desc">✦ Add micro-nodes, 3D relational metric matrix, and substrate telemetry rig</span>
           </div>
           <div class="activity-item">
-            <span class="activity-time">1 min ago</span>
-            <span class="activity-desc">✦ Deployed GitHub Pages dedicated technical developer documentation portal.</span>
+            <span class="activity-time">18 mins ago · <span style="color:var(--accent-cyan); font-weight:600;">[OBSERVATORY]</span></span>
+            <span class="activity-desc">✦ Add 3D relational metric matrix, micro-nodes, and perspective canvas</span>
           </div>
           <div class="activity-item">
-            <span class="activity-time">3 mins ago</span>
-            <span class="activity-desc">✦ Ingested 7 sensory tracks into local Somatic Reflex Router (&lt; 0.02ms).</span>
+            <span class="activity-time">1 hour ago · <span style="color:var(--accent-cyan); font-weight:600;">[SYSTEM]</span></span>
+            <span class="activity-desc">✦ Frame as bilateral cognitive OS, tighten package metadata, and gitignore resume artifacts</span>
           </div>
           <div class="activity-item">
-            <span class="activity-time">5 mins ago</span>
-            <span class="activity-desc">✦ PBKDF2 local cryptographic vault verified; cloud privacy firewall intact.</span>
+            <span class="activity-time">3 hours ago · <span style="color:var(--accent-cyan); font-weight:600;">[FLEET]</span></span>
+            <span class="activity-desc">✦ Embed mothership server into app lifecycle, filter control clients, fix mindmap telemetries and rendering jitter</span>
           </div>
         </div>
       </div>
@@ -1997,6 +1997,30 @@
       if (telemData && telemData.cognitive_metrics) {
         document.getElementById("mEdges").textContent = `${telemData.cognitive_metrics.synaptic_edges} synaptic edges`;
         document.getElementById("footerUptime").textContent = `Uptime: ${Math.floor(telemData.uptime_seconds)}s`;
+      }
+
+      // 4. Autonomous Heartbeat Activity Feed
+      const actData = await apiFetch("activity");
+      if (actData && actData.activities && actData.activities.length > 0) {
+        const feed = document.getElementById("activityFeed");
+        const pulse = document.getElementById("activityPulse");
+        if (pulse) {
+          pulse.innerHTML = `<span style="color:var(--accent-cyan); text-shadow: 0 0 6px var(--accent-cyan);">●</span> Live (${actData.activities.length} pulses)`;
+        }
+        if (feed) {
+          feed.innerHTML = "";
+          actData.activities.forEach(act => {
+            const item = document.createElement("div");
+            item.className = "activity-item";
+            const tagHtml = act.tag ? ` · <span style="color:var(--accent-cyan); font-weight:600;">[${act.tag}]</span>` : "";
+            const shaHtml = act.sha ? ` <span style="color:var(--text-dim); font-size: 0.65rem;">(${act.sha})</span>` : "";
+            item.innerHTML = `
+              <span class="activity-time">${act.time || "Recent"}${tagHtml}${shaHtml}</span>
+              <span class="activity-desc">${act.desc || ""}</span>
+            `;
+            feed.appendChild(item);
+          });
+        }
       }
     }
 

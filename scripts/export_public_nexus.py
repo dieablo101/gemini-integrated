@@ -28,6 +28,7 @@ def export_distribution():
     graph_data = srv._handle_graph(None, {})
     telemetry_data = srv._handle_telemetry(None, {})
     epiphanies_data = srv._handle_epiphanies(None, {})
+    activity_data = srv._handle_activity(None, {})
 
     with open('public/api/graph.json', 'w', encoding='utf-8') as f:
         json.dump(graph_data, f, indent=2)
@@ -40,6 +41,10 @@ def export_distribution():
     with open('public/api/epiphanies.json', 'w', encoding='utf-8') as f:
         json.dump(epiphanies_data, f, indent=2)
     shutil.copy('public/api/epiphanies.json', 'public/api/epiphanies')
+
+    with open('public/api/activity.json', 'w', encoding='utf-8') as f:
+        json.dump(activity_data, f, indent=2)
+    shutil.copy('public/api/activity.json', 'public/api/activity')
 
     print('Public distribution successfully generated in public/')
 

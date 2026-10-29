@@ -26,6 +26,7 @@ class TestAutoSync(unittest.TestCase):
         self.assertTrue((repo_root / "public" / "api" / "graph.json").is_file())
         self.assertTrue((repo_root / "public" / "api" / "telemetry.json").is_file())
         self.assertTrue((repo_root / "public" / "api" / "epiphanies.json").is_file())
+        self.assertTrue((repo_root / "public" / "api" / "activity.json").is_file())
 
     def test_sync_milestone_and_shadow_graph_mocked(self):
         """Verifies full milestone synchronization pipeline with hosting deploy disabled."""

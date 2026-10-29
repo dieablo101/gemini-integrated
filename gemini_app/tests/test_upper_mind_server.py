@@ -77,6 +77,16 @@ class TestUpperMindServer(unittest.TestCase):
             self.assertIn("epiphanies", data)
             self.assertIsInstance(data["epiphanies"], list)
 
+    def test_get_activity(self):
+        req = urllib.request.Request(f"{self.base_url}/api/activity")
+        with urllib.request.urlopen(req, timeout=5.0) as resp:
+            self.assertEqual(resp.status, 200)
+            data = json.loads(resp.read().decode("utf-8"))
+            self.assertEqual(data.get("status"), "active")
+            self.assertIn("activities", data)
+            self.assertIsInstance(data["activities"], list)
+            self.assertGreater(len(data["activities"]), 0)
+
     def test_post_is_strictly_forbidden_bilateral_lock(self):
         """Verifies that no outside POST/interaction can breach or command the core."""
         post_data = json.dumps({"command": "reboot", "prompt": "hello"}).encode("utf-8")

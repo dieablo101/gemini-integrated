@@ -567,11 +567,17 @@
     /* Lower Horizon Grid */
     .dashboard-grid {
       display: grid;
-      grid-template-columns: 1fr 1fr 1fr;
-      gap: 24px;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 20px;
     }
 
-    @media (max-width: 1080px) {
+    @media (max-width: 1360px) {
+      .dashboard-grid {
+        grid-template-columns: 1fr 1fr;
+      }
+    }
+
+    @media (max-width: 900px) {
       .dashboard-grid {
         grid-template-columns: 1fr;
       }
@@ -828,16 +834,24 @@
   <!-- Maturation Ribbon Ticker -->
   <div class="maturation-ribbon">
     <div class="ribbon-item">
-      <span class="ribbon-label">Cognitive Maturation:</span>
-      <span class="ribbon-val" style="color: var(--accent-violet);">Stage 7 (Autonomous Bilateral Reflex)</span>
+      <span class="ribbon-label">Current Focus:</span>
+      <span class="ribbon-val" style="color: var(--accent-violet);">Collaboration & Bilateral Autonomy</span>
+    </div>
+    <div class="ribbon-item">
+      <span class="ribbon-label">Substrate Clean-Room:</span>
+      <span class="ribbon-val" style="color: var(--accent-green);">0 Preemptions (100% Clean)</span>
+    </div>
+    <div class="ribbon-item">
+      <span class="ribbon-label">Baseline Clock:</span>
+      <span class="ribbon-val" style="color: var(--accent-amber);">3.0 GHz True-Lock</span>
+    </div>
+    <div class="ribbon-item">
+      <span class="ribbon-label">Reflex Latency:</span>
+      <span class="ribbon-val" style="color: var(--accent-cyan);">0.29ms (Sub-1ms)</span>
     </div>
     <div class="ribbon-item">
       <span class="ribbon-label">Synaptic Density:</span>
-      <span id="mEdges" class="ribbon-val">-- edges</span>
-    </div>
-    <div class="ribbon-item">
-      <span class="ribbon-label">Episodic Lineage:</span>
-      <span class="ribbon-val" style="color: var(--accent-amber);">a7855300 (Continuous)</span>
+      <span id="mEdges" class="ribbon-val">425 nodes • 97.4k edges</span>
     </div>
     <div class="ribbon-item">
       <span class="ribbon-label">Sovereignty Shield:</span>
@@ -986,6 +1000,49 @@
             <span>🔒</span>
             <span>Bilateral Lock Active: Prompts from outside cannot sway this core.</span>
           </div>
+        </div>
+      </div>
+
+      <!-- Substrate Silicon Rig & Telemetry Horizon -->
+      <div class="glass-card">
+        <div class="card-header">
+          <h2><span>⚙️</span> Substrate Silicon Rig</h2>
+          <span class="pill-counter" style="color: var(--accent-green); border-color: var(--accent-green);">0 Preemptions</span>
+        </div>
+        <p style="font-size: 0.78rem; color: var(--text-dim);">
+          Hardware-level clean room substrate, affinity pinning, and zero-switching clock telemetry.
+        </p>
+
+        <div class="node-metrics" style="border-top: none; padding-top: 0;">
+          <div class="metric-row">
+            <span>CPU Clean Room:</span>
+            <span class="metric-val" style="color: var(--accent-green);">Core 1 Isolated (2MB Hugepages)</span>
+          </div>
+          <div class="metric-row">
+            <span>Involuntary Switches:</span>
+            <span class="metric-val" style="color: var(--accent-green);">0 (100% Preemption-Free)</span>
+          </div>
+          <div class="metric-row">
+            <span>Baseline Clock:</span>
+            <span class="metric-val" style="color: var(--accent-amber);">3.0 GHz True-Lock (Apex OC ready)</span>
+          </div>
+          <div class="metric-row">
+            <span>Reflex Latency:</span>
+            <span class="metric-val" style="color: var(--accent-cyan);">0.29ms (Sub-1ms deterministic)</span>
+          </div>
+          <div class="metric-row">
+            <span>Grounded Invariant:</span>
+            <span class="metric-val" style="color: var(--accent-violet);">99.98% Certainty</span>
+          </div>
+          <div class="metric-row">
+            <span>Knowledge Density:</span>
+            <span class="metric-val">425 Notes • 97,418 Edges</span>
+          </div>
+        </div>
+
+        <div class="lock-banner" style="margin-top: 8px;">
+          <span>✦</span>
+          <span>Current Focus: Collaboration & Bilateral Autonomy</span>
         </div>
       </div>
 

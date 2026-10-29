@@ -118,6 +118,18 @@ fi
 # Export PATH for current session
 export PATH="$BIN_DIR:$PATH"
 
+# Provision Default Shipped Projects (~/Projects/3drealms and ~/Projects/grim-reaper)
+USER_PROJECTS_DIR="$HOME/Projects"
+mkdir -p "$USER_PROJECTS_DIR"
+if [ -d "$INSTALL_DIR/Projects/3drealms" ] && [ ! -d "$USER_PROJECTS_DIR/3drealms" ]; then
+    echo -e "⚡ Provisioning default Project: 3drealms in ${USER_PROJECTS_DIR}..."
+    cp -a "$INSTALL_DIR/Projects/3drealms" "$USER_PROJECTS_DIR/"
+fi
+if [ -d "$INSTALL_DIR/Projects/grim-reaper" ] && [ ! -d "$USER_PROJECTS_DIR/grim-reaper" ]; then
+    echo -e "⚡ Provisioning default Project: grim-reaper in ${USER_PROJECTS_DIR}..."
+    cp -a "$INSTALL_DIR/Projects/grim-reaper" "$USER_PROJECTS_DIR/"
+fi
+
 echo -e "\n${GREEN}${BOLD}✓ Gemini Integrated successfully installed!${NC}\n"
 echo -e "Launch it from any terminal by typing:"
 echo -e "  ${CYAN}${BOLD}gemini-integrated${NC}  or  ${CYAN}${BOLD}gemini${NC}\n"

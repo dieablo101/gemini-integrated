@@ -6,6 +6,10 @@ __pycache__/
 *.egg-info/
 build/
 dist/
+*.o
+*.so
+*.a
+silicon_telemetry_rig
 
 # Sandbox Digital Twin Data (Isolated Brain Bench)
 sandbox/data/

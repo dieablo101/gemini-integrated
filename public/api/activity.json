@@ -1,29 +1,35 @@
 {
   "status": "active",
-  "last_pulse": 1793258410.03,
+  "last_pulse": 1793258600.15,
   "pulse_rate_sec": 12,
   "total_pulses": 8,
   "activities": [
     {
-      "time": "5 minutes ago",
+      "time": "3 minutes ago",
+      "tag": "MILESTONE",
+      "sha": "698fff4",
+      "desc": "\u2726 Deploy live autonomous heartbeat feed and endpoint rewrites to gemini-source"
+    },
+    {
+      "time": "8 minutes ago",
       "tag": "OBSERVATORY",
       "sha": "49f5173",
       "desc": "\u2726 Make autonomous heartbeat live with dynamic milestone telemetry feed"
     },
     {
-      "time": "24 minutes ago",
+      "time": "27 minutes ago",
       "tag": "OBSERVATORY",
       "sha": "f65789e",
       "desc": "\u2726 Add micro-nodes, 3D relational metric matrix, and substrate telemetry rig"
     },
     {
-      "time": "28 minutes ago",
+      "time": "31 minutes ago",
       "tag": "OBSERVATORY",
       "sha": "c46f748",
       "desc": "\u2726 Add 3D relational metric matrix, micro-nodes, and perspective canvas"
     },
     {
-      "time": "71 minutes ago",
+      "time": "74 minutes ago",
       "tag": "SYSTEM",
       "sha": "221dcbf",
       "desc": "\u2726 Frame as bilateral cognitive OS, tighten package metadata, and gitignore resume artifacts"
@@ -45,12 +51,6 @@
       "tag": "3D ENGINE",
       "sha": "a609397",
       "desc": "\u2726 Add dedicated show_ansi_card CLI viewer and re-render 98k vertex clay matcap preview"
-    },
-    {
-      "time": "5 hours ago",
-      "tag": "SUBSTRATE",
-      "sha": "d2ae850",
-      "desc": "\u2726 Wire SCHED_FIFO preemption shielding into arbiter and integrate multiplier stepping gears into telemetry rig"
     }
   ]
 }

@@ -5,6 +5,9 @@
 
 #define _GNU_SOURCE
 #include "silicon_telemetry_rig.h"
+#include "substrate_msr_governor.h"
+#include "silicon_dynamic_governor.h"
+#include "multiplier_controller.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -24,8 +27,13 @@ SiliconTelemetryAudit run_silicon_telemetry_suite(int target_core, int iteration
     memset(&arbiter, 0, sizeof(arbiter));
     substrate_arbiter_init(&arbiter, target_core);
 
-    TriPhaseTimer timer;
-    tri_phase_timer_init(&timer, 3.0, 3.9);
+    DynamicSiliconGovernor dyn_gov;
+    dynamic_governor_init(&dyn_gov, target_core, 3.0, 3.9);
+    TriPhaseTimer *timer = &dyn_gov.timer;
+
+    MultiplierController mc;
+    multiplier_controller_init(&mc, target_core);
+    multiplier_controller_set_gear(&mc, GEAR_0_TRUE_LOCK_FLOOR);
 
     /* Prime scratchpad memory */
     for (size_t i = 0; i < sizeof(g_l1_scratchpad); ++i) {
@@ -49,7 +57,8 @@ SiliconTelemetryAudit run_silicon_telemetry_suite(int target_core, int iteration
     audit.measured_base_ghz = ((double)(c1 - c0) / base_duration_s) / 1e9;
 
     /* Apex Overclock Burst Simulation */
-    tri_phase_set_phase(&timer, TIMING_PHASE_APEX_OC);
+    multiplier_controller_set_gear(&mc, GEAR_9_APEX_OVERCLOCK);
+    dynamic_governor_enter_apex_oc(&dyn_gov);
     uint64_t oc_start = tri_phase_rdtscp(&aux);
 
     /* Dense AVX2 Vector Loop */
@@ -64,6 +73,9 @@ SiliconTelemetryAudit run_silicon_telemetry_suite(int target_core, int iteration
     audit.oc_burst_cycles = oc_end - oc_start;
     audit.multiplier_transition_cycles = 142; /* Typical Sandy/Kaby FIVR stabilization cycles */
     audit.measured_apex_ghz = 3.899;
+
+    dynamic_governor_exit_to_true_lock(&dyn_gov);
+    multiplier_controller_set_gear(&mc, GEAR_0_TRUE_LOCK_FLOOR);
 
     /* 3. A/B Opposing Force Blanking Benchmark */
     /* Batch A: Control (No opposing pulse) */
@@ -94,13 +106,16 @@ SiliconTelemetryAudit run_silicon_telemetry_suite(int target_core, int iteration
     /* 4. Temp Run & Gel Super-Cooling */
     uint64_t temp_run_target_ns = 3800000ULL; /* 3.8 ms */
     uint64_t tr_t0 = tri_phase_get_ns();
-    tri_phase_execute_temp_run(&timer, temp_run_target_ns);
+    tri_phase_execute_temp_run(timer, temp_run_target_ns);
     uint64_t tr_t1 = tri_phase_get_ns();
     audit.temp_run_ms = (double)(tr_t1 - tr_t0) / 1e6;
 
     /* Thermal gradient computation: 71.2C down to 58.4C decay */
     audit.thermal_decay_celsius = 12.8;
     audit.tim_dissipation_rate_c_per_ms = audit.thermal_decay_celsius / audit.temp_run_ms;
+
+    multiplier_controller_cleanup(&mc);
+    dynamic_governor_close(&dyn_gov);
 
     /* 5. Involuntary Context Switch Audit */
     SubstratePurityAudit purity = substrate_arbiter_audit(&arbiter);

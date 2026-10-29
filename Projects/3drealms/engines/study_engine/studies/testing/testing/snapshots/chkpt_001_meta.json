@@ -1,0 +1,43 @@
+{
+  "event": "in_progress_snapshot",
+  "snapshot_id": "chkpt_001",
+  "epoch": 1793214700.6626909,
+  "iso_time": "2026-10-28T19:11:40Z",
+  "mode": "studies",
+  "folder": "testing",
+  "filename": "testing",
+  "camera_at_pause": {
+    "camera_pos": [
+      2.402167797088623,
+      -0.3601565957069397,
+      2.251755475997925
+    ],
+    "view_dir": [
+      -0.7678360342979431,
+      0.11522093415260315,
+      -0.6302000284194946
+    ],
+    "fov_y": 25.0,
+    "orthographic": false,
+    "orbit_count": 3360
+  },
+  "fingerprint": {
+    "vertex_count": 98306,
+    "face_count": 98304,
+    "sha256": "1fb9d409860520d542811a633dc9eaf0f80cd1f3812ad55decf9be7cc8d14eea",
+    "centroid": [
+      -1.4901161193847656e-08,
+      -0.02335207164287567,
+      0.013559788465499878
+    ],
+    "dimensions": [
+      0.7059701681137085,
+      0.7233922481536865,
+      0.87261563539505
+    ],
+    "bounding_diagonal": 1.33534574508667,
+    "model_radius": 0.46787938475608826
+  },
+  "total_strokes": 7,
+  "total_kinetic_energy": 301.9419012565886
+}

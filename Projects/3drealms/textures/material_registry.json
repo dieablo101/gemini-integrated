@@ -1,0 +1,18 @@
+{
+  "stone.basalt.weathered.matte": {
+    "key": "stone.basalt.weathered.matte",
+    "path": "stone/basalt/weathered_matte.tres",
+    "shader_type": "pbr",
+    "properties": {
+      "albedo": [
+        0.15,
+        0.15,
+        0.16
+      ],
+      "roughness": 0.85,
+      "metallic": 0.05
+    },
+    "created_at": null,
+    "usage_count": 1
+  }
+}

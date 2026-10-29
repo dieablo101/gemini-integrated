@@ -1,0 +1,19 @@
+{
+  "sculpt_id": "quad_sphere",
+  "vertex_count": 98306,
+  "face_count": 98304,
+  "current_stage": "stage_1_gesture_silhouette",
+  "stage_confidence": 0.0,
+  "total_strokes": 0,
+  "total_kinetic_energy": 0.0,
+  "brush_stroke_counts": {},
+  "brush_transitions": {},
+  "region_kinetic_heatmaps": {},
+  "camera_state": {
+    "fov_y": 25.0,
+    "orthographic": false,
+    "orbit_count": 20
+  },
+  "recent_strokes": [],
+  "profile_name": "canonical_master_study"
+}

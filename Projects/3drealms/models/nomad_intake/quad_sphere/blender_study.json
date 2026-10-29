@@ -1,0 +1,32 @@
+{
+  "sculpt_id": "quad_sphere",
+  "fbx_path": "/opt/gemini/Projects/3drealms/models/nomad_intake/quad_sphere/quad_sphere.fbx",
+  "glb_path": "/opt/gemini/Projects/3drealms/models/nomad_intake/quad_sphere/quad_sphere.glb",
+  "gltf_path": "/opt/gemini/Projects/3drealms/models/nomad_intake/quad_sphere/quad_sphere.gltf",
+  "renders": {
+    "front_flat": "/opt/gemini/Projects/3drealms/models/nomad_intake/quad_sphere/renders/quad_sphere_front_flat.png",
+    "right_flat": "/opt/gemini/Projects/3drealms/models/nomad_intake/quad_sphere/renders/quad_sphere_right_flat.png",
+    "back_flat": "/opt/gemini/Projects/3drealms/models/nomad_intake/quad_sphere/renders/quad_sphere_back_flat.png",
+    "left_flat": "/opt/gemini/Projects/3drealms/models/nomad_intake/quad_sphere/renders/quad_sphere_left_flat.png",
+    "top_flat": "/opt/gemini/Projects/3drealms/models/nomad_intake/quad_sphere/renders/quad_sphere_top_flat.png",
+    "hero_flat": "/opt/gemini/Projects/3drealms/models/nomad_intake/quad_sphere/renders/quad_sphere_hero_flat.png",
+    "front_dense": "/opt/gemini/Projects/3drealms/models/nomad_intake/quad_sphere/renders/quad_sphere_front_dense.png",
+    "right_dense": "/opt/gemini/Projects/3drealms/models/nomad_intake/quad_sphere/renders/quad_sphere_right_dense.png",
+    "back_dense": "/opt/gemini/Projects/3drealms/models/nomad_intake/quad_sphere/renders/quad_sphere_back_dense.png",
+    "left_dense": "/opt/gemini/Projects/3drealms/models/nomad_intake/quad_sphere/renders/quad_sphere_left_dense.png",
+    "top_dense": "/opt/gemini/Projects/3drealms/models/nomad_intake/quad_sphere/renders/quad_sphere_top_dense.png",
+    "hero_dense": "/opt/gemini/Projects/3drealms/models/nomad_intake/quad_sphere/renders/quad_sphere_hero_dense.png"
+  },
+  "blender_metrics": {
+    "vertex_count": 98306,
+    "face_count": 98304,
+    "quad_ratio": 1.0,
+    "surface_area": 3.1633867218977585,
+    "dimensions": [
+      1.4822566509246826,
+      1.2390135526657104,
+      0.7699514627456665
+    ],
+    "diagonal_scale": 2.0796789699095273
+  }
+}

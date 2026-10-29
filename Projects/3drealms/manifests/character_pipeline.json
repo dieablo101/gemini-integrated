@@ -1,0 +1,47 @@
+{
+  "pipeline_name": "Photon 3D Character Creation Engine",
+  "version": "1.0.0",
+  "source_app": "Blender 5.4.0 Alpha",
+  "target_engine": "Godot 4.x (DIEABLO)",
+  "characters": {
+    "male": {
+      "base_path": "models/characters/male",
+      "highpoly": "models/characters/male/highpoly/male_base_high.blend",
+      "retopo": "models/characters/male/retopo/male_base_game.glb",
+      "rig": "bones/humanoids/humanoid_master.blend",
+      "starter_clothing": [
+        {
+          "id": "rags_tattered",
+          "name": "Tattered Exile Rags",
+          "mesh_path": "models/characters/male/clothing/rags_tattered.glb",
+          "slot": "torso_waist"
+        },
+        {
+          "id": "wanderer_wraps",
+          "name": "Wanderer Linen Wraps",
+          "mesh_path": "models/characters/male/clothing/wanderer_wraps.glb",
+          "slot": "arms_legs"
+        },
+        {
+          "id": "penitent_tunic",
+          "name": "Penitent Monk Tunic",
+          "mesh_path": "models/characters/male/clothing/penitent_tunic.glb",
+          "slot": "body"
+        }
+      ]
+    },
+    "female": {
+      "base_path": "models/characters/female",
+      "highpoly": "models/characters/female/highpoly/female_base_high.blend",
+      "retopo": "models/characters/female/retopo/female_base_game.glb",
+      "rig": "bones/humanoids/humanoid_master.blend",
+      "starter_clothing": []
+    }
+  },
+  "bake_spec": {
+    "normal_format": "OpenGL (Y+)",
+    "texture_size": 2048,
+    "ao_samples": 64,
+    "bake_layers": ["normal", "roughness", "ambient_occlusion"]
+  }
+}

@@ -1,0 +1,31 @@
+{
+	"aabb_position": [
+		-0.741128325462341,
+		-0.257770776748657,
+		-0.436209410429001
+	],
+	"aabb_size": [
+		1.48225665092468,
+		0.769951462745667,
+		1.23901355266571
+	],
+	"kinetic_envelope": {
+		"bounding_volume": 1.41404364043016,
+		"center_of_mass": [
+			0.0,
+			0.127204954624176,
+			0.183297365903854
+		],
+		"convex_hull_points": 4219,
+		"convex_hull_reduction_ratio": 0.0429170142209021,
+		"estimated_strike_reach": 1.03983950614929,
+		"extents": [
+			1.48225665092468,
+			0.769951462745667,
+			1.23901355266571
+		]
+	},
+	"mesh_count": 1,
+	"total_godot_triangles": 196608,
+	"total_godot_vertices": 98306
+}

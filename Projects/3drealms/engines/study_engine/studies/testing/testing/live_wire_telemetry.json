@@ -1,0 +1,23 @@
+{
+  "sculpt_id": "untitled",
+  "vertex_count": 1,
+  "face_count": 0,
+  "current_stage": "stage_1_gesture_silhouette",
+  "stage_confidence": 1.0,
+  "total_strokes": 7,
+  "total_kinetic_energy": 301.9419,
+  "brush_stroke_counts": {
+    "move_grab": 5,
+    "standard_brush": 1,
+    "smooth_relax": 1
+  },
+  "brush_transitions": {},
+  "region_kinetic_heatmaps": {},
+  "camera_state": {
+    "fov_y": 25.0,
+    "orthographic": false,
+    "orbit_count": 3360
+  },
+  "recent_strokes": [],
+  "profile_name": "canonical_master_study"
+}

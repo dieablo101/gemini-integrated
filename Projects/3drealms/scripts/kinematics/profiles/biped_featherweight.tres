@@ -1,0 +1,13 @@
+[gd_resource type="Resource" script_class="MassProfile" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://3drealms/scripts/kinematics/profiles/mass_profile.gd" id="1_mass"]
+
+[resource]
+script = ExtResource("1_mass")
+profile_name = "Featherweight Biped"
+mass_kg = 52.0
+density_g_cm3 = 0.95
+ground_friction = 8.0
+air_drag = 0.3
+limb_mass_ratio = 0.22
+center_of_mass_offset = Vector3(0, 0.85, 0)

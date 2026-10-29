@@ -1,0 +1,311 @@
+{
+  "sculpt_id": "alien",
+  "timestamp": 1793147497.3624542,
+  "source": "Nomad Link (192.168.1.38:48312)",
+  "all_formats": {
+    "fbx": "/opt/gemini/Projects/3drealms/models/nomad_intake/alien/alien.fbx",
+    "glb": "/opt/gemini/Projects/3drealms/models/nomad_intake/alien/alien.glb",
+    "gltf": "/opt/gemini/Projects/3drealms/models/nomad_intake/alien/alien.gltf",
+    "obj": "/opt/gemini/Projects/3drealms/models/nomad_intake/alien/alien.obj",
+    "stl": "/opt/gemini/Projects/3drealms/models/nomad_intake/alien/alien.stl",
+    "ply": "/opt/gemini/Projects/3drealms/models/nomad_intake/alien/alien.ply",
+    "nomad_meta": "/opt/gemini/Projects/3drealms/models/nomad_intake/alien/alien_nomad_meta.json"
+  },
+  "renders_dir": "/opt/gemini/Projects/3drealms/models/nomad_intake/alien/renders",
+  "blender_study": {
+    "sculpt_id": "alien",
+    "fbx_path": "/opt/gemini/Projects/3drealms/models/nomad_intake/alien/alien.fbx",
+    "glb_path": "/opt/gemini/Projects/3drealms/models/nomad_intake/alien/alien.glb",
+    "gltf_path": "/opt/gemini/Projects/3drealms/models/nomad_intake/alien/alien.gltf",
+    "renders": {
+      "front_flat": "/opt/gemini/Projects/3drealms/models/nomad_intake/alien/renders/alien_front_flat.png",
+      "right_flat": "/opt/gemini/Projects/3drealms/models/nomad_intake/alien/renders/alien_right_flat.png",
+      "back_flat": "/opt/gemini/Projects/3drealms/models/nomad_intake/alien/renders/alien_back_flat.png",
+      "left_flat": "/opt/gemini/Projects/3drealms/models/nomad_intake/alien/renders/alien_left_flat.png",
+      "top_flat": "/opt/gemini/Projects/3drealms/models/nomad_intake/alien/renders/alien_top_flat.png",
+      "hero_flat": "/opt/gemini/Projects/3drealms/models/nomad_intake/alien/renders/alien_hero_flat.png",
+      "front_dense": "/opt/gemini/Projects/3drealms/models/nomad_intake/alien/renders/alien_front_dense.png",
+      "right_dense": "/opt/gemini/Projects/3drealms/models/nomad_intake/alien/renders/alien_right_dense.png",
+      "back_dense": "/opt/gemini/Projects/3drealms/models/nomad_intake/alien/renders/alien_back_dense.png",
+      "left_dense": "/opt/gemini/Projects/3drealms/models/nomad_intake/alien/renders/alien_left_dense.png",
+      "top_dense": "/opt/gemini/Projects/3drealms/models/nomad_intake/alien/renders/alien_top_dense.png",
+      "hero_dense": "/opt/gemini/Projects/3drealms/models/nomad_intake/alien/renders/alien_hero_dense.png",
+      "skybox_moonless_golf_hero": "/opt/gemini/Projects/3drealms/models/nomad_intake/alien/renders/alien_skybox_moonless_golf_hero.png",
+      "skybox_moonless_golf_front": "/opt/gemini/Projects/3drealms/models/nomad_intake/alien/renders/alien_skybox_moonless_golf_front.png",
+      "skybox_mpumalanga_veld_hero": "/opt/gemini/Projects/3drealms/models/nomad_intake/alien/renders/alien_skybox_mpumalanga_veld_hero.png",
+      "skybox_mpumalanga_veld_front": "/opt/gemini/Projects/3drealms/models/nomad_intake/alien/renders/alien_skybox_mpumalanga_veld_front.png",
+      "skybox_studio_small_01_hero": "/opt/gemini/Projects/3drealms/models/nomad_intake/alien/renders/alien_skybox_studio_small_01_hero.png",
+      "skybox_studio_small_01_front": "/opt/gemini/Projects/3drealms/models/nomad_intake/alien/renders/alien_skybox_studio_small_01_front.png",
+      "skybox_venetian_crossroads_hero": "/opt/gemini/Projects/3drealms/models/nomad_intake/alien/renders/alien_skybox_venetian_crossroads_hero.png",
+      "skybox_venetian_crossroads_front": "/opt/gemini/Projects/3drealms/models/nomad_intake/alien/renders/alien_skybox_venetian_crossroads_front.png",
+      "skybox_winter_river_hero": "/opt/gemini/Projects/3drealms/models/nomad_intake/alien/renders/alien_skybox_winter_river_hero.png",
+      "skybox_winter_river_front": "/opt/gemini/Projects/3drealms/models/nomad_intake/alien/renders/alien_skybox_winter_river_front.png"
+    },
+    "blender_metrics": {
+      "vertex_count": 98306,
+      "face_count": 98304,
+      "quad_ratio": 1.0,
+      "surface_area": 3.1633867218977585,
+      "dimensions": [
+        1.4822566509246826,
+        1.2390135526657104,
+        0.7699514627456665
+      ],
+      "diagonal_scale": 2.0796789699095273
+    }
+  },
+  "godot_study": {
+    "aabb_position": [
+      -0.741128325462341,
+      -0.257770776748657,
+      -0.436209410429001
+    ],
+    "aabb_size": [
+      1.48225665092468,
+      0.769951462745667,
+      1.23901355266571
+    ],
+    "kinetic_envelope": {
+      "bounding_volume": 1.41404364043016,
+      "center_of_mass": [
+        0.0,
+        0.127204954624176,
+        0.183297365903854
+      ],
+      "convex_hull_points": 4219,
+      "convex_hull_reduction_ratio": 0.0429170142209021,
+      "estimated_strike_reach": 1.03983950614929,
+      "extents": [
+        1.48225665092468,
+        0.769951462745667,
+        1.23901355266571
+      ]
+    },
+    "mesh_count": 1,
+    "total_godot_triangles": 196608,
+    "total_godot_vertices": 98306
+  },
+  "perception_study": {
+    "sculpt_id": "alien",
+    "mold": {
+      "bounding_box": {
+        "min": [
+          -0.7411283254623413,
+          -0.8028041124343872,
+          -0.2577707767486572
+        ],
+        "max": [
+          0.7411283254623413,
+          0.43620941042900085,
+          0.5121806859970093
+        ],
+        "dimensions": [
+          1.4822566509246826,
+          1.2390135526657104,
+          0.7699514627456665
+        ],
+        "aspect_ratio_xyz": [
+          1.1963199377059937,
+          1.0,
+          0.6214229464530945
+        ]
+      },
+      "centroid": [
+        1.4228610780264717e-05,
+        -0.06510254740715027,
+        0.09595949202775955
+      ],
+      "center": [
+        0.0,
+        -0.18329735100269318,
+        0.12720495462417603
+      ],
+      "total_volume_approx": 0.2424125373363495,
+      "cranial_to_facial_ratio": 0.8852430722025122,
+      "inertia_eigenvalues": [
+        0.09541483968496323,
+        0.09461065381765366,
+        0.0283958800137043
+      ],
+      "medial_spine_slices": [
+        {
+          "height_y": -0.6901665329933167,
+          "center": [
+            -1.3526240763894748e-05,
+            -0.701799750328064,
+            -0.12090780586004257
+          ],
+          "mean_radius": 0.1199268326163292,
+          "point_count": 3419
+        },
+        {
+          "height_y": -0.5775289535522461,
+          "center": [
+            -3.28020250890404e-05,
+            -0.5782552361488342,
+            -0.11696523427963257
+          ],
+          "mean_radius": 0.17474468052387238,
+          "point_count": 2152
+        },
+        {
+          "height_y": -0.46489131450653076,
+          "center": [
+            -2.6239413273287937e-05,
+            -0.4642734229564667,
+            -0.11576290428638458
+          ],
+          "mean_radius": 0.19878795742988586,
+          "point_count": 2091
+        },
+        {
+          "height_y": -0.3522537350654602,
+          "center": [
+            0.00010277212277287617,
+            -0.33295026421546936,
+            0.027413643896579742
+          ],
+          "mean_radius": 0.334318071603775,
+          "point_count": 5810
+        },
+        {
+          "height_y": -0.23961615562438965,
+          "center": [
+            3.5557441151468083e-06,
+            -0.23403628170490265,
+            0.05806450545787811
+          ],
+          "mean_radius": 0.36482980847358704,
+          "point_count": 16204
+        },
+        {
+          "height_y": -0.12697851657867432,
+          "center": [
+            2.4413941446255194e-06,
+            -0.12624786794185638,
+            0.08854454010725021
+          ],
+          "mean_radius": 0.3471989631652832,
+          "point_count": 22661
+        },
+        {
+          "height_y": -0.01434093713760376,
+          "center": [
+            -6.920769919815939e-06,
+            -0.02222714200615883,
+            0.03527626022696495
+          ],
+          "mean_radius": 0.4321790039539337,
+          "point_count": 15779
+        },
+        {
+          "height_y": 0.0982966423034668,
+          "center": [
+            1.6924690498854034e-05,
+            0.10128132998943329,
+            0.14518170058727264
+          ],
+          "mean_radius": 0.29086557030677795,
+          "point_count": 11073
+        },
+        {
+          "height_y": 0.21093428134918213,
+          "center": [
+            0.0001278944400837645,
+            0.20637184381484985,
+            0.21923860907554626
+          ],
+          "mean_radius": 0.24293385446071625,
+          "point_count": 9776
+        },
+        {
+          "height_y": 0.3235718011856079,
+          "center": [
+            4.134506525588222e-05,
+            0.3277249336242676,
+            0.24489110708236694
+          ],
+          "mean_radius": 0.22220125794410706,
+          "point_count": 13378
+        }
+      ]
+    },
+    "shape": {
+      "planar_surface_percentage": 20.000813785526823,
+      "mean_curvature_stats": {
+        "min": -0.0034436139933559555,
+        "max": 0.0034257413443243025,
+        "mean": -3.527022209550445e-05,
+        "std": 0.00023833362991938417
+      },
+      "shape_distribution": {
+        "dome_percentage": 0.0,
+        "cavity_percentage": 0.0,
+        "saddle_planar_percentage": 100.0
+      },
+      "feature_counts": {
+        "detected_crease_nodes": 7865,
+        "detected_ridge_nodes": 7865
+      }
+    },
+    "paint": {
+      "pigment_coupling_to_curvature": -0.05677366201877411,
+      "palette_triad": {
+        "cavity_tone_rgb": [
+          0.025,
+          0.001,
+          0.001
+        ],
+        "base_flesh_rgb": [
+          0.045,
+          0.001,
+          0.001
+        ],
+        "ridge_highlight_rgb": [
+          0.081,
+          0.002,
+          0.002
+        ]
+      },
+      "mean_saturation": 0.04882858321070671
+    },
+    "photo_inversion": {
+      "front": {
+        "status": "success",
+        "silhouette_fill_percentage": 3.94134521484375,
+        "cavity_density_percentage": 2.8164924506387923,
+        "mean_shading_contrast": 1.8133183717727661
+      },
+      "right": {
+        "status": "success",
+        "silhouette_fill_percentage": 3.3039093017578125,
+        "cavity_density_percentage": 7.897471423623139,
+        "mean_shading_contrast": 1.6358451843261719
+      },
+      "back": {
+        "status": "success",
+        "silhouette_fill_percentage": 4.3804168701171875,
+        "cavity_density_percentage": 66.09770965775495,
+        "mean_shading_contrast": 2.1109769344329834
+      },
+      "left": {
+        "status": "success",
+        "silhouette_fill_percentage": 3.302001953125,
+        "cavity_density_percentage": 18.11460258780037,
+        "mean_shading_contrast": 1.721471905708313
+      },
+      "top": {
+        "status": "success",
+        "silhouette_fill_percentage": 5.4889678955078125,
+        "cavity_density_percentage": 2.4532629091667246,
+        "mean_shading_contrast": 1.0659066438674927
+      },
+      "hero": {
+        "status": "success",
+        "silhouette_fill_percentage": 4.5124053955078125,
+        "cavity_density_percentage": 0.2789753994420492,
+        "mean_shading_contrast": 1.0713812112808228
+      }
+    }
+  }
+}

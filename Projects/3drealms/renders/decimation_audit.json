@@ -1,0 +1,163 @@
+{
+  "baseline": {
+    "Gothic_Barbarian": {
+      "vertices": 7251,
+      "edges": 12378,
+      "faces": 5994,
+      "triangles": 5994,
+      "v_to_f_ratio": 1.2097
+    },
+    "Gothic_Greatsword": {
+      "vertices": 1014,
+      "edges": 1666,
+      "faces": 788,
+      "triangles": 788,
+      "v_to_f_ratio": 1.2868
+    },
+    "Icosphere": {
+      "vertices": 42,
+      "edges": 120,
+      "faces": 80,
+      "triangles": 80,
+      "v_to_f_ratio": 0.525
+    }
+  },
+  "planar_decimation": {
+    "1.0_deg": {
+      "Gothic_Barbarian": {
+        "vertices": 3588,
+        "faces": 899,
+        "triangles": 1822,
+        "vert_reduction_pct": 50.52,
+        "face_reduction_pct": 85.0,
+        "v_to_f_ratio": 3.9911
+      },
+      "Gothic_Greatsword": {
+        "vertices": 496,
+        "faces": 136,
+        "triangles": 224,
+        "vert_reduction_pct": 51.08,
+        "face_reduction_pct": 82.74,
+        "v_to_f_ratio": 3.6471
+      },
+      "Icosphere": {
+        "vertices": 42,
+        "faces": 80,
+        "triangles": 80,
+        "vert_reduction_pct": 0.0,
+        "face_reduction_pct": 0.0,
+        "v_to_f_ratio": 0.525
+      },
+      "TOTAL": {
+        "vertices": 4126,
+        "faces": 1115,
+        "triangles": 2126,
+        "vert_reduction_pct": 50.33,
+        "face_reduction_pct": 83.75,
+        "v_to_f_ratio": 3.7004
+      }
+    },
+    "2.5_deg": {
+      "Gothic_Barbarian": {
+        "vertices": 3588,
+        "faces": 899,
+        "triangles": 1822,
+        "vert_reduction_pct": 50.52,
+        "face_reduction_pct": 85.0,
+        "v_to_f_ratio": 3.9911
+      },
+      "Gothic_Greatsword": {
+        "vertices": 496,
+        "faces": 136,
+        "triangles": 224,
+        "vert_reduction_pct": 51.08,
+        "face_reduction_pct": 82.74,
+        "v_to_f_ratio": 3.6471
+      },
+      "Icosphere": {
+        "vertices": 42,
+        "faces": 80,
+        "triangles": 80,
+        "vert_reduction_pct": 0.0,
+        "face_reduction_pct": 0.0,
+        "v_to_f_ratio": 0.525
+      },
+      "TOTAL": {
+        "vertices": 4126,
+        "faces": 1115,
+        "triangles": 2126,
+        "vert_reduction_pct": 50.33,
+        "face_reduction_pct": 83.75,
+        "v_to_f_ratio": 3.7004
+      }
+    },
+    "5.0_deg": {
+      "Gothic_Barbarian": {
+        "vertices": 3588,
+        "faces": 899,
+        "triangles": 1822,
+        "vert_reduction_pct": 50.52,
+        "face_reduction_pct": 85.0,
+        "v_to_f_ratio": 3.9911
+      },
+      "Gothic_Greatsword": {
+        "vertices": 496,
+        "faces": 136,
+        "triangles": 224,
+        "vert_reduction_pct": 51.08,
+        "face_reduction_pct": 82.74,
+        "v_to_f_ratio": 3.6471
+      },
+      "Icosphere": {
+        "vertices": 42,
+        "faces": 80,
+        "triangles": 80,
+        "vert_reduction_pct": 0.0,
+        "face_reduction_pct": 0.0,
+        "v_to_f_ratio": 0.525
+      },
+      "TOTAL": {
+        "vertices": 4126,
+        "faces": 1115,
+        "triangles": 2126,
+        "vert_reduction_pct": 50.33,
+        "face_reduction_pct": 83.75,
+        "v_to_f_ratio": 3.7004
+      }
+    },
+    "10.0_deg": {
+      "Gothic_Barbarian": {
+        "vertices": 3588,
+        "faces": 899,
+        "triangles": 1822,
+        "vert_reduction_pct": 50.52,
+        "face_reduction_pct": 85.0,
+        "v_to_f_ratio": 3.9911
+      },
+      "Gothic_Greatsword": {
+        "vertices": 496,
+        "faces": 136,
+        "triangles": 224,
+        "vert_reduction_pct": 51.08,
+        "face_reduction_pct": 82.74,
+        "v_to_f_ratio": 3.6471
+      },
+      "Icosphere": {
+        "vertices": 42,
+        "faces": 80,
+        "triangles": 80,
+        "vert_reduction_pct": 0.0,
+        "face_reduction_pct": 0.0,
+        "v_to_f_ratio": 0.525
+      },
+      "TOTAL": {
+        "vertices": 4126,
+        "faces": 1115,
+        "triangles": 2126,
+        "vert_reduction_pct": 50.33,
+        "face_reduction_pct": 83.75,
+        "v_to_f_ratio": 3.7004
+      }
+    }
+  }
+}

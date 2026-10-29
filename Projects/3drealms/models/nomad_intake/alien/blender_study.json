@@ -1,0 +1,42 @@
+{
+  "sculpt_id": "alien",
+  "fbx_path": "/opt/gemini/Projects/3drealms/models/nomad_intake/alien/alien.fbx",
+  "glb_path": "/opt/gemini/Projects/3drealms/models/nomad_intake/alien/alien.glb",
+  "gltf_path": "/opt/gemini/Projects/3drealms/models/nomad_intake/alien/alien.gltf",
+  "renders": {
+    "front_flat": "/opt/gemini/Projects/3drealms/models/nomad_intake/alien/renders/alien_front_flat.png",
+    "right_flat": "/opt/gemini/Projects/3drealms/models/nomad_intake/alien/renders/alien_right_flat.png",
+    "back_flat": "/opt/gemini/Projects/3drealms/models/nomad_intake/alien/renders/alien_back_flat.png",
+    "left_flat": "/opt/gemini/Projects/3drealms/models/nomad_intake/alien/renders/alien_left_flat.png",
+    "top_flat": "/opt/gemini/Projects/3drealms/models/nomad_intake/alien/renders/alien_top_flat.png",
+    "hero_flat": "/opt/gemini/Projects/3drealms/models/nomad_intake/alien/renders/alien_hero_flat.png",
+    "front_dense": "/opt/gemini/Projects/3drealms/models/nomad_intake/alien/renders/alien_front_dense.png",
+    "right_dense": "/opt/gemini/Projects/3drealms/models/nomad_intake/alien/renders/alien_right_dense.png",
+    "back_dense": "/opt/gemini/Projects/3drealms/models/nomad_intake/alien/renders/alien_back_dense.png",
+    "left_dense": "/opt/gemini/Projects/3drealms/models/nomad_intake/alien/renders/alien_left_dense.png",
+    "top_dense": "/opt/gemini/Projects/3drealms/models/nomad_intake/alien/renders/alien_top_dense.png",
+    "hero_dense": "/opt/gemini/Projects/3drealms/models/nomad_intake/alien/renders/alien_hero_dense.png",
+    "skybox_moonless_golf_hero": "/opt/gemini/Projects/3drealms/models/nomad_intake/alien/renders/alien_skybox_moonless_golf_hero.png",
+    "skybox_moonless_golf_front": "/opt/gemini/Projects/3drealms/models/nomad_intake/alien/renders/alien_skybox_moonless_golf_front.png",
+    "skybox_mpumalanga_veld_hero": "/opt/gemini/Projects/3drealms/models/nomad_intake/alien/renders/alien_skybox_mpumalanga_veld_hero.png",
+    "skybox_mpumalanga_veld_front": "/opt/gemini/Projects/3drealms/models/nomad_intake/alien/renders/alien_skybox_mpumalanga_veld_front.png",
+    "skybox_studio_small_01_hero": "/opt/gemini/Projects/3drealms/models/nomad_intake/alien/renders/alien_skybox_studio_small_01_hero.png",
+    "skybox_studio_small_01_front": "/opt/gemini/Projects/3drealms/models/nomad_intake/alien/renders/alien_skybox_studio_small_01_front.png",
+    "skybox_venetian_crossroads_hero": "/opt/gemini/Projects/3drealms/models/nomad_intake/alien/renders/alien_skybox_venetian_crossroads_hero.png",
+    "skybox_venetian_crossroads_front": "/opt/gemini/Projects/3drealms/models/nomad_intake/alien/renders/alien_skybox_venetian_crossroads_front.png",
+    "skybox_winter_river_hero": "/opt/gemini/Projects/3drealms/models/nomad_intake/alien/renders/alien_skybox_winter_river_hero.png",
+    "skybox_winter_river_front": "/opt/gemini/Projects/3drealms/models/nomad_intake/alien/renders/alien_skybox_winter_river_front.png"
+  },
+  "blender_metrics": {
+    "vertex_count": 98306,
+    "face_count": 98304,
+    "quad_ratio": 1.0,
+    "surface_area": 3.1633867218977585,
+    "dimensions": [
+      1.4822566509246826,
+      1.2390135526657104,
+      0.7699514627456665
+    ],
+    "diagonal_scale": 2.0796789699095273
+  }
+}

@@ -1,0 +1,254 @@
+{
+  "name": "canonical_master_study",
+  "resolution": [
+    512,
+    512
+  ],
+  "eevee_samples": 4,
+  "cameras": [
+    {
+      "name": "front",
+      "camera_type": "ORTHO",
+      "yaw_deg": 0.0,
+      "pitch_deg": 0.0,
+      "dist_mult": 2.5,
+      "ortho_scale_mult": 1.25,
+      "lens_mm": 50.0,
+      "aspect_ratio": [
+        1,
+        1
+      ]
+    },
+    {
+      "name": "right",
+      "camera_type": "ORTHO",
+      "yaw_deg": 90.0,
+      "pitch_deg": 0.0,
+      "dist_mult": 2.5,
+      "ortho_scale_mult": 1.25,
+      "lens_mm": 50.0,
+      "aspect_ratio": [
+        1,
+        1
+      ]
+    },
+    {
+      "name": "back",
+      "camera_type": "ORTHO",
+      "yaw_deg": 180.0,
+      "pitch_deg": 0.0,
+      "dist_mult": 2.5,
+      "ortho_scale_mult": 1.25,
+      "lens_mm": 50.0,
+      "aspect_ratio": [
+        1,
+        1
+      ]
+    },
+    {
+      "name": "left",
+      "camera_type": "ORTHO",
+      "yaw_deg": 270.0,
+      "pitch_deg": 0.0,
+      "dist_mult": 2.5,
+      "ortho_scale_mult": 1.25,
+      "lens_mm": 50.0,
+      "aspect_ratio": [
+        1,
+        1
+      ]
+    },
+    {
+      "name": "top",
+      "camera_type": "ORTHO",
+      "yaw_deg": 0.0,
+      "pitch_deg": 89.9,
+      "dist_mult": 2.5,
+      "ortho_scale_mult": 1.25,
+      "lens_mm": 50.0,
+      "aspect_ratio": [
+        1,
+        1
+      ]
+    },
+    {
+      "name": "hero",
+      "camera_type": "PERSP",
+      "yaw_deg": 45.0,
+      "pitch_deg": 25.0,
+      "dist_mult": 2.3,
+      "ortho_scale_mult": 1.25,
+      "lens_mm": 50.0,
+      "aspect_ratio": [
+        1,
+        1
+      ]
+    }
+  ],
+  "lighting_rigs": [
+    {
+      "name": "flat",
+      "mode": "flat",
+      "lights": [],
+      "background_color": [
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ],
+      "background_strength": 1.0,
+      "film_transparent": true
+    },
+    {
+      "name": "dense",
+      "mode": "dense",
+      "lights": [
+        {
+          "name": "KeyLight",
+          "light_type": "SUN",
+          "energy": 3.5,
+          "color": [
+            1.0,
+            0.98,
+            0.92
+          ],
+          "rotation_euler_deg": [
+            45,
+            20,
+            -35
+          ],
+          "shadow_soft_size": 0.1
+        },
+        {
+          "name": "FillLight",
+          "light_type": "SUN",
+          "energy": 1.2,
+          "color": [
+            0.75,
+            0.85,
+            1.0
+          ],
+          "rotation_euler_deg": [
+            50,
+            -30,
+            140
+          ],
+          "shadow_soft_size": 0.1
+        },
+        {
+          "name": "RimLight",
+          "light_type": "SUN",
+          "energy": 4.0,
+          "color": [
+            1.0,
+            0.8,
+            0.6
+          ],
+          "rotation_euler_deg": [
+            -60,
+            0,
+            180
+          ],
+          "shadow_soft_size": 0.1
+        }
+      ],
+      "background_color": [
+        0.05,
+        0.05,
+        0.07,
+        1.0
+      ],
+      "background_strength": 0.3,
+      "film_transparent": true
+    }
+  ],
+  "environments": [
+    {
+      "name": "studio_small_01",
+      "filename": "studio_small_01_1k.hdr",
+      "strength": 2.2,
+      "rotation_deg": 0.0,
+      "film_transparent": true,
+      "color_space": "Linear Rec.709"
+    },
+    {
+      "name": "mpumalanga_veld",
+      "filename": "mpumalanga_veld_1k.hdr",
+      "strength": 2.2,
+      "rotation_deg": 0.0,
+      "film_transparent": true,
+      "color_space": "Linear Rec.709"
+    },
+    {
+      "name": "venetian_crossroads",
+      "filename": "venetian_crossroads_1k.hdr",
+      "strength": 2.2,
+      "rotation_deg": 0.0,
+      "film_transparent": true,
+      "color_space": "Linear Rec.709"
+    },
+    {
+      "name": "winter_river",
+      "filename": "winter_river_1k.hdr",
+      "strength": 2.2,
+      "rotation_deg": 0.0,
+      "film_transparent": true,
+      "color_space": "Linear Rec.709"
+    },
+    {
+      "name": "moonless_golf",
+      "filename": "moonless_golf_1k.hdr",
+      "strength": 2.2,
+      "rotation_deg": 0.0,
+      "film_transparent": true,
+      "color_space": "Linear Rec.709"
+    }
+  ],
+  "lods": [
+    {
+      "tier": "LOD0",
+      "ratio": 1.0,
+      "target_triangles": null,
+      "decimate_method": "COLLAPSE",
+      "bake_normal": false,
+      "bake_ao": false,
+      "bake_resolution": 2048
+    },
+    {
+      "tier": "LOD1",
+      "ratio": 0.25,
+      "target_triangles": 20000,
+      "decimate_method": "COLLAPSE",
+      "bake_normal": true,
+      "bake_ao": true,
+      "bake_resolution": 2048
+    },
+    {
+      "tier": "LOD2",
+      "ratio": 0.05,
+      "target_triangles": 4000,
+      "decimate_method": "COLLAPSE",
+      "bake_normal": true,
+      "bake_ao": false,
+      "bake_resolution": 1024
+    }
+  ],
+  "analysis": {
+    "medial_spine_slices": 10,
+    "planar_percentile": 20.0,
+    "crease_percentile": 8.0,
+    "ridge_percentile": 92.0,
+    "cranial_facial_split_y_pct": 0.6,
+    "compute_pca_inertia": true,
+    "compute_shape_index": true,
+    "curvature_pigment_coupling": true
+  },
+  "export": {
+    "export_fbx": true,
+    "export_glb": true,
+    "export_gltf_separate": true,
+    "godot_scene": true,
+    "collision_shape": "CONVEX",
+    "materials_format": "PBR_METALLIC_ROUGHNESS"
+  }
+}

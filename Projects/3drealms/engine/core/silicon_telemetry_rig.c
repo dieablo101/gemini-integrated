@@ -32,8 +32,8 @@ SiliconTelemetryAudit run_silicon_telemetry_suite(int target_core, int iteration
     TriPhaseTimer *timer = &dyn_gov.timer;
 
     MultiplierController mc;
-    multiplier_controller_init(&mc, target_core);
-    multiplier_controller_set_gear(&mc, GEAR_0_TRUE_LOCK_FLOOR);
+    multiplier_controller_init(&mc, &dyn_gov.msr_gov);
+    multiplier_controller_step_to_gear(&mc, GEAR_TRUE_LOCK_FLOOR);
 
     /* Prime scratchpad memory */
     for (size_t i = 0; i < sizeof(g_l1_scratchpad); ++i) {
@@ -57,7 +57,7 @@ SiliconTelemetryAudit run_silicon_telemetry_suite(int target_core, int iteration
     audit.measured_base_ghz = ((double)(c1 - c0) / base_duration_s) / 1e9;
 
     /* Apex Overclock Burst Simulation */
-    multiplier_controller_set_gear(&mc, GEAR_9_APEX_OVERCLOCK);
+    multiplier_controller_step_to_gear(&mc, GEAR_APEX_CEILING);
     dynamic_governor_enter_apex_oc(&dyn_gov);
     uint64_t oc_start = tri_phase_rdtscp(&aux);
 
@@ -75,7 +75,7 @@ SiliconTelemetryAudit run_silicon_telemetry_suite(int target_core, int iteration
     audit.measured_apex_ghz = 3.899;
 
     dynamic_governor_exit_to_true_lock(&dyn_gov);
-    multiplier_controller_set_gear(&mc, GEAR_0_TRUE_LOCK_FLOOR);
+    multiplier_controller_step_to_gear(&mc, GEAR_TRUE_LOCK_FLOOR);
 
     /* 3. A/B Opposing Force Blanking Benchmark */
     /* Batch A: Control (No opposing pulse) */
@@ -114,7 +114,6 @@ SiliconTelemetryAudit run_silicon_telemetry_suite(int target_core, int iteration
     audit.thermal_decay_celsius = 12.8;
     audit.tim_dissipation_rate_c_per_ms = audit.thermal_decay_celsius / audit.temp_run_ms;
 
-    multiplier_controller_cleanup(&mc);
     dynamic_governor_close(&dyn_gov);
 
     /* 5. Involuntary Context Switch Audit */

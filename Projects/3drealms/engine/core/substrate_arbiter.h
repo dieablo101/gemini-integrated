@@ -53,6 +53,13 @@ static inline bool substrate_lock_core_affinity(int core_id) {
         perror("substrate_lock_core_affinity: sched_setaffinity failed");
         return false;
     }
+
+    /* Elevate scheduling policy if permitted (SCHED_FIFO / high priority) */
+    struct sched_param sp;
+    sp.sched_priority = sched_get_priority_max(SCHED_FIFO);
+    if (sp.sched_priority > 0) {
+        sched_setscheduler(0, SCHED_FIFO, &sp);
+    }
     return true;
 }
 

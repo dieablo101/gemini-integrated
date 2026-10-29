@@ -53,3 +53,8 @@ quarantine/
 *.bak
 *.tmp
 test_run_cortex/
+
+# Resume & CV Artifacts (Private / Desktop only)
+resume*
+RESUME*
+generate_resume*

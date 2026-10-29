@@ -1767,10 +1767,22 @@ class MothershipServer:
             pass
         target_commit_sha = full_commit or commit
 
-        # 1. Prefer fast git archive of HEAD
+        # 1. Prefer fast git archive of core codebase
         try:
             res = subprocess.run(
-                ["git", "archive", "--format=tar.gz", "HEAD"],
+                [
+                    "git",
+                    "archive",
+                    "--format=tar.gz",
+                    "HEAD",
+                    "gemini_app",
+                    "gemini-integrated.py",
+                    "__main__.py",
+                    "LICENSE.txt",
+                    "README.md",
+                    "setup.py",
+                    "pyproject.toml",
+                ],
                 cwd=cwd,
                 capture_output=True,
                 timeout=10,

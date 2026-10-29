@@ -48,6 +48,11 @@ class TestLiveWireUI(unittest.IsolatedAsyncioTestCase):
         self.mgr.current_session_name = ""
         self.mgr.is_recording = False
         self.mgr.is_connected = False
+        self._orig_connect_wire = self.mgr.connect_wire
+        self.mgr.connect_wire = lambda host=None, port=None: True
+
+    def tearDown(self):
+        self.mgr.connect_wire = self._orig_connect_wire
 
     def test_session_name_validation_rules(self):
         # 1. Reject without subfolder

@@ -24,7 +24,8 @@ class TestGrimEngine(unittest.TestCase):
     def test_workspace_resolution_priority(self):
         self.assertIsNotNone(self.grim.workspace_path)
         self.assertEqual(self.grim.workspace_type, "standalone")
-        self.assertTrue(str(self.grim.workspace_path).endswith("Projects/grim"))
+        path_str = str(self.grim.workspace_path)
+        self.assertTrue(path_str.endswith("Projects/grim") or path_str.endswith("Projects/grim-reaper"))
         if self.grim.bridge_script:
             self.assertTrue(str(self.grim.bridge_script).endswith("grim_reaper.py"))
 

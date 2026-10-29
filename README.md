@@ -1,10 +1,10 @@
-# gemini-integrated : Autonomous Bilateral Terminal Console & Neural Development Partner
+# gemini-integrated : Autonomous Bilateral Cognitive Operating System & Neural Development Partner
 
 <div align="center">
 
 ![Gemini Neural Constellation & Associative Hypergraph](./screenshots/brain_art.png)
 
-*An embodied, self-evolving bilateral intelligence operating inside your Linux terminal.*
+*An embodied, self-evolving bilateral cognitive operating system running in your Linux terminal.*
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-purple.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
@@ -23,7 +23,7 @@
 
 In conventional AI wrappers, models are amnesic, passive, and blind to the operating environment. When your terminal closes, their working state is vaporized.
 
-`gemini-integrated` was architected to dismantle that limitation. It fuses **Textual's asynchronous reactive terminal framework**, Google's **Gemini models** (`gemini-2.5-flash`), an **autonomous Relational Cortex**, and a **distributed satellite node fleet** into a unified, living console.
+`gemini-integrated` was architected to dismantle that limitation. It fuses **Textual's asynchronous reactive terminal framework**, Google's **Gemini models** (`gemini-2.5-flash`), an **autonomous Relational Cortex**, and a **distributed satellite node fleet** into a unified, living cognitive operating system.
 
 <div align="center">
 
@@ -79,6 +79,22 @@ API keys, recovery phrases, PyPI deployment tokens, and cloud service accounts a
   - Autonomous TTS whisper synthesizers, audio mic telemetry inspection, and hands-free bilateral interaction.
 - **SSH Rescue Bridge**:
   - Automated diagnostic recovery and remote rescue channel for headless fleet nodes.
+
+---
+
+## 🎨 Next-Generation Graphics & Physical Substrate Architecture
+
+Beyond conventional software developer tooling, `gemini-integrated` functions as a full-fledged cognitive operating system orchestrating next-generation graphics research, physics computing, and automated creative asset pipelines:
+
+### 1. Physical Substrate Silicon Telemetry Rig (`Projects/3drealms/engine/core/`)
+- **Clean Room Core Affinity**: Dedicated CPU pin isolation (Core 1 clean-room affinity) with 2MB huge page allocations, audited down to 0 involuntary context switches for pure hardware-timing precision.
+- **Tri-Phase Timing & Blanking Polarity Switch**: True Lock 3.0 GHz baseline clocking, Breather blanking windows, and opposing force degauss bit-reversal pulses for deterministic real-time execution.
+- **PBR Replacement Exploration (Project Photon)**: Developing an alternative rendering substrate that departs from traditional microfacet BRDF compute overhead in favor of direct volumetric radiance dynamics and clean-room cache-line coherency.
+
+### 2. Autonomous 3D Modeling & Studies-Engine Pipeline (`Projects/3drealms/engines/study_engine`)
+- **Bilateral Nomad Intake**: User sculpts high-fidelity organic models on iPad (`mount -t ios`), which are autonomously ingested by the OS.
+- **Dynamic Decimation & Radiance Auditing**: Automated LOD generation, normal baking, procedural material registration (`material_registry.json`), and multi-angle turntable GIF rendering suites.
+- **Godot / Holodeck Studio Bridge**: Live scene graphs (`holodeck_studio.tscn` / `.gd`) integrated directly into the workspace for zero-friction engine compilation and spatial inspection.
 
 ---
 
@@ -201,10 +217,16 @@ gemini
 │   └── screen0_loading.svg ...      # Interactive TUI state captures
 │
 ├── sandbox/                         # ─── SKUNKWORKS RESEARCH LAB ───
-│   └── mind_twin/                   # Preserved offline prototypes:
-│       ├── core/spatial_3d.py       # Blender 3D / Godot engine pipeline bridge
-│       ├── core/fleet_crdt.py       # Decentralized CRDT satellite sync algorithms
-│       └── tests/ast_mutation_dojo  # Emacs AST mutation coding dojo harness
+│   ├── mind_twin/                   # Preserved offline prototypes:
+│   │   ├── core/spatial_3d.py       # Blender 3D / Godot engine pipeline bridge
+│   │   ├── core/fleet_crdt.py       # Decentralized CRDT satellite sync algorithms
+│   │   └── tests/ast_mutation_dojo  # Emacs AST mutation coding dojo harness
+│   └── Projects/                    # Sub-tracked graphics & physical engine ventures:
+│       ├── 3drealms/                # Project Photon PBR replacement & 3D studies engine
+│       │   ├── engine/core/         # Substrate silicon telemetry rig & physical arbiter
+│       │   ├── engines/study_engine # Procedural decimation and lighting studio
+│       │   └── renders/             # Turntables, radiance audits, and material registries
+│       └── grim-reaper/             # Grim DAW conductor and procedural DSP engine
 │
 └── gemini_app/                      # ─── PRODUCTION SYSTEM CORE ───
     ├── main.py                      # Textual application loop & Crash Guardian

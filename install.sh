@@ -21,7 +21,7 @@ NC='\033[0m' # No Color
 echo -e "${CYAN}${BOLD}"
 echo "╔══════════════════════════════════════════════════════════════════╗"
 echo "║                  GEMINI INTEGRATED INSTALLER                     ║"
-echo "║      Autonomous Bilateral Terminal Console & LLM Dev Tool        ║"
+echo "║          Autonomous Bilateral Cognitive Operating System         ║"
 echo "╚══════════════════════════════════════════════════════════════════╝"
 echo -e "${NC}"
 

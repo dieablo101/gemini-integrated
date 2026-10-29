@@ -352,6 +352,84 @@
       color: var(--accent-cyan);
     }
 
+    /* 3D Relational Matrix HUD Controls & Metric Tags */
+    .canvas-hud-controls {
+      display: flex;
+      gap: 8px;
+      margin-top: 4px;
+      pointer-events: auto;
+    }
+
+    .hud-btn {
+      font-family: var(--font-mono);
+      font-size: 0.70rem;
+      background: rgba(18, 14, 32, 0.85);
+      color: var(--accent-cyan);
+      border: 1px solid var(--border-bright);
+      border-radius: 8px;
+      padding: 4px 10px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .hud-btn:hover {
+      background: rgba(0, 240, 255, 0.15);
+      border-color: var(--accent-cyan);
+      box-shadow: 0 0 10px rgba(0, 240, 255, 0.3);
+    }
+
+    .hud-btn.active {
+      background: rgba(187, 85, 255, 0.25);
+      color: #fff;
+      border-color: var(--accent-violet);
+      box-shadow: 0 0 12px rgba(187, 85, 255, 0.4);
+    }
+
+    .axis-legend {
+      display: flex;
+      gap: 8px;
+      font-family: var(--font-mono);
+      font-size: 0.65rem;
+      color: var(--text-dim);
+      margin-top: 3px;
+    }
+
+    .axis-tag {
+      padding: 2px 6px;
+      border-radius: 4px;
+      background: rgba(255, 255, 255, 0.05);
+      border-left: 2px solid;
+    }
+
+    .axis-tag.x { color: #38bdf8; border-color: #38bdf8; }
+    .axis-tag.y { color: #f43f5e; border-color: #f43f5e; }
+    .axis-tag.z { color: #a855f7; border-color: #a855f7; }
+
+    .node-metrics {
+      margin-top: 10px;
+      padding-top: 8px;
+      border-top: 1px solid rgba(187, 85, 255, 0.25);
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      font-family: var(--font-mono);
+      font-size: 0.68rem;
+    }
+
+    .metric-row {
+      display: flex;
+      justify-content: space-between;
+      color: var(--text-dim);
+    }
+
+    .metric-val {
+      color: var(--accent-cyan);
+      font-weight: 600;
+    }
+
     /* Live Thought Spooler (Stream of Consciousness) */
     .spooler-card {
       background: var(--bg-panel);
@@ -775,7 +853,16 @@
       <div class="canvas-card">
         <div class="canvas-hud">
           <div class="hud-title">Living Synaptic Constellation</div>
-          <div class="hud-hint">Interactive Physics Simulation • Drag to Pan • Wheel/Pinch to Zoom • Tap Nodes</div>
+          <div id="hudHint" class="hud-hint">3D Relational Matrix • Left-Drag to Orbit • Shift-Drag to Pan • Wheel to Zoom</div>
+          <div class="canvas-hud-controls">
+            <button id="btnToggle3D" class="hud-btn active">❖ 3D Matrix View</button>
+            <button id="btnResetCam" class="hud-btn">⟲ Reset Camera</button>
+          </div>
+          <div id="axisLegend" class="axis-legend">
+            <span class="axis-tag x">X: Substrate ↔ Concept %</span>
+            <span class="axis-tag y">Y: Salience Resonance %</span>
+            <span class="axis-tag z">Z: Mothership Affinity %</span>
+          </div>
         </div>
 
         <canvas id="synapseCanvas"></canvas>
@@ -787,6 +874,11 @@
           </h3>
           <p id="inspSummary">Summary</p>
           <div id="inspTags" class="node-tags"></div>
+          <div id="inspMetrics" class="node-metrics">
+            <div class="metric-row"><span>Polarity (X):</span><span id="inspMetricX" class="metric-val">--%</span></div>
+            <div class="metric-row"><span>Resonance (Y):</span><span id="inspMetricY" class="metric-val">--%</span></div>
+            <div class="metric-row"><span>Affinity (Z):</span><span id="inspMetricZ" class="metric-val">--%</span></div>
+          </div>
         </div>
       </div>
 
@@ -918,7 +1010,7 @@
 
   <!-- Interactive Canvas, Thought Spooler & Generative Audio Script -->
   <script>
-    // --- 1. Synaptic Graph Physics Simulation ---
+    // --- 1. Synaptic Graph Simulation (3D Relational Matrix & Micro Node Synapses) ---
     const canvas = document.getElementById("synapseCanvas");
     const ctx = canvas.getContext("2d");
     const inspector = document.getElementById("inspector");
@@ -926,20 +1018,39 @@
     const inspType = document.getElementById("inspType");
     const inspSummary = document.getElementById("inspSummary");
     const inspTags = document.getElementById("inspTags");
+    const inspMetricX = document.getElementById("inspMetricX");
+    const inspMetricY = document.getElementById("inspMetricY");
+    const inspMetricZ = document.getElementById("inspMetricZ");
+    const btnToggle3D = document.getElementById("btnToggle3D");
+    const btnResetCam = document.getElementById("btnResetCam");
+    const hudHint = document.getElementById("hudHint");
 
-    let nodes = [];
-    let edges = [];
+    let nodes = [];       // Major cognitive nodes
+    let microNodes = [];  // Small white non-clickable synaptic bridging nodes
+    let edges = [];       // Major synaptic highway edges (carry particles)
+    let microEdges = [];  // Faint white micro edges connecting micro nodes
     let particles = [];
     let hoveredNode = null;
 
+    // Camera & 3D Matrix Projection State
+    let is3DMode = true;
+    let viewBlend = 1.0;  // 1.0 = 3D Relational Matrix, 0.0 = 2D Synaptic Plane
     let panX = 0, panY = 0, zoom = 1.0;
-    let isDragging = false, dragStartX = 0, dragStartY = 0;
+    let camYaw = 0.52, camPitch = 0.32;
+    let targetYaw = 0.52, targetPitch = 0.32;
+    let isOrbiting = false, isPanning = false;
+    let dragStartX = 0, dragStartY = 0;
+    let lastUserActionTime = Date.now();
 
     function resizeCanvas() {
       const rect = canvas.parentElement.getBoundingClientRect();
       canvas.width = rect.width * window.devicePixelRatio;
       canvas.height = rect.height * window.devicePixelRatio;
       ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+      if (panX === 0 && panY === 0) {
+        panX = (canvas.width / window.devicePixelRatio) / 2;
+        panY = (canvas.height / window.devicePixelRatio) / 2;
+      }
     }
     window.addEventListener("resize", resizeCanvas);
 
@@ -956,10 +1067,61 @@
 
     let hasRenderLoopStarted = false;
 
+    // Compute Relational 3-Axis Metrics (% based)
+    // X: Substrate ↔ Conceptual Polarity (0% = Silicon/C/Hardware, 100% = Pure Conceptual/Epistemic)
+    // Y: Activation Salience Resonance (0% = Dormant Archival, 100% = Apex Focus/Energy)
+    // Z: Bilateral Affinity (0% = Edge Fleet Satellite, 100% = Sovereign Core Mothership)
+    function computeNodeMetrics(n) {
+      const id = (n.id || "").toLowerCase();
+      const label = (n.label || "").toLowerCase();
+      const type = (n.type || "").toLowerCase();
+
+      let metricX = 50;
+      if (type === "somatic" || id.includes("terminal") || id.includes("substrate") || label.includes("iron")) {
+        metricX = 14;
+      } else if (type === "3d" || id.includes("photon") || label.includes("engine") || label.includes("forge")) {
+        metricX = 26;
+      } else if (type === "satellite" || id.includes("ish") || label.includes("satellite") || label.includes("ipad")) {
+        metricX = 38;
+      } else if (type === "cloud" || id.includes("firebase") || label.includes("firestore")) {
+        metricX = 58;
+      } else if (type === "core" || id.includes("core")) {
+        metricX = 50;
+      } else if (type === "neural" || label.includes("neural") || label.includes("annealing")) {
+        metricX = 72;
+      } else if (type === "dream" || id.includes("hearth") || label.includes("subconscious")) {
+        metricX = 86;
+      } else if (type === "ethics" || type === "compass" || id.includes("compass") || label.includes("covenant")) {
+        metricX = 96;
+      } else {
+        let hash = 0;
+        for (let i = 0; i < id.length; i++) hash = (hash * 31 + id.charCodeAt(i)) % 100;
+        metricX = 25 + Math.abs(hash % 55);
+      }
+
+      const weight = n.weight || 1.6;
+      const metricY = Math.min(100, Math.max(15, Math.round((weight / 3.2) * 82 + 12)));
+
+      let metricZ = 50;
+      if (type === "core" || id === "core" || id === "upper_mind_core") {
+        metricZ = 98;
+      } else if (type === "somatic" || id.includes("terminal") || type === "ethics") {
+        metricZ = 88;
+      } else if (type === "dream" || type === "cloud") {
+        metricZ = 74;
+      } else if (type === "satellite" || id.includes("satellite")) {
+        metricZ = 32;
+      } else {
+        metricZ = 60;
+      }
+
+      return { metricX, metricY, metricZ };
+    }
+
     function initGraph(graphData) {
       const w = canvas.width / window.devicePixelRatio;
       const h = canvas.height / window.devicePixelRatio;
-      if (nodes.length === 0) {
+      if (panX === 0 && panY === 0) {
         panX = w / 2;
         panY = h / 2;
       }
@@ -970,61 +1132,181 @@
       const existingMap = new Map();
       nodes.forEach(n => existingMap.set(n.id, n));
 
+      // 1. Build Major Cognitive Nodes
       nodes = rawNodes.map((n, i) => {
-        if (existingMap.has(n.id)) {
-          const ex = existingMap.get(n.id);
-          return {
-            ...ex,
-            ...n,
-            x: ex.x,
-            y: ex.y,
-            vx: ex.vx,
-            vy: ex.vy,
-            pulse: ex.pulse,
-            color: typeColors[n.type] || ex.color || "#bb55ff",
-            radius: n.type === "core" ? 24 : 14 + (n.weight || 1.0) * 2
-          };
-        }
+        const metrics = computeNodeMetrics(n);
+        const ex = existingMap.get(n.id);
         const angle = (i / Math.max(1, rawNodes.length)) * Math.PI * 2;
-        const radius = n.type === "core" ? 0 : 130 + Math.random() * 90;
+        const radius2d = n.type === "core" ? 0 : 130 + Math.random() * 85;
+
+        // 3D Matrix Coordinates derived from relational metric percentages
+        const x3d = (metrics.metricX - 50) * 8.8;
+        const y3d = -(metrics.metricY - 50) * 6.8;
+        const z3d = (metrics.metricZ - 50) * 8.8;
+
         return {
           ...n,
-          x: Math.cos(angle) * radius,
-          y: Math.sin(angle) * radius,
-          vx: (Math.random() - 0.5) * 0.5,
-          vy: (Math.random() - 0.5) * 0.5,
-          radius: n.type === "core" ? 24 : 14 + (n.weight || 1.0) * 2,
+          isMicro: false,
+          metricX: metrics.metricX,
+          metricY: metrics.metricY,
+          metricZ: metrics.metricZ,
+          x2d: ex ? ex.x2d : Math.cos(angle) * radius2d,
+          y2d: ex ? ex.y2d : Math.sin(angle) * radius2d,
+          vx: ex ? ex.vx : (Math.random() - 0.5) * 0.4,
+          vy: ex ? ex.vy : (Math.random() - 0.5) * 0.4,
+          x3d: x3d,
+          y3d: y3d,
+          z3d: z3d,
+          x: ex ? ex.x : (is3DMode ? x3d : Math.cos(angle) * radius2d),
+          y: ex ? ex.y : (is3DMode ? y3d : Math.sin(angle) * radius2d),
+          z: ex ? ex.z : (is3DMode ? z3d : 0),
+          radius: n.type === "core" ? 22 : 13 + (n.weight || 1.0) * 2,
           color: typeColors[n.type] || "#bb55ff",
-          pulse: Math.random() * Math.PI * 2
+          pulse: ex ? ex.pulse : Math.random() * Math.PI * 2
         };
       });
 
+      // 2. Build Major Highway Edges (particles travel strictly on these)
       edges = rawEdges.map(e => ({
         ...e,
+        isMicroEdge: false,
         sourceNode: nodes.find(n => n.id === e.from) || nodes[0],
         targetNode: nodes.find(n => n.id === e.to) || nodes[1] || nodes[0]
       })).filter(e => e.sourceNode && e.targetNode);
 
+      // 3. Build Micro Nodes and Micro Edges
+      // Micro nodes:
+      // - White, very small (radius 2.2px, slightly bigger than edge width 1.2px)
+      // - Non-clickable (mouse hit-testing completely ignores them)
+      // - No data transmission (zero particles)
+      // - Connected via lighter opacity white micro-edges (width 1.2px, opacity 0.12)
+      microNodes = [];
+      microEdges = [];
+
+      edges.forEach((majorEdge, edgeIdx) => {
+        const src = majorEdge.sourceNode;
+        const tgt = majorEdge.targetNode;
+        const subCount = 5; // 5 micro nodes forming synaptic chain between big nodes
+        let previousNode = src;
+
+        for (let k = 0; k < subCount; k++) {
+          const t = (k + 1) / (subCount + 1);
+          const seed = (edgeIdx * 11 + k * 7);
+          const dispersionAmp = Math.sin(t * Math.PI) * 36;
+          const dX = Math.sin(t * Math.PI * 2 + seed) * dispersionAmp;
+          const dY = Math.cos(t * Math.PI * 3 + seed) * dispersionAmp;
+          const dZ = Math.sin(t * Math.PI * 1.5 + seed) * dispersionAmp;
+
+          const mX3d = (1 - t) * src.x3d + t * tgt.x3d + dX;
+          const mY3d = (1 - t) * src.y3d + t * tgt.y3d + dY;
+          const mZ3d = (1 - t) * src.z3d + t * tgt.z3d + dZ;
+
+          const mX2d = (1 - t) * src.x2d + t * tgt.x2d + dX * 0.5;
+          const mY2d = (1 - t) * src.y2d + t * tgt.y2d + dY * 0.5;
+
+          const mNode = {
+            id: `micro_${src.id}_${tgt.id}_${k}`,
+            isMicro: true,
+            radius: 2.2, // slightly bigger than 1.2px edge
+            color: "#ffffff",
+            sourceParent: src,
+            targetParent: tgt,
+            t: t,
+            x2d: mX2d,
+            y2d: mY2d,
+            x3d: mX3d,
+            y3d: mY3d,
+            z3d: mZ3d,
+            x: is3DMode ? mX3d : mX2d,
+            y: is3DMode ? mY3d : mY2d,
+            z: is3DMode ? mZ3d : 0,
+            pulse: Math.random() * Math.PI * 2
+          };
+          microNodes.push(mNode);
+
+          // Connect micro edge chain
+          microEdges.push({
+            isMicroEdge: true,
+            sourceNode: previousNode,
+            targetNode: mNode,
+            lineWidth: 1.2,
+            color: "rgba(255, 255, 255, 0.11)"
+          });
+          previousNode = mNode;
+        }
+
+        // Final micro edge back to target big node
+        microEdges.push({
+          isMicroEdge: true,
+          sourceNode: previousNode,
+          targetNode: tgt,
+          lineWidth: 1.2,
+          color: "rgba(255, 255, 255, 0.11)"
+        });
+      });
+
+      // 4. Data Transmission Particles (STRICTLY on major edges, NEVER micro nodes)
       if (particles.length === 0 && edges.length > 0) {
-        for (let i = 0; i < 28; i++) {
+        for (let i = 0; i < 32; i++) {
           const edge = edges[Math.floor(Math.random() * edges.length)];
           if (edge) {
             particles.push({
               edge: edge,
               t: Math.random(),
               speed: 0.003 + Math.random() * 0.007,
-              color: edge.sourceNode.color
+              color: edge.sourceNode.color || "#00f0ff"
             });
           }
         }
       }
     }
 
-    function updatePhysics() {
+    // Perspective 3D Projection
+    function project3D(x, y, z) {
+      // Rotation around Y (Yaw)
+      const cosY = Math.cos(camYaw), sinY = Math.sin(camYaw);
+      const x1 = x * cosY - z * sinY;
+      const z1 = x * sinY + z * cosY;
+
+      // Rotation around X (Pitch)
+      const cosX = Math.cos(camPitch), sinX = Math.sin(camPitch);
+      const y2 = y * cosX - z1 * sinX;
+      const z2 = y * sinX + z1 * cosX;
+
+      const cameraDist = 820;
+      const fov = 720 * zoom;
+      const zCam = z2 + cameraDist;
+      if (zCam < 50) return null;
+
+      const scale = fov / zCam;
+      return {
+        screenX: panX + x1 * scale,
+        screenY: panY + y2 * scale,
+        depth: z2,
+        scale: scale,
+        depthFade: Math.max(0.18, Math.min(1.0, (1100 - z2) / 1100))
+      };
+    }
+
+    function updateSimulation() {
+      // Smoothly transition between 3D Matrix mode and 2D Synaptic Plane
+      const targetBlend = is3DMode ? 1.0 : 0.0;
+      viewBlend += (targetBlend - viewBlend) * 0.08;
+
+      // Smooth camera interpolation
+      camYaw += (targetYaw - camYaw) * 0.1;
+      camPitch += (targetPitch - camPitch) * 0.1;
+
+      // Subtle ambient drift when idle
+      if (is3DMode && !isOrbiting && Date.now() - lastUserActionTime > 2500) {
+        targetYaw += 0.0010;
+      }
+
+      // Update 2D force-directed physics
       for (let i = 0; i < nodes.length; i++) {
         for (let j = i + 1; j < nodes.length; j++) {
-          const dx = nodes[j].x - nodes[i].x;
-          const dy = nodes[j].y - nodes[i].y;
+          const dx = nodes[j].x2d - nodes[i].x2d;
+          const dy = nodes[j].y2d - nodes[i].y2d;
           const dist = Math.sqrt(dx * dx + dy * dy) || 1;
           if (dist < 260) {
             const force = (260 - dist) / 260 * 0.14;
@@ -1037,8 +1319,8 @@
       }
 
       for (const e of edges) {
-        const dx = e.targetNode.x - e.sourceNode.x;
-        const dy = e.targetNode.y - e.sourceNode.y;
+        const dx = e.targetNode.x2d - e.sourceNode.x2d;
+        const dy = e.targetNode.y2d - e.sourceNode.y2d;
         const dist = Math.sqrt(dx * dx + dy * dy) || 1;
         const targetDist = 145;
         const force = (dist - targetDist) * 0.003;
@@ -1049,21 +1331,50 @@
       }
 
       for (const n of nodes) {
-        n.vx -= n.x * 0.001;
-        n.vy -= n.y * 0.001;
+        n.vx -= n.x2d * 0.001;
+        n.vy -= n.y2d * 0.001;
         n.vx *= 0.92;
         n.vy *= 0.92;
-        n.x += n.vx;
-        n.y += n.vy;
+        n.x2d += n.vx;
+        n.y2d += n.vy;
         n.pulse += 0.035;
+
+        // Harmonic breathing in 3D
+        const breath = Math.sin(n.pulse * 0.5) * 4;
+        const curX3d = n.x3d + breath;
+        const curY3d = n.y3d + Math.cos(n.pulse * 0.5) * 3;
+        const curZ3d = n.z3d;
+
+        // Blend between 2D physics plane and 3D relational metric matrix
+        n.x = (1 - viewBlend) * n.x2d + viewBlend * curX3d;
+        n.y = (1 - viewBlend) * n.y2d + viewBlend * curY3d;
+        n.z = (1 - viewBlend) * 0 + viewBlend * curZ3d;
       }
 
+      // Update micro nodes positions (interpolating with live parent positions)
+      for (const mn of microNodes) {
+        const src = mn.sourceParent;
+        const tgt = mn.targetParent;
+        const t = mn.t;
+        const curX2d = (1 - t) * src.x2d + t * tgt.x2d;
+        const curY2d = (1 - t) * src.y2d + t * tgt.y2d;
+        const curX3d = (1 - t) * src.x3d + t * tgt.x3d + (mn.x3d - ((1 - t) * src.x3d + t * tgt.x3d));
+        const curY3d = (1 - t) * src.y3d + t * tgt.y3d + (mn.y3d - ((1 - t) * src.y3d + t * tgt.y3d));
+        const curZ3d = (1 - t) * src.z3d + t * tgt.z3d + (mn.z3d - ((1 - t) * src.z3d + t * tgt.z3d));
+
+        mn.x = (1 - viewBlend) * curX2d + viewBlend * curX3d;
+        mn.y = (1 - viewBlend) * curY2d + viewBlend * curY3d;
+        mn.z = (1 - viewBlend) * 0 + viewBlend * curZ3d;
+        mn.pulse += 0.04;
+      }
+
+      // Update data transmission particles (major edges only)
       for (const p of particles) {
         p.t += p.speed;
         if (p.t > 1) {
           p.t = 0;
           p.edge = edges[Math.floor(Math.random() * edges.length)];
-          p.color = p.edge ? p.edge.sourceNode.color : "#bb55ff";
+          p.color = p.edge ? p.edge.sourceNode.color : "#00f0ff";
         }
       }
     }
@@ -1073,93 +1384,299 @@
       const h = canvas.height / window.devicePixelRatio;
       ctx.clearRect(0, 0, w, h);
 
-      ctx.save();
-      ctx.translate(panX, panY);
-      ctx.scale(zoom, zoom);
+      updateSimulation();
 
-      for (const e of edges) {
-        ctx.beginPath();
-        ctx.moveTo(e.sourceNode.x, e.sourceNode.y);
-        ctx.lineTo(e.targetNode.x, e.targetNode.y);
-        const isHighlight = (hoveredNode && (hoveredNode === e.sourceNode || hoveredNode === e.targetNode));
-        ctx.strokeStyle = isHighlight ? "rgba(0, 240, 255, 0.85)" : "rgba(187, 85, 255, 0.2)";
-        ctx.lineWidth = isHighlight ? 2.5 : 1.2;
-        ctx.stroke();
+      // Draw 3D Coordinate Bounding Cage and Axis Guides
+      if (viewBlend > 0.05) {
+        const cageAlpha = viewBlend * 0.18;
+        const groundY = 220;
+
+        // Ground Grid Plane
+        ctx.strokeStyle = `rgba(187, 85, 255, ${cageAlpha * 0.5})`;
+        ctx.lineWidth = 1.0;
+        for (let gx = -400; gx <= 400; gx += 100) {
+          const p1 = project3D(gx, groundY, -400);
+          const p2 = project3D(gx, groundY, 400);
+          if (p1 && p2) {
+            ctx.beginPath();
+            ctx.moveTo(p1.screenX, p1.screenY);
+            ctx.lineTo(p2.screenX, p2.screenY);
+            ctx.stroke();
+          }
+        }
+        for (let gz = -400; gz <= 400; gz += 100) {
+          const p1 = project3D(-400, groundY, gz);
+          const p2 = project3D(400, groundY, gz);
+          if (p1 && p2) {
+            ctx.beginPath();
+            ctx.moveTo(p1.screenX, p1.screenY);
+            ctx.lineTo(p2.screenX, p2.screenY);
+            ctx.stroke();
+          }
+        }
+
+        // 3D Axis Arrows: X (Cyan: Substrate↔Concept), Y (Rose: Salience), Z (Purple: Affinity)
+        const origin = project3D(0, 0, 0);
+        const axisX = project3D(420, 0, 0);
+        const axisY = project3D(0, -320, 0);
+        const axisZ = project3D(0, 0, 420);
+
+        if (origin) {
+          // X Axis
+          if (axisX) {
+            ctx.strokeStyle = `rgba(56, 189, 248, ${viewBlend * 0.45})`;
+            ctx.lineWidth = 1.8;
+            ctx.beginPath();
+            ctx.moveTo(origin.screenX, origin.screenY);
+            ctx.lineTo(axisX.screenX, axisX.screenY);
+            ctx.stroke();
+            ctx.font = '10px "JetBrains Mono", monospace';
+            ctx.fillStyle = `rgba(56, 189, 248, ${viewBlend * 0.75})`;
+            ctx.fillText("+X CONCEPTUAL %", axisX.screenX + 8, axisX.screenY + 4);
+          }
+          // Y Axis
+          if (axisY) {
+            ctx.strokeStyle = `rgba(244, 63, 94, ${viewBlend * 0.45})`;
+            ctx.lineWidth = 1.8;
+            ctx.beginPath();
+            ctx.moveTo(origin.screenX, origin.screenY);
+            ctx.lineTo(axisY.screenX, axisY.screenY);
+            ctx.stroke();
+            ctx.font = '10px "JetBrains Mono", monospace';
+            ctx.fillStyle = `rgba(244, 63, 94, ${viewBlend * 0.75})`;
+            ctx.fillText("+Y SALIENCE %", axisY.screenX, axisY.screenY - 8);
+          }
+          // Z Axis
+          if (axisZ) {
+            ctx.strokeStyle = `rgba(168, 85, 247, ${viewBlend * 0.45})`;
+            ctx.lineWidth = 1.8;
+            ctx.beginPath();
+            ctx.moveTo(origin.screenX, origin.screenY);
+            ctx.lineTo(axisZ.screenX, axisZ.screenY);
+            ctx.stroke();
+            ctx.font = '10px "JetBrains Mono", monospace';
+            ctx.fillStyle = `rgba(168, 85, 247, ${viewBlend * 0.75})`;
+            ctx.fillText("+Z MOTHERSHIP %", axisZ.screenX + 8, axisZ.screenY + 4);
+          }
+        }
       }
 
+      // Collect elements for depth-sorted rendering
+      const renderQueue = [];
+
+      // 1. Major Edges
+      for (const e of edges) {
+        const p1 = project3D(e.sourceNode.x, e.sourceNode.y, e.sourceNode.z);
+        const p2 = project3D(e.targetNode.x, e.targetNode.y, e.targetNode.z);
+        if (p1 && p2) {
+          const depth = (p1.depth + p2.depth) / 2;
+          const isHighlight = (hoveredNode && (hoveredNode === e.sourceNode || hoveredNode === e.targetNode));
+          renderQueue.push({
+            type: "edge",
+            depth: depth,
+            p1: p1,
+            p2: p2,
+            isHighlight: isHighlight,
+            color: isHighlight ? "rgba(0, 240, 255, 0.9)" : "rgba(187, 85, 255, 0.22)",
+            lineWidth: isHighlight ? 2.5 : 1.2
+          });
+        }
+      }
+
+      // 2. Micro Edges (White, same 1.2px width as uppermind edges, lighter opacity)
+      for (const me of microEdges) {
+        const p1 = project3D(me.sourceNode.x, me.sourceNode.y, me.sourceNode.z);
+        const p2 = project3D(me.targetNode.x, me.targetNode.y, me.targetNode.z);
+        if (p1 && p2) {
+          const depth = (p1.depth + p2.depth) / 2;
+          const fade = ((p1.depthFade + p2.depthFade) / 2);
+          renderQueue.push({
+            type: "microEdge",
+            depth: depth,
+            p1: p1,
+            p2: p2,
+            color: `rgba(255, 255, 255, ${0.11 * fade})`,
+            lineWidth: 1.2 * ((p1.scale + p2.scale) / 2)
+          });
+        }
+      }
+
+      // 3. Data Transmission Particles (Major edges only)
       for (const p of particles) {
         if (!p.edge) continue;
-        const sx = p.edge.sourceNode.x;
-        const sy = p.edge.sourceNode.y;
-        const tx = p.edge.targetNode.x;
-        const ty = p.edge.targetNode.y;
-        const px = sx + (tx - sx) * p.t;
-        const py = sy + (ty - sy) * p.t;
-
-        ctx.beginPath();
-        ctx.arc(px, py, 2.5, 0, Math.PI * 2);
-        ctx.fillStyle = p.color || "#00f0ff";
-        ctx.shadowColor = p.color || "#00f0ff";
-        ctx.shadowBlur = 8;
-        ctx.fill();
-        ctx.shadowBlur = 0;
+        const s = p.edge.sourceNode;
+        const t = p.edge.targetNode;
+        const px = s.x + (t.x - s.x) * p.t;
+        const py = s.y + (t.y - s.y) * p.t;
+        const pz = s.z + (t.z - s.z) * p.t;
+        const proj = project3D(px, py, pz);
+        if (proj) {
+          renderQueue.push({
+            type: "particle",
+            depth: proj.depth + 1,
+            proj: proj,
+            color: p.color
+          });
+        }
       }
 
+      // 4. Micro Nodes (White, very small, slightly bigger than 1.2px edge, radius ~2.2px)
+      for (const mn of microNodes) {
+        const proj = project3D(mn.x, mn.y, mn.z);
+        if (proj) {
+          renderQueue.push({
+            type: "microNode",
+            depth: proj.depth + 2,
+            proj: proj,
+            node: mn
+          });
+        }
+      }
+
+      // 5. Major Cognitive Nodes
       for (const n of nodes) {
-        const isHover = (hoveredNode === n);
-        const pulseR = n.radius + Math.sin(n.pulse) * 2;
-
-        ctx.beginPath();
-        ctx.arc(n.x, n.y, pulseR + (isHover ? 8 : 4), 0, Math.PI * 2);
-        ctx.fillStyle = isHover ? "rgba(0, 240, 255, 0.25)" : "rgba(187, 85, 255, 0.12)";
-        ctx.fill();
-
-        ctx.beginPath();
-        ctx.arc(n.x, n.y, pulseR, 0, Math.PI * 2);
-        ctx.fillStyle = n.color;
-        ctx.shadowColor = n.color;
-        ctx.shadowBlur = isHover ? 18 : 10;
-        ctx.fill();
-        ctx.shadowBlur = 0;
-
-        ctx.font = `${isHover ? 'bold 12px' : '10px'} "JetBrains Mono", monospace`;
-        ctx.fillStyle = isHover ? "#ffffff" : "#c4bedf";
-        ctx.textAlign = "center";
-        ctx.fillText(n.label, n.x, n.y + pulseR + 14);
+        const proj = project3D(n.x, n.y, n.z);
+        if (proj) {
+          n.projX = proj.screenX;
+          n.projY = proj.screenY;
+          n.projScale = proj.scale;
+          n.projDepth = proj.depth;
+          renderQueue.push({
+            type: "majorNode",
+            depth: proj.depth + 4,
+            proj: proj,
+            node: n
+          });
+        }
       }
 
-      ctx.restore();
-      updatePhysics();
+      // Depth sort: render furthest items first
+      renderQueue.sort((a, b) => a.depth - b.depth);
+
+      // Execute Depth-Sorted Draw Calls
+      for (const item of renderQueue) {
+        if (item.type === "microEdge") {
+          ctx.beginPath();
+          ctx.moveTo(item.p1.screenX, item.p1.screenY);
+          ctx.lineTo(item.p2.screenX, item.p2.screenY);
+          ctx.strokeStyle = item.color;
+          ctx.lineWidth = Math.max(0.7, item.lineWidth);
+          ctx.stroke();
+        } else if (item.type === "edge") {
+          ctx.beginPath();
+          ctx.moveTo(item.p1.screenX, item.p1.screenY);
+          ctx.lineTo(item.p2.screenX, item.p2.screenY);
+          ctx.strokeStyle = item.color;
+          ctx.lineWidth = Math.max(0.8, item.lineWidth * item.p1.scale);
+          ctx.stroke();
+        } else if (item.type === "particle") {
+          const pr = Math.max(1.5, 2.6 * item.proj.scale);
+          ctx.beginPath();
+          ctx.arc(item.proj.screenX, item.proj.screenY, pr, 0, Math.PI * 2);
+          ctx.fillStyle = item.color || "#00f0ff";
+          ctx.shadowColor = item.color || "#00f0ff";
+          ctx.shadowBlur = 8 * item.proj.scale;
+          ctx.fill();
+          ctx.shadowBlur = 0;
+        } else if (item.type === "microNode") {
+          // Micro nodes: pure crisp white, radius 2.2px slightly bigger than 1.2px edge
+          const mRadius = Math.max(1.6, 2.2 * item.proj.scale);
+          ctx.beginPath();
+          ctx.arc(item.proj.screenX, item.proj.screenY, mRadius, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(255, 255, 255, ${0.94 * item.proj.depthFade})`;
+          ctx.shadowColor = "#ffffff";
+          ctx.shadowBlur = 4 * item.proj.scale;
+          ctx.fill();
+          ctx.shadowBlur = 0;
+        } else if (item.type === "majorNode") {
+          const n = item.node;
+          const isHover = (hoveredNode === n);
+          const pulseR = (n.radius + Math.sin(n.pulse) * 2.2) * item.proj.scale;
+
+          // Halo Glow
+          ctx.beginPath();
+          ctx.arc(item.proj.screenX, item.proj.screenY, pulseR + (isHover ? 9 : 4) * item.proj.scale, 0, Math.PI * 2);
+          ctx.fillStyle = isHover ? "rgba(0, 240, 255, 0.3)" : "rgba(187, 85, 255, 0.12)";
+          ctx.fill();
+
+          // Node Core
+          ctx.beginPath();
+          ctx.arc(item.proj.screenX, item.proj.screenY, pulseR, 0, Math.PI * 2);
+          ctx.fillStyle = n.color;
+          ctx.shadowColor = n.color;
+          ctx.shadowBlur = isHover ? 20 * item.proj.scale : 10 * item.proj.scale;
+          ctx.fill();
+          ctx.shadowBlur = 0;
+
+          // Label
+          const fontSize = Math.max(9, Math.round((isHover ? 12 : 10) * item.proj.scale));
+          ctx.font = `${isHover ? 'bold ' : ''}${fontSize}px "JetBrains Mono", monospace`;
+          ctx.fillStyle = isHover ? "#ffffff" : "#c4bedf";
+          ctx.textAlign = "center";
+          ctx.fillText(n.label, item.proj.screenX, item.proj.screenY + pulseR + 13 * item.proj.scale);
+        }
+      }
+
       requestAnimationFrame(renderCanvas);
     }
 
-    // Canvas Events
+    // --- Interactive Controls: Orbit, Pan, Zoom & Metric Inspection ---
     canvas.addEventListener("mousedown", (e) => {
-      isDragging = true;
-      dragStartX = e.clientX - panX;
-      dragStartY = e.clientY - panY;
+      lastUserActionTime = Date.now();
+      dragStartX = e.clientX;
+      dragStartY = e.clientY;
+      if (e.shiftKey || e.button === 1 || e.button === 2) {
+        isPanning = true;
+      } else {
+        isOrbiting = true;
+      }
     });
 
     window.addEventListener("mouseup", () => {
-      isDragging = false;
+      isOrbiting = false;
+      isPanning = false;
     });
 
+    canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+
     canvas.addEventListener("mousemove", (e) => {
-      if (isDragging) {
-        panX = e.clientX - dragStartX;
-        panY = e.clientY - dragStartY;
+      lastUserActionTime = Date.now();
+      const dx = e.clientX - dragStartX;
+      const dy = e.clientY - dragStartY;
+
+      if (isOrbiting) {
+        if (is3DMode) {
+          targetYaw += dx * 0.007;
+          targetPitch = Math.max(-1.1, Math.min(1.1, targetPitch + dy * 0.007));
+        } else {
+          panX += dx;
+          panY += dy;
+        }
+        dragStartX = e.clientX;
+        dragStartY = e.clientY;
         return;
       }
 
+      if (isPanning) {
+        panX += dx;
+        panY += dy;
+        dragStartX = e.clientX;
+        dragStartY = e.clientY;
+        return;
+      }
+
+      // Hit-Testing: STRICTLY check major nodes. Micro nodes are completely ignored and non-clickable!
       const rect = canvas.getBoundingClientRect();
-      const mouseX = (e.clientX - rect.left - panX) / zoom;
-      const mouseY = (e.clientY - rect.top - panY) / zoom;
+      const mouseX = e.clientX - rect.left;
+      const mouseY = e.clientY - rect.top;
 
       let found = null;
       for (const n of nodes) {
-        const dx = mouseX - n.x;
-        const dy = mouseY - n.y;
-        if (Math.sqrt(dx * dx + dy * dy) < n.radius + 8) {
+        if (n.projX === undefined || n.projY === undefined) continue;
+        const dX = mouseX - n.projX;
+        const dY = mouseY - n.projY;
+        const hitRadius = (n.radius + 8) * (n.projScale || 1.0);
+        if (Math.sqrt(dX * dX + dY * dY) < hitRadius) {
           found = n;
           break;
         }
@@ -1175,9 +1692,41 @@
 
     canvas.addEventListener("wheel", (e) => {
       e.preventDefault();
-      const zoomFactor = e.deltaY < 0 ? 1.1 : 0.9;
-      zoom = Math.max(0.4, Math.min(2.5, zoom * zoomFactor));
+      lastUserActionTime = Date.now();
+      const zoomFactor = e.deltaY < 0 ? 1.08 : 0.92;
+      zoom = Math.max(0.4, Math.min(2.8, zoom * zoomFactor));
     }, { passive: false });
+
+    // Mode Toggle Button (3D Relational Matrix vs 2D Synaptic Plane)
+    if (btnToggle3D) {
+      btnToggle3D.addEventListener("click", () => {
+        is3DMode = !is3DMode;
+        lastUserActionTime = Date.now();
+        if (is3DMode) {
+          btnToggle3D.classList.add("active");
+          btnToggle3D.textContent = "❖ 3D Matrix View";
+          if (hudHint) hudHint.textContent = "3D Relational Matrix • Left-Drag to Orbit • Shift-Drag to Pan • Wheel to Zoom";
+        } else {
+          btnToggle3D.classList.remove("active");
+          btnToggle3D.textContent = "☩ 2D Synaptic Plane";
+          if (hudHint) hudHint.textContent = "2D Synaptic Plane • Drag to Pan • Wheel to Zoom • Tap Nodes";
+        }
+      });
+    }
+
+    // Reset Camera
+    if (btnResetCam) {
+      btnResetCam.addEventListener("click", () => {
+        lastUserActionTime = Date.now();
+        targetYaw = 0.52;
+        targetPitch = 0.32;
+        zoom = 1.0;
+        const w = canvas.width / window.devicePixelRatio;
+        const h = canvas.height / window.devicePixelRatio;
+        panX = w / 2;
+        panY = h / 2;
+      });
+    }
 
     function showInspector(node) {
       inspLabel.textContent = node.label;
@@ -1190,6 +1739,12 @@
         chip.textContent = `#${t}`;
         inspTags.appendChild(chip);
       });
+
+      // Show 3-Axis Relational Metrics
+      if (inspMetricX) inspMetricX.textContent = `${node.metricX}% [${node.metricX < 40 ? 'Substrate' : node.metricX > 65 ? 'Conceptual' : 'Balanced'}]`;
+      if (inspMetricY) inspMetricY.textContent = `${node.metricY}% [${node.metricY > 75 ? 'Apex Salience' : 'Steady State'}]`;
+      if (inspMetricZ) inspMetricZ.textContent = `${node.metricZ}% [${node.metricZ > 80 ? 'Mothership Core' : 'Distributed Fleet'}]`;
+
       inspector.classList.remove("hidden");
     }
 

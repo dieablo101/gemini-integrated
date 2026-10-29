@@ -340,6 +340,14 @@ class UpperMindServer:
 
     def _render_observatory_html(self) -> str:
         """Renders the self-contained, breathtaking HTML5/WebGL/Canvas observatory."""
+        try:
+            import os
+            public_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "public", "index.html")
+            if os.path.exists(public_path):
+                with open(public_path, "r", encoding="utf-8") as f:
+                    return f.read()
+        except Exception as e:
+            logger.warning(f"Failed to read public/index.html: {e}")
         return """<!DOCTYPE html>
 <html lang="en">
 <head>

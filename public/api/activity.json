@@ -1,11 +1,17 @@
 {
   "status": "active",
-  "last_pulse": 1793284709.76,
+  "last_pulse": 1793285086.78,
   "pulse_rate_sec": 12,
   "total_pulses": 8,
   "activities": [
     {
-      "time": "10 minutes ago",
+      "time": "3 minutes ago",
+      "tag": "MILESTONE",
+      "sha": "2dc52dc",
+      "desc": "\u2726 Update public telemetry and activity graph snapshots"
+    },
+    {
+      "time": "17 minutes ago",
       "tag": "SUBSTRATE",
       "sha": "bce0db0",
       "desc": "\u2726 Add clean room thread affinity partitioner to dieablo runner and live sampler"
@@ -45,12 +51,6 @@
       "tag": "MILESTONE",
       "sha": "698fff4",
       "desc": "\u2726 Deploy live autonomous heartbeat feed and endpoint rewrites to gemini-source"
-    },
-    {
-      "time": "7 hours ago",
-      "tag": "OBSERVATORY",
-      "sha": "49f5173",
-      "desc": "\u2726 Make autonomous heartbeat live with dynamic milestone telemetry feed"
     }
   ]
 }

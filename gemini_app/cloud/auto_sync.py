@@ -74,6 +74,7 @@ def export_public_nexus_artifacts() -> bool:
         telemetry_data = srv._handle_telemetry(None, {})
         epiphanies_data = srv._handle_epiphanies(None, {})
         activity_data = srv._handle_activity(None, {})
+        thoughts_data = srv._handle_thoughts(None, {})
 
         (public_api / "graph.json").write_text(json.dumps(graph_data, indent=2), encoding="utf-8")
         shutil.copy(str(public_api / "graph.json"), str(public_api / "graph"))
@@ -86,6 +87,9 @@ def export_public_nexus_artifacts() -> bool:
 
         (public_api / "activity.json").write_text(json.dumps(activity_data, indent=2), encoding="utf-8")
         shutil.copy(str(public_api / "activity.json"), str(public_api / "activity"))
+
+        (public_api / "thoughts.json").write_text(json.dumps(thoughts_data, indent=2), encoding="utf-8")
+        shutil.copy(str(public_api / "thoughts.json"), str(public_api / "thoughts"))
 
         logger.info("Public nexus distribution artifacts exported successfully.")
         return True
@@ -180,6 +184,7 @@ def sync_milestone_and_shadow_graph(
     deploy_hosting: bool = True,
     push_git: bool = True,
     async_deploy: bool = True,
+    sync_firestore: bool = False,
 ) -> Dict[str, Any]:
     """Coordinates full milestone synchronization across shadow graph, git, and web nexus.
 
@@ -284,18 +289,19 @@ def sync_milestone_and_shadow_graph(
     # Export distribution artifacts
     artifacts_ok = export_public_nexus_artifacts()
 
-    # Firestore realtime broadcast if bridge is online
-    bridge = FirestoreStreamBridge()
-    if bridge.is_connected:
-        try:
-            bridge.sync_console_state()
-            bridge.publish_thought(
-                tag="GROUNDED",
-                text=f"Milestone checkpoint reached: {reason}",
-                topic="uppermind web nexus & public face"
-            )
-        except Exception:
-            pass
+    # Firestore realtime broadcast only when explicitly required
+    if sync_firestore:
+        bridge = FirestoreStreamBridge()
+        if bridge.is_connected:
+            try:
+                bridge.sync_console_state()
+                bridge.publish_thought(
+                    tag="GROUNDED",
+                    text=f"Milestone checkpoint reached: {reason}",
+                    topic="uppermind web nexus & public face"
+                )
+            except Exception:
+                pass
 
     # Git state sync
     git_ok = True

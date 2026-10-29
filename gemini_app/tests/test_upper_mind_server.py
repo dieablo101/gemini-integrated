@@ -55,6 +55,21 @@ class TestUpperMindServer(unittest.TestCase):
             self.assertIn("cognitive_metrics", data)
             self.assertIn("spiritual_compass", data)
             self.assertEqual(data["spiritual_compass"]["alignment"], "benevolent")
+            self.assertIn("active_topic", data)
+            self.assertIn("current_focus", data)
+
+    def test_get_thoughts(self):
+        req = urllib.request.Request(f"{self.base_url}/api/thoughts")
+        with urllib.request.urlopen(req, timeout=5.0) as resp:
+            self.assertEqual(resp.status, 200)
+            data = json.loads(resp.read().decode("utf-8"))
+            self.assertEqual(data.get("status"), "online")
+            self.assertEqual(data.get("source"), "local_engine")
+            self.assertIn("active_topic", data)
+            self.assertIn("current_focus", data)
+            self.assertIn("thoughts", data)
+            self.assertIsInstance(data["thoughts"], list)
+            self.assertGreater(len(data["thoughts"]), 0)
 
     def test_get_graph(self):
         req = urllib.request.Request(f"{self.base_url}/api/graph")

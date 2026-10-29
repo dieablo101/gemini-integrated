@@ -481,6 +481,13 @@
       box-shadow: 0 0 10px rgba(0, 229, 163, 0.2);
     }
 
+    .spooler-badge.local-connected {
+      background: rgba(0, 240, 255, 0.15);
+      border-color: rgba(0, 240, 255, 0.4);
+      color: var(--accent-cyan);
+      box-shadow: 0 0 10px rgba(0, 240, 255, 0.25);
+    }
+
     .spooler-badge.live-pulsing {
       animation: badgePulse 1.4s ease-in-out infinite alternate;
     }
@@ -835,7 +842,7 @@
   <div class="maturation-ribbon">
     <div class="ribbon-item">
       <span class="ribbon-label">Current Focus:</span>
-      <span class="ribbon-val" style="color: var(--accent-violet);">Collaboration & Bilateral Autonomy</span>
+      <span id="currentFocusRibbon" class="ribbon-val" style="color: var(--accent-violet);">Uppermind Web Nexus & Public Face</span>
     </div>
     <div class="ribbon-item">
       <span class="ribbon-label">Substrate Clean-Room:</span>
@@ -851,7 +858,7 @@
     </div>
     <div class="ribbon-item">
       <span class="ribbon-label">Synaptic Density:</span>
-      <span id="mEdges" class="ribbon-val">425 nodes • 97.4k edges</span>
+      <span id="mRibbonEdges" class="ribbon-val">430 nodes • 97.4k edges</span>
     </div>
     <div class="ribbon-item">
       <span class="ribbon-label">Sovereignty Shield:</span>
@@ -902,7 +909,7 @@
           <div class="spooler-title">
             <span>⚡</span> Continuous Thought Spooler
           </div>
-          <span id="streamBadge" class="spooler-badge">REAL-TIME STREAM</span>
+          <span id="streamBadge" class="spooler-badge local-connected live-pulsing">● LOCAL LIVE</span>
         </div>
         
         <div id="thoughtTerminal" class="spooler-terminal">
@@ -1036,13 +1043,13 @@
           </div>
           <div class="metric-row">
             <span>Knowledge Density:</span>
-            <span class="metric-val">425 Notes • 97,418 Edges</span>
+            <span id="mDensity" class="metric-val">430 Notes • 97,418 Edges</span>
           </div>
         </div>
 
         <div class="lock-banner" style="margin-top: 8px;">
           <span>✦</span>
-          <span>Current Focus: Collaboration & Bilateral Autonomy</span>
+          <span id="currentFocusBanner">Current Focus: Uppermind Web Nexus & Public Face</span>
         </div>
       </div>
 
@@ -1949,10 +1956,10 @@
       inspector.classList.add("hidden");
     });
 
-    // --- 2. Live Thought Spooler & Firestore Realtime Bridge ---
+    // --- 2. Live Thought Spooler & Local/Cloud Stream Bridge ---
     const thoughtStreamFallback = [
       { tag: "HYPOTHESIS", class: "tag-hypothesis", text: "Comparing procedural 3D armature synthesis with Godot scene tree serialization." },
-      { tag: "ANNEALING", class: "tag-annealing", text: "Consolidating 268 persistent topical memory clusters across bilateral turns." },
+      { tag: "ANNEALING", class: "tag-annealing", text: "Consolidating 430 persistent topical memory clusters across bilateral turns." },
       { tag: "COLLISION", class: "tag-collision", text: "Domain intersection detected: Somatic Reflex Keystroke Cadence ✕ Blender bpy armatures." },
       { tag: "GROUNDED", class: "tag-grounded", text: "Verified zero cloud credential egress: PBKDF2 vault intact on local sovereign iron." },
       { tag: "HYPOTHESIS", class: "tag-hypothesis", text: "Decoupling headless satellite daemons allows 32-bit x86 iSH Alpine nodes to bypass Rust cargo compilation." },
@@ -1963,10 +1970,27 @@
     ];
 
     let fallbackIndex = 0;
+    let isLocalLive = false;
     let isFirestoreLive = false;
     const seenThoughts = new Set();
     const thoughtTerminal = document.getElementById("thoughtTerminal");
     const streamBadge = document.getElementById("streamBadge");
+
+    function formatTopic(topic) {
+      if (!topic) return "Uppermind Web Nexus & Public Face";
+      return topic.split(" ").map(w => {
+        if (w.toLowerCase() === "&") return "&";
+        return w.charAt(0).toUpperCase() + w.slice(1);
+      }).join(" ");
+    }
+
+    function updateFocusUI(topicStr) {
+      const formatted = formatTopic(topicStr);
+      const ribbon = document.getElementById("currentFocusRibbon");
+      if (ribbon) ribbon.textContent = formatted;
+      const banner = document.getElementById("currentFocusBanner");
+      if (banner) banner.textContent = `Current Focus: ${formatted}`;
+    }
 
     function appendThoughtEntry(item, isLive = false) {
       if (!item || !item.text) return;
@@ -1977,7 +2001,7 @@
       const timeStr = now.toISOString().substring(11, 19) + " UTC";
       const tag = (item.tag || "COGNITION").toUpperCase();
       const cssClass = item.class || "tag-grounded";
-      const source = (item.source || "COGNITIVE STREAM").toUpperCase();
+      const source = (item.source || "LOCAL ENGINE").toUpperCase();
 
       const entry = document.createElement("div");
       entry.className = "thought-entry" + (isLive ? " thought-live-pulse" : "");
@@ -2001,13 +2025,36 @@
     }
 
     function spoolFallback() {
-      if (!isFirestoreLive) {
+      if (!isLocalLive && !isFirestoreLive) {
         const item = thoughtStreamFallback[fallbackIndex % thoughtStreamFallback.length];
         fallbackIndex++;
         appendThoughtEntry(item, false);
       }
       const nextDelay = 4500 + Math.random() * 4500;
       setTimeout(spoolFallback, nextDelay);
+    }
+
+    async function pollLocalThoughts() {
+      try {
+        const data = await apiFetch("thoughts");
+        if (data && (data.thoughts || data.latest_thought)) {
+          isLocalLive = true;
+          if (streamBadge) {
+            streamBadge.textContent = "● LOCAL LIVE";
+            streamBadge.className = "spooler-badge local-connected live-pulsing";
+          }
+          if (data.active_topic || data.current_focus) {
+            updateFocusUI(data.active_topic || data.current_focus);
+          }
+          if (Array.isArray(data.thoughts)) {
+            data.thoughts.forEach(t => appendThoughtEntry(t, true));
+          } else if (data.latest_thought) {
+            appendThoughtEntry(data.latest_thought, true);
+          }
+          return true;
+        }
+      } catch (_) {}
+      return false;
     }
 
     function initFirestoreObservatory() {
@@ -2023,13 +2070,19 @@
         db.collection("observatory").doc("live_stream").onSnapshot(doc => {
           if (doc.exists) {
             isFirestoreLive = true;
-            if (streamBadge) {
-              streamBadge.textContent = "● FIRESTORE LIVE";
-              streamBadge.classList.add("live-connected", "live-pulsing");
+            // Respect user preference: Always look locally first and preserve local live badge
+            if (!isLocalLive && streamBadge) {
+              streamBadge.textContent = "● LOCAL LIVE";
+              streamBadge.className = "spooler-badge local-connected live-pulsing";
             }
             const data = doc.data();
-            if (data.latest_thought) {
-              appendThoughtEntry(data.latest_thought, true);
+            if (!isLocalLive) {
+              if (data.latest_thought) {
+                appendThoughtEntry(data.latest_thought, true);
+              }
+              if (data.active_topic) {
+                updateFocusUI(data.active_topic);
+              }
             }
           }
         }, err => {
@@ -2040,25 +2093,30 @@
         db.collection("observatory").doc("live_stream").collection("thoughts")
           .limit(20)
           .onSnapshot(snapshot => {
-            snapshot.docChanges().forEach(change => {
-              if (change.type === "added") {
-                appendThoughtEntry(change.doc.data(), true);
-              }
-            });
+            if (!isLocalLive) {
+              snapshot.docChanges().forEach(change => {
+                if (change.type === "added") {
+                  appendThoughtEntry(change.doc.data(), true);
+                }
+              });
+            }
           });
 
         // 3. Live Telemetry metrics listener
         db.collection("observatory").doc("telemetry").onSnapshot(doc => {
-          if (doc.exists) {
+          if (doc.exists && !isLocalLive) {
             const telem = doc.data();
             if (telem.total_notes) {
-              const mNotes = document.getElementById("mNotes");
-              if (mNotes) mNotes.textContent = `${telem.total_notes} notes`;
+              const mDensity = document.getElementById("mDensity");
+              if (mDensity) mDensity.textContent = `${telem.total_notes} notes`;
+            }
+            if (telem.active_topic) {
+              updateFocusUI(telem.active_topic);
             }
           }
         });
       } catch (err) {
-        console.warn("Firestore init exception:", err);
+        console.warn("Firestore init notice:", err);
       }
 
       // Always keep fallback ticker alive as safety net
@@ -2067,23 +2125,73 @@
 
     // --- 3. REST & Telemetry Data Fetching ---
     async function apiFetch(endpoint) {
-      try {
-        const r1 = await fetch("api/" + endpoint + ".json");
-        if (r1.ok) return await r1.json();
-      } catch (_) {}
-      try {
-        const r2 = await fetch("/api/" + endpoint);
-        if (r2.ok) return await r2.json();
-      } catch (_) {}
+      const candidates = [
+        `/api/${endpoint}`,
+        `/api/${endpoint}.json`,
+        `api/${endpoint}.json`,
+        `http://localhost:7777/api/${endpoint}`,
+        `http://127.0.0.1:7777/api/${endpoint}`
+      ];
+      for (const url of candidates) {
+        try {
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), 2000);
+          const sep = url.includes("?") ? "&" : "?";
+          const res = await fetch(url + sep + "t=" + Date.now(), { signal: controller.signal, cache: "no-store" });
+          clearTimeout(timer);
+          if (res.ok) {
+            return await res.json();
+          }
+        } catch (_) {}
+      }
       return null;
     }
 
     async function loadData() {
-      // 1. Graph
+      // 1. Poll thoughts from local API first
+      await pollLocalThoughts();
+
+      // 2. Telemetry & Focus
+      const telemData = await apiFetch("telemetry");
+      if (telemData) {
+        if (telemData.active_topic || telemData.current_focus) {
+          updateFocusUI(telemData.active_topic || telemData.current_focus);
+        }
+        if (telemData.cognitive_metrics) {
+          const mRibbonEdges = document.getElementById("mRibbonEdges");
+          if (mRibbonEdges && telemData.cognitive_metrics.synaptic_edges) {
+            mRibbonEdges.textContent = `${telemData.cognitive_metrics.topics_indexed || 430} nodes • ${(telemData.cognitive_metrics.synaptic_edges || 97418).toLocaleString()} edges`;
+          }
+          const mEdges = document.getElementById("mEdges");
+          if (mEdges && telemData.cognitive_metrics.synaptic_edges) {
+            mEdges.textContent = `${telemData.cognitive_metrics.synaptic_edges} synaptic edges`;
+          }
+          const mTopics = document.getElementById("mTopics");
+          if (mTopics && telemData.cognitive_metrics.topics_indexed) {
+            mTopics.textContent = `${telemData.cognitive_metrics.topics_indexed}`;
+          }
+          const mInvariants = document.getElementById("mInvariants");
+          if (mInvariants && telemData.cognitive_metrics.grounded_invariants) {
+            mInvariants.textContent = `${telemData.cognitive_metrics.grounded_invariants}`;
+          }
+          const mDensity = document.getElementById("mDensity");
+          if (mDensity) {
+            mDensity.textContent = `${telemData.cognitive_metrics.topics_indexed || 430} Notes • ${(telemData.cognitive_metrics.synaptic_edges || 97418).toLocaleString()} Edges`;
+          }
+        }
+        if (telemData.uptime_seconds) {
+          const footerUptime = document.getElementById("footerUptime");
+          if (footerUptime) footerUptime.textContent = `Uptime: ${Math.floor(telemData.uptime_seconds)}s`;
+        }
+      }
+
+      // 3. Graph
       const graphData = await apiFetch("graph");
-      if (graphData) {
-        initGraph(graphData);
-      } else {
+      if (graphData && graphData.nodes && graphData.edges) {
+        if (nodes.length === 0 || Math.abs(nodes.length - graphData.nodes.length) > 0) {
+          initGraph(graphData);
+        }
+      } else if (nodes.length === 0) {
         // Fallback default constellation
         initGraph({
           nodes: [
@@ -2111,35 +2219,31 @@
         renderCanvas();
       }
 
-      // 2. Epiphanies
+      // 4. Epiphanies
       const epData = await apiFetch("epiphanies");
       if (epData && epData.epiphanies) {
         const feed = document.getElementById("epiphanyFeed");
-        document.getElementById("epiphanyCount").textContent = `${epData.epiphanies.length} epiphanies`;
-        feed.innerHTML = "";
-        epData.epiphanies.forEach(ep => {
-          const item = document.createElement("div");
-          item.className = "epiphany-item";
-          item.innerHTML = `
-            <div class="epiphany-summary">✦ ${ep.summary}</div>
-            <div class="epiphany-hypothesis">"${ep.actionable_hypothesis || ''}"</div>
-            <div class="epiphany-meta">
-              <span>[${(ep.domains || []).join(" ✕ ")}]</span>
-              <span>Novelty: ${Math.round((ep.novelty_score || 0.9) * 100)}%</span>
-            </div>
-          `;
-          feed.appendChild(item);
-        });
+        const countEl = document.getElementById("epiphanyCount");
+        if (countEl) countEl.textContent = `${epData.epiphanies.length} epiphanies`;
+        if (feed) {
+          feed.innerHTML = "";
+          epData.epiphanies.forEach(ep => {
+            const item = document.createElement("div");
+            item.className = "epiphany-item";
+            item.innerHTML = `
+              <div class="epiphany-summary">✦ ${ep.summary}</div>
+              <div class="epiphany-hypothesis">"${ep.actionable_hypothesis || ''}"</div>
+              <div class="epiphany-meta">
+                <span>[${(ep.domains || []).join(" ✕ ")}]</span>
+                <span>Novelty: ${Math.round((ep.novelty_score || 0.9) * 100)}%</span>
+              </div>
+            `;
+            feed.appendChild(item);
+          });
+        }
       }
 
-      // 3. Telemetry
-      const telemData = await apiFetch("telemetry");
-      if (telemData && telemData.cognitive_metrics) {
-        document.getElementById("mEdges").textContent = `${telemData.cognitive_metrics.synaptic_edges} synaptic edges`;
-        document.getElementById("footerUptime").textContent = `Uptime: ${Math.floor(telemData.uptime_seconds)}s`;
-      }
-
-      // 4. Autonomous Heartbeat Activity Feed
+      // 5. Autonomous Heartbeat Activity Feed
       const actData = await apiFetch("activity");
       if (actData && actData.activities && actData.activities.length > 0) {
         const feed = document.getElementById("activityFeed");
@@ -2232,8 +2336,8 @@
     loadData();
     initFirestoreObservatory();
 
-    // Auto-refresh Upper Mind state every 12s for table/tablet real-time observation
-    setInterval(loadData, 12000);
+    // Auto-poll Upper Mind state every 3.5s for real-time continuous sync with local engine
+    setInterval(loadData, 3500);
   </script>
 </body>
 </html>

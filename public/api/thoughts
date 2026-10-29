@@ -1,0 +1,49 @@
+{
+  "status": "online",
+  "source": "local_engine",
+  "active_topic": "uppermind web nexus & public face",
+  "current_focus": "uppermind web nexus & public face",
+  "latest_thought": {
+    "tag": "COGNITION",
+    "class": "tag-grounded",
+    "text": "reading file (gemini_app/cloud/auto_sync.py:70-95)",
+    "source": "Local Cognitive Stream",
+    "topic": "uppermind web nexus & public face",
+    "epoch": 1793260332.5265849
+  },
+  "thoughts": [
+    {
+      "tag": "GROUNDED",
+      "class": "tag-grounded",
+      "text": "Bilateral connection anchored to local iron. Active focus: uppermind web nexus & public face.",
+      "source": "Local Engine",
+      "topic": "uppermind web nexus & public face",
+      "epoch": 1793260303.493616
+    },
+    {
+      "tag": "HYPOTHESIS",
+      "class": "tag-hypothesis",
+      "text": "Continuous thought spooler polling sovereign local engine API before cloud fallback.",
+      "source": "Local Reflex",
+      "topic": "uppermind web nexus & public face",
+      "epoch": 1793260315.4936173
+    },
+    {
+      "tag": "ANNEALING",
+      "class": "tag-annealing",
+      "text": "Hebbian plasticity stabilizing persistent topic notes under focus: uppermind web nexus & public face.",
+      "source": "Plasticity Core",
+      "topic": "uppermind web nexus & public face",
+      "epoch": 1793260325.4936182
+    },
+    {
+      "tag": "COGNITION",
+      "class": "tag-grounded",
+      "text": "reading file (gemini_app/cloud/auto_sync.py:70-95)",
+      "source": "Local Cognitive Stream",
+      "topic": "uppermind web nexus & public face",
+      "epoch": 1793260332.5265849
+    }
+  ],
+  "timestamp": 1793260333.49362
+}

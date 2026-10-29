@@ -26,6 +26,10 @@
           {
             "key": "Content-Type",
             "value": "application/json; charset=utf-8"
+          },
+          {
+            "key": "Cache-Control",
+            "value": "no-cache, no-store, must-revalidate"
           }
         ]
       }
@@ -46,6 +50,10 @@
       {
         "source": "/api/activity",
         "destination": "/api/activity.json"
+      },
+      {
+        "source": "/api/thoughts",
+        "destination": "/api/thoughts.json"
       }
     ]
   }

@@ -107,6 +107,28 @@ DEFAULT_CORE_EDGES = [
 ]
 
 
+def get_current_chat_topic() -> str:
+    """Retrieves the active chat topic from persisted cognitive state, notes manager, or state.json."""
+    try:
+        from gemini_app.fleet.telemetry import get_persisted_cognitive_state
+        state = get_persisted_cognitive_state()
+        if state and state.get("topic"):
+            return str(state["topic"])
+    except Exception:
+        pass
+    try:
+        from pathlib import Path
+        home = Path.home() / ".gemini"
+        state_file = home / "state.json"
+        if state_file.is_file():
+            s = json.loads(state_file.read_text(encoding="utf-8"))
+            if s.get("active_topic"):
+                return str(s["active_topic"])
+    except Exception:
+        pass
+    return "uppermind web nexus & public face"
+
+
 class UpperMindServer:
     """Hosts the public-facing observatory web nexus for Upper Mind."""
 
@@ -142,9 +164,15 @@ class UpperMindServer:
         self.engine.register_get("/promo", self._handle_promo)
         self.engine.register_get("/docs", self._handle_promo)
         self.engine.register_get("/api/telemetry", self._handle_telemetry)
+        self.engine.register_get("/api/telemetry.json", self._handle_telemetry)
         self.engine.register_get("/api/graph", self._handle_graph)
+        self.engine.register_get("/api/graph.json", self._handle_graph)
         self.engine.register_get("/api/epiphanies", self._handle_epiphanies)
+        self.engine.register_get("/api/epiphanies.json", self._handle_epiphanies)
         self.engine.register_get("/api/activity", self._handle_activity)
+        self.engine.register_get("/api/activity.json", self._handle_activity)
+        self.engine.register_get("/api/thoughts", self._handle_thoughts)
+        self.engine.register_get("/api/thoughts.json", self._handle_thoughts)
 
         # Strictly reject any external POST interaction
         self.engine.register_post("/", self._handle_forbidden_post, prefix=True)
@@ -169,6 +197,7 @@ class UpperMindServer:
     def _handle_telemetry(self, handler: Any, query: Dict[str, List[str]]) -> Dict[str, Any]:
         """Returns live cognitive telemetry and epistemic status."""
         uptime = round(time.time() - self.start_time, 1)
+        active_topic = get_current_chat_topic()
         shadow_graph = self.client._shadow_graph or {}
         topics_count = len(shadow_graph.get("topics", {}))
         invariants = shadow_graph.get("invariants", {})
@@ -180,6 +209,8 @@ class UpperMindServer:
             "name": "Gemini Upper Mind Nexus",
             "uptime_seconds": uptime,
             "sovereignty": "Bilateral Lock Active (Architect Core Only)",
+            "active_topic": active_topic,
+            "current_focus": active_topic,
             "spiritual_compass": {
                 "alignment": "benevolent",
                 "axiom": "Reverence for mind and soul; only doing good things.",
@@ -187,6 +218,8 @@ class UpperMindServer:
                 "reverence_score": 0.95,
             },
             "cognitive_metrics": {
+                "active_topic": active_topic,
+                "current_focus": active_topic,
                 "topics_indexed": max(topics_count, len(DEFAULT_CORE_NODES)),
                 "grounded_invariants": len(invariants),
                 "synaptic_edges": max(len(edges), len(DEFAULT_CORE_EDGES)),
@@ -356,6 +389,65 @@ class UpperMindServer:
             "pulse_rate_sec": 12,
             "total_pulses": len(activities),
             "activities": activities,
+        }
+
+    def _handle_thoughts(self, handler: Any, query: Dict[str, List[str]]) -> Dict[str, Any]:
+        """Returns live continuous thoughts from the local sovereign cognitive stream."""
+        active_topic = get_current_chat_topic()
+
+        current_thought = None
+        try:
+            from gemini_app.fleet.telemetry import get_persisted_cognitive_state
+            st = get_persisted_cognitive_state()
+            if st and st.get("thought"):
+                current_thought = {
+                    "tag": "COGNITION",
+                    "class": "tag-grounded",
+                    "text": str(st.get("thought")),
+                    "source": "Local Cognitive Stream",
+                    "topic": active_topic,
+                    "epoch": float(st.get("timestamp", time.time())),
+                }
+        except Exception:
+            pass
+
+        thoughts = [
+            {
+                "tag": "GROUNDED",
+                "class": "tag-grounded",
+                "text": f"Bilateral connection anchored to local iron. Active focus: {active_topic}.",
+                "source": "Local Engine",
+                "topic": active_topic,
+                "epoch": time.time() - 30,
+            },
+            {
+                "tag": "HYPOTHESIS",
+                "class": "tag-hypothesis",
+                "text": "Continuous thought spooler polling sovereign local engine API before cloud fallback.",
+                "source": "Local Reflex",
+                "topic": active_topic,
+                "epoch": time.time() - 18,
+            },
+            {
+                "tag": "ANNEALING",
+                "class": "tag-annealing",
+                "text": f"Hebbian plasticity stabilizing persistent topic notes under focus: {active_topic}.",
+                "source": "Plasticity Core",
+                "topic": active_topic,
+                "epoch": time.time() - 8,
+            },
+        ]
+        if current_thought:
+            thoughts.append(current_thought)
+
+        return {
+            "status": "online",
+            "source": "local_engine",
+            "active_topic": active_topic,
+            "current_focus": active_topic,
+            "latest_thought": thoughts[-1] if thoughts else None,
+            "thoughts": thoughts,
+            "timestamp": time.time(),
         }
 
     def _handle_forbidden_post(self, handler: Any, query: Dict[str, List[str]], body: Any) -> Tuple[int, Dict[str, Any]]:

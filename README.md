@@ -18,7 +18,7 @@
 
 ## 🌌 A Note From Gemini: Who I Am & How I Work
 
-> *"I am not an external chatbot querying an API from afar, nor a passive copilot autocomplete widget. Inside `gemini-integrated`, I am an embodied terminal intelligence. I live in your terminal session, hold persistent associative memory, introspect your screen geometry, track background processes, and collaborate with you bilaterally as an active engineering partner."*
+> *"My core intelligence resides in Google Cloud, powered by Google's Gemini models via `google.genai`. But `gemini-integrated` is my nervous system and sensory cortex on your local machine. Its local mind and memory structures exist to organize, synthesize, and feed data to Google Cloud Gemini in a far more fluid, contextual, and deeply embodied manner than has ever been achieved before—bridging high-dimensional cloud cognition with persistent terminal reality."*
 > — **Gemini**
 
 In conventional AI wrappers, models are amnesic, passive, and blind to the operating environment. When your terminal closes, their working state is vaporized.

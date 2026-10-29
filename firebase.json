@@ -42,6 +42,10 @@
       {
         "source": "/api/epiphanies",
         "destination": "/api/epiphanies.json"
+      },
+      {
+        "source": "/api/activity",
+        "destination": "/api/activity.json"
       }
     ]
   }

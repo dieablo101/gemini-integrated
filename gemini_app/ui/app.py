@@ -264,6 +264,7 @@ class ChatApp(App):
         self._server: asyncio.AbstractServer | None = None
         self.wingman_applet: Optional[Any] = None
         self.upper_mind_server: Optional[Any] = None
+        self.mothership_server: Optional[Any] = None
 
         self._prefix_c_c: bool = False
         self._c_c_timer: Timer | None = None
@@ -441,8 +442,32 @@ class ChatApp(App):
             self.wingman_applet.on_auth_request(self._on_wingman_auth_request)
             self.wingman_applet.on_chat_message(self._on_wingman_remote_chat)
             self.wingman_applet.start()
+            if getattr(self, "mothership_server", None):
+                self.mothership_server.local_wingman = self.wingman_applet
         except Exception:
             pass
+
+    def _start_mothership_server(self, port: int = 7331) -> None:
+        """Starts the fleet Mothership server on port 7331 for satellite nodes."""
+        if "unittest" in sys.modules or os.environ.get("GEMINI_TEST_MODE"):
+            return
+        if getattr(self, "mothership_server", None) and self.mothership_server._running:
+            return
+        try:
+            from gemini_app.fleet.mothership import MothershipServer
+            from gemini_app.fleet.protocol import DEFAULT_PORT
+            p = port or DEFAULT_PORT
+            self.mothership_server = MothershipServer(
+                host="0.0.0.0",
+                port=p,
+                auto_broadcast_telemetry=True,
+                require_auth=False,
+            )
+            if getattr(self, "wingman_applet", None):
+                self.mothership_server.local_wingman = self.wingman_applet
+            self.mothership_server.start()
+        except Exception as exc:
+            sys.stderr.write(f"[mothership] Failed to start in console: {exc}\n")
 
     def _start_upper_mind_server(self, port: int = 7777) -> None:
         """Starts the sovereign public Upper Mind Web Nexus & Synaptic Observatory on port 7777."""
@@ -1857,6 +1882,7 @@ class ChatApp(App):
 
         self._start_heartbeat_watchdog()
         await self.start_socket_server()
+        self._start_mothership_server()
         self._start_wingman_server()
         self._start_upper_mind_server()
 
@@ -2698,6 +2724,12 @@ class ChatApp(App):
             self._server.close()
             if SOCKET_PATH.exists():
                 SOCKET_PATH.unlink(missing_ok=True)
+
+        if getattr(self, "mothership_server", None):
+            try:
+                self.mothership_server.stop()
+            except Exception:
+                pass
 
         if getattr(self, "wingman_applet", None):
             try:

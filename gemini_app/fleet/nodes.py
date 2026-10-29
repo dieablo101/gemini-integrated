@@ -42,6 +42,9 @@ def ensure_fleet_dir() -> Path:
     return FLEET_DIR
 
 
+INTERNAL_FLEET_CLIENT_IDS = {"console", "console-client", "local", "mothership"}
+
+
 def load_nodes_registry() -> Dict[str, Dict[str, Any]]:
     """Loads all known persistent fleet nodes from disk."""
     ensure_fleet_dir()
@@ -65,7 +68,16 @@ def load_nodes_registry() -> Dict[str, Dict[str, Any]]:
         return default_registry
 
     try:
-        return json.loads(NODES_REGISTRY_FILE.read_text(encoding="utf-8"))
+        data = json.loads(NODES_REGISTRY_FILE.read_text(encoding="utf-8"))
+        # Cleanse any internal command clients that might have been saved
+        cleaned = False
+        for bad_id in INTERNAL_FLEET_CLIENT_IDS:
+            if bad_id in data:
+                del data[bad_id]
+                cleaned = True
+        if cleaned:
+            save_nodes_registry(data)
+        return data
     except Exception:
         return {}
 
@@ -91,6 +103,8 @@ def register_or_update_node(
     telemetry: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Registers or updates a persistent node entry in the fleet registry."""
+    if not node_id or node_id in INTERNAL_FLEET_CLIENT_IDS:
+        return {}
     registry = load_nodes_registry()
 
     resolved_key = ssh_key
@@ -165,14 +179,17 @@ def save_active_nodes(nodes: List[Dict[str, Any]]) -> bool:
 
 def get_fleet_snapshot() -> Dict[str, Any]:
     """Compiles a complete snapshot of live connected nodes and registered nodes."""
-    active_list = load_active_nodes()
+    raw_active_list = load_active_nodes()
     registry = load_nodes_registry()
 
+    active_list = [n for n in raw_active_list if n.get("node_id") not in INTERNAL_FLEET_CLIENT_IDS]
     active_map = {n.get("node_id", ""): n for n in active_list if n.get("node_id")}
 
     combined = []
     # 1. Process all registered nodes
     for nid, reg_data in registry.items():
+        if nid in INTERNAL_FLEET_CLIENT_IDS:
+            continue
         node_copy = dict(reg_data)
         if nid in active_map:
             node_copy["status"] = "online"
@@ -190,7 +207,7 @@ def get_fleet_snapshot() -> Dict[str, Any]:
 
     # 2. Add any active nodes not yet in the registry
     for nid, act in active_map.items():
-        if nid not in registry:
+        if nid not in registry and nid not in INTERNAL_FLEET_CLIENT_IDS:
             host_part = act.get("address", "").split(":")[0] if ":" in act.get("address", "") else act.get("address", "")
             combined.append({
                 "node_id": nid,

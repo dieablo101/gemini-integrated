@@ -23,28 +23,50 @@ if TYPE_CHECKING:
 def format_fleet_nodes_markdown() -> str:
     """Formats live connected nodes and registered fleet nodes into rich Markdown."""
     try:
+        import socket
         from gemini_app.fleet.nodes import get_fleet_snapshot
-        from gemini_app.fleet.protocol import get_local_lan_ip
+        from gemini_app.fleet.protocol import DEFAULT_PORT, get_local_lan_ip
         snapshot = get_fleet_snapshot()
         active_cnt = snapshot.get("active_count", 0)
         total_cnt = snapshot.get("total_registered", 0)
         nodes = snapshot.get("nodes", [])
 
         local_ip = get_local_lan_ip()
-        daemon_status = "Active Daemon" if active_cnt > 0 else "Listening"
+
+        # Probe if Mothership daemon is genuinely listening on local TCP port
+        is_listening = False
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(0.05)
+                is_listening = (s.connect_ex(("127.0.0.1", DEFAULT_PORT)) == 0)
+        except Exception:
+            is_listening = False
+
+        if is_listening:
+            daemon_status = f"{active_cnt} Active" if active_cnt > 0 else "Listening"
+        else:
+            daemon_status = "Offline"
+
         lines = [
-            f"**Mothership Fleet:** `{local_ip}:7331` ({daemon_status})\n"
-            f"**Satellites:** `{active_cnt}` active / `{total_cnt}` registered\n"
+            f"**Mothership Fleet:** `{local_ip}:{DEFAULT_PORT}` ({daemon_status})",
+            f"**Satellites:** `{active_cnt}` active / `{total_cnt}` registered",
+            "",
         ]
 
-        if not nodes:
+        # Filter out internal/control clients
+        valid_nodes = [
+            n for n in nodes
+            if n.get("node_id") not in ("console", "console-client", "local", "mothership")
+        ]
+
+        if not valid_nodes:
             lines.append("*No satellite nodes registered or connected yet.*")
             lines.append(f"Run on node: `python3 gemini-integrated.py node --mothership {local_ip}`")
             return "\n".join(lines)
 
-        for n in nodes:
+        for n in valid_nodes:
             nid = n.get("node_id", "satellite")
-            host = n.get("host", "192.168.1.38")
+            host = n.get("host", "127.0.0.1")
             status = n.get("status", "offline")
             user = n.get("ssh_user", "root")
             port = n.get("ssh_port", 22)
@@ -52,22 +74,54 @@ def format_fleet_nodes_markdown() -> str:
             telem = n.get("telemetry", {})
             live_info = n.get("live_info", {})
 
+            # Prefer LAN IP if host is IPv6 and telemetry records LAN route
+            route_ip = telem.get("route", {}).get("local_ip")
+            display_host = route_ip if (route_ip and (":" in host or host.startswith("127."))) else host
+
+            is_termux = bool(telem.get("is_termux") or "termux" in nid)
+            is_ish = bool(telem.get("is_ish") or "ish" in nid)
+            if is_termux:
+                if port == 22:
+                    port = 8022
+                if user == "root":
+                    user = "termux"
+
+            addr_str = f"[{display_host}]:{port}" if ":" in display_host else f"{display_host}:{port}"
+
             if status == "online":
-                addr_str = live_info.get("address", f"{host}:{port}")
-                last_seen = n.get("last_seen_seconds_ago", 0)
+                if live_info.get("address"):
+                    live_addr = live_info["address"]
+                    if ":" in live_addr and not live_addr.startswith("["):
+                        parts = live_addr.rsplit(":", 1)
+                        if ":" in parts[0]:
+                            live_addr = f"[{parts[0]}]:{parts[1]}"
+                    addr_str = live_addr
                 lines.append(f"🟢 **`{nid}`** (`{addr_str}`) [● LIVE]")
             else:
                 last_seen_ago = n.get("last_seen_seconds_ago", 999)
-                time_str = f"{last_seen_ago:.0f}s ago" if last_seen_ago < 3600 else f"{last_seen_ago / 3600:.1f}h ago"
-                lines.append(f"🔴 **`{nid}`** (`{host}:{port}`) [● OFFLINE - {time_str}]")
+                if last_seen_ago < 60:
+                    time_str = "just now"
+                elif last_seen_ago < 3600:
+                    time_str = f"{int(last_seen_ago // 60)}m ago"
+                else:
+                    time_str = f"{last_seen_ago / 3600:.1f}h ago"
+                lines.append(f"🔴 **`{nid}`** (`{addr_str}`) [● OFFLINE - {time_str}]")
 
             # System vitals
             sys_name = telem.get("system", "")
             mach = telem.get("machine", "")
             plat = telem.get("platform", "")
+            if is_ish and not plat:
+                plat = "iSH Alpine"
+            elif is_termux and not plat:
+                plat = "Termux Android"
+
             cpu = telem.get("cpu_pct", 0.0)
-            mem_u = telem.get("mem_used_mb", 0.0)
             mem_t = telem.get("mem_total_mb", 0.0)
+            mem_a = telem.get("mem_avail_mb", 0.0)
+            mem_u = telem.get("mem_used_mb", 0.0)
+            if not mem_u and mem_t and mem_a:
+                mem_u = max(0.0, mem_t - mem_a)
 
             vitals_parts = []
             plat_str = f"{sys_name} {mach}".strip()
@@ -78,15 +132,37 @@ def format_fleet_nodes_markdown() -> str:
             if cpu:
                 vitals_parts.append(f"CPU: {cpu:.1f}%")
             if mem_t > 0:
-                vitals_parts.append(f"RAM: {mem_u / 1024:.1f}G/{mem_t / 1024:.1f}G")
+                pct_val = (mem_u / mem_t) * 100
+                vitals_parts.append(f"RAM: {mem_u / 1024:.1f}G/{mem_t / 1024:.1f}G ({pct_val:.0f}%)")
+
+            bat = telem.get("battery", {})
+            if bat and bat.get("percentage") is not None:
+                icon = "⚡" if bat.get("charging") else "🔋"
+                vitals_parts.append(f"{icon} {bat['percentage']}%")
+
+            if telem.get("has_ipad_mount"):
+                vitals_parts.append(f"iOS Files: {telem.get('ipad_files_count', 0)}")
+
+            webapplet = telem.get("webapplet", {})
+            if webapplet and webapplet.get("running"):
+                w_port = webapplet.get("port", 8888)
+                w_status = "active" if webapplet.get("wingman_active") else "standby"
+                vitals_parts.append(f"Wingman :{w_port} ({w_status})")
 
             if vitals_parts:
                 lines.append(f"  • **Sys:** {' | '.join(vitals_parts)}")
 
             from pathlib import Path
             k_name = Path(n.get("ssh_key", "")).name if n.get("ssh_key") else "id_cluster"
-            lines.append(f"  • **SSH Rescue:** `{user}@{host}:{port}` *(key: {k_name})*")
-            lines.append(f"  • **Autostart:** Boot-persistent daemon (`{autostart}`)")
+
+            auto_label = autostart
+            if is_termux:
+                auto_label = "termux-boot"
+            elif is_ish:
+                auto_label = "openrc"
+
+            ssh_addr = f"[{display_host}]:{port}" if ":" in display_host else f"{display_host}:{port}"
+            lines.append(f"  • **Rescue:** `{user}@{ssh_addr}` *(key: {k_name})* | **Autostart:** `{auto_label}`")
             lines.append("")
 
         return "\n".join(lines).strip()
@@ -255,15 +331,14 @@ class MindMapScreen(Screen):
         if current_sig != self._last_state_signature:
             self.refresh_display()
 
-        # 2. Check and refresh fleet nodes display every 2 ticks (1.2s)
-        if self._anim_frame_idx % 2 == 0:
+        # 2. Check and refresh fleet nodes display every 3 ticks (~1.8s)
+        if self._anim_frame_idx % 3 == 0:
             try:
                 nodes_md = self.query_one("#mind_nodes_text", Markdown)
                 new_nodes_body = format_fleet_nodes_markdown()
                 if new_nodes_body != self._last_nodes_signature:
                     self._last_nodes_signature = new_nodes_body
                     nodes_md.update(new_nodes_body)
-                    nodes_md.refresh(layout=True)
             except Exception:
                 pass
 

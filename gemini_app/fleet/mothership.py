@@ -307,16 +307,18 @@ class MothershipServer:
                                 and self.fleet_guard.verify_and_consume_nonce(auth_nonce, auth_ts)):
                                 self.fleet_guard.record_auth_success(addr[0])
                                 is_authenticated = True
-                                with self.lock:
-                                    if node_id in self.nodes and self.nodes[node_id].conn == conn:
-                                        satellite = self.nodes[node_id]
-                                        if "telemetry" in msg.payload:
-                                            satellite.telemetry.update(msg.payload["telemetry"])
-                                    else:
-                                        satellite = ConnectedSatellite(node_id, conn, addr)
-                                        satellite.telemetry = msg.payload.get("telemetry", {})
-                                        self.nodes[node_id] = satellite
-                                sys.stdout.write(f"[mothership] Satellite authenticated & registered: '{node_id}' from {addr}\n")
+                                is_control_client = node_id in ("console", "console-client", "local", "mothership")
+                                if not is_control_client:
+                                    with self.lock:
+                                        if node_id in self.nodes and self.nodes[node_id].conn == conn:
+                                            satellite = self.nodes[node_id]
+                                            if "telemetry" in msg.payload:
+                                                satellite.telemetry.update(msg.payload["telemetry"])
+                                        else:
+                                            satellite = ConnectedSatellite(node_id, conn, addr)
+                                            satellite.telemetry = msg.payload.get("telemetry", {})
+                                            self.nodes[node_id] = satellite
+                                    sys.stdout.write(f"[mothership] Satellite authenticated & registered: '{node_id}' from {addr}\n")
 
                                 ack = FleetMessage(
                                     msg_type=FleetMessage.TYPE_AUTH_OK,
@@ -328,31 +330,32 @@ class MothershipServer:
                                 except (ConnectionResetError, BrokenPipeError, OSError):
                                     return
 
-                                try:
-                                    host_ip = addr[0]
-                                    register_or_update_node(
-                                        node_id=node_id,
-                                        host=host_ip,
-                                        telemetry=satellite.telemetry,
-                                    )
-                                    save_active_nodes(self.list_nodes())
-                                except Exception:
-                                    pass
+                                if not is_control_client:
+                                    try:
+                                        host_ip = addr[0]
+                                        register_or_update_node(
+                                            node_id=node_id,
+                                            host=host_ip,
+                                            telemetry=satellite.telemetry if satellite else {},
+                                        )
+                                        save_active_nodes(self.list_nodes())
+                                    except Exception:
+                                        pass
 
-                                init_telem = collect_mothership_telemetry(
-                                    cognitive_override=self._cognitive_override,
-                                    satellites_info=self.list_nodes(),
-                                )
-                                greet = FleetMessage(
-                                    msg_type=FleetMessage.TYPE_TELEMETRY,
-                                    node_id="mothership",
-                                    payload={
-                                        "mothership_telemetry": init_telem,
-                                        "mothership_boot_id": self.mothership_boot_id,
-                                        "wingman_maintenance": self.wingman_maintenance_mode,
-                                    },
-                                )
-                                satellite.send(greet)
+                                    init_telem = collect_mothership_telemetry(
+                                        cognitive_override=self._cognitive_override,
+                                        satellites_info=self.list_nodes(),
+                                    )
+                                    greet = FleetMessage(
+                                        msg_type=FleetMessage.TYPE_TELEMETRY,
+                                        node_id="mothership",
+                                        payload={
+                                            "mothership_telemetry": init_telem,
+                                            "mothership_boot_id": self.mothership_boot_id,
+                                            "wingman_maintenance": self.wingman_maintenance_mode,
+                                        },
+                                    )
+                                    satellite.send(greet)
                             else:
                                 if self.require_auth:
                                     newly_banned = self.fleet_guard.record_auth_failure(addr[0])
@@ -372,16 +375,18 @@ class MothershipServer:
                                 else:
                                     # Fallback: allow as unauthenticated LAN node when require_auth=False
                                     is_authenticated = True
-                                    with self.lock:
-                                        if node_id in self.nodes and self.nodes[node_id].conn == conn:
-                                            satellite = self.nodes[node_id]
-                                            if "telemetry" in msg.payload:
-                                                satellite.telemetry.update(msg.payload["telemetry"])
-                                        else:
-                                            satellite = ConnectedSatellite(node_id, conn, addr)
-                                            satellite.telemetry = msg.payload.get("telemetry", {})
-                                            self.nodes[node_id] = satellite
-                                    sys.stdout.write(f"[mothership] Satellite registered (LAN mode): '{node_id}' from {addr}\n")
+                                    is_control_client = node_id in ("console", "console-client", "local", "mothership")
+                                    if not is_control_client:
+                                        with self.lock:
+                                            if node_id in self.nodes and self.nodes[node_id].conn == conn:
+                                                satellite = self.nodes[node_id]
+                                                if "telemetry" in msg.payload:
+                                                    satellite.telemetry.update(msg.payload["telemetry"])
+                                            else:
+                                                satellite = ConnectedSatellite(node_id, conn, addr)
+                                                satellite.telemetry = msg.payload.get("telemetry", {})
+                                                self.nodes[node_id] = satellite
+                                        sys.stdout.write(f"[mothership] Satellite registered (LAN mode): '{node_id}' from {addr}\n")
 
                                     ack = FleetMessage(
                                         msg_type=FleetMessage.TYPE_AUTH_OK,
@@ -393,6 +398,52 @@ class MothershipServer:
                                     except (ConnectionResetError, BrokenPipeError, OSError):
                                         return
 
+                                    if not is_control_client:
+                                        try:
+                                            host_ip = addr[0]
+                                            register_or_update_node(
+                                                node_id=node_id,
+                                                host=host_ip,
+                                                telemetry=satellite.telemetry if satellite else {},
+                                            )
+                                            save_active_nodes(self.list_nodes())
+                                        except Exception:
+                                            pass
+
+                                        init_telem = collect_mothership_telemetry(
+                                            cognitive_override=self._cognitive_override,
+                                            satellites_info=self.list_nodes(),
+                                        )
+                                        greet = FleetMessage(
+                                            msg_type=FleetMessage.TYPE_TELEMETRY,
+                                            node_id="mothership",
+                                            payload={
+                                                "mothership_telemetry": init_telem,
+                                                "fleet_key": self.fleet_key,
+                                                "mothership_boot_id": self.mothership_boot_id,
+                                                "wingman_maintenance": self.wingman_maintenance_mode,
+                                            },
+                                        )
+                                        satellite.send(greet)
+
+                        elif msg.type == FleetMessage.TYPE_REGISTER:
+                            # Allow if loopback or auth not enforced
+                            if is_loopback or not self.require_auth:
+                                is_authenticated = True
+                                is_control_client = node_id in ("console", "console-client", "local", "mothership")
+                                if not is_control_client:
+                                    with self.lock:
+                                        if node_id in self.nodes and self.nodes[node_id].conn == conn:
+                                            satellite = self.nodes[node_id]
+                                            if "telemetry" in msg.payload:
+                                                satellite.telemetry.update(msg.payload["telemetry"])
+                                        else:
+                                            satellite = ConnectedSatellite(node_id, conn, addr)
+                                            satellite.telemetry = msg.payload.get("telemetry", {})
+                                            self.nodes[node_id] = satellite
+                                    sys.stdout.write(f"[mothership] Satellite registered: '{node_id}' from {addr}\n")
+
+                                    # Persist to active nodes and update persistent registry
                                     try:
                                         host_ip = addr[0]
                                         register_or_update_node(
@@ -404,6 +455,7 @@ class MothershipServer:
                                     except Exception:
                                         pass
 
+                                    # Send immediate telemetry greeting so HUD populates right away
                                     init_telem = collect_mothership_telemetry(
                                         cognitive_override=self._cognitive_override,
                                         satellites_info=self.list_nodes(),
@@ -413,55 +465,11 @@ class MothershipServer:
                                         node_id="mothership",
                                         payload={
                                             "mothership_telemetry": init_telem,
-                                            "fleet_key": self.fleet_key,
                                             "mothership_boot_id": self.mothership_boot_id,
                                             "wingman_maintenance": self.wingman_maintenance_mode,
                                         },
                                     )
                                     satellite.send(greet)
-
-                        elif msg.type == FleetMessage.TYPE_REGISTER:
-                            # Allow if loopback or auth not enforced
-                            if is_loopback or not self.require_auth:
-                                is_authenticated = True
-                                with self.lock:
-                                    if node_id in self.nodes and self.nodes[node_id].conn == conn:
-                                        satellite = self.nodes[node_id]
-                                        if "telemetry" in msg.payload:
-                                            satellite.telemetry.update(msg.payload["telemetry"])
-                                    else:
-                                        satellite = ConnectedSatellite(node_id, conn, addr)
-                                        satellite.telemetry = msg.payload.get("telemetry", {})
-                                        self.nodes[node_id] = satellite
-                                sys.stdout.write(f"[mothership] Satellite registered: '{node_id}' from {addr}\n")
-
-                                # Persist to active nodes and update persistent registry
-                                try:
-                                    host_ip = addr[0]
-                                    register_or_update_node(
-                                        node_id=node_id,
-                                        host=host_ip,
-                                        telemetry=satellite.telemetry,
-                                    )
-                                    save_active_nodes(self.list_nodes())
-                                except Exception:
-                                    pass
-
-                                # Send immediate telemetry greeting so HUD populates right away
-                                init_telem = collect_mothership_telemetry(
-                                    cognitive_override=self._cognitive_override,
-                                    satellites_info=self.list_nodes(),
-                                )
-                                greet = FleetMessage(
-                                    msg_type=FleetMessage.TYPE_TELEMETRY,
-                                    node_id="mothership",
-                                    payload={
-                                        "mothership_telemetry": init_telem,
-                                        "mothership_boot_id": self.mothership_boot_id,
-                                        "wingman_maintenance": self.wingman_maintenance_mode,
-                                    },
-                                )
-                                satellite.send(greet)
                             else:
                                 sys.stderr.write(f"[mothership] Blocked unauthenticated registration from {addr}\n")
                                 fail = FleetMessage(
@@ -1237,7 +1245,7 @@ class MothershipServer:
                 return
 
         finally:
-            if node_id:
+            if node_id and node_id not in ("console", "console-client", "local", "mothership"):
                 with self.lock:
                     if node_id in self.nodes and self.nodes[node_id].conn == conn:
                         del self.nodes[node_id]
@@ -1669,6 +1677,8 @@ class MothershipServer:
             result = []
             now = time.time()
             for nid, sat in self.nodes.items():
+                if nid in ("console", "console-client", "local", "mothership"):
+                    continue
                 result.append({
                     "node_id": nid,
                     "address": f"{sat.addr[0]}:{sat.addr[1]}",
@@ -1945,6 +1955,8 @@ def main() -> int:
     parser.add_argument("--no-auth", dest="require_auth", action="store_false", help="Allow unauthenticated LAN node registration (default)")
     parser.add_argument("--upgrade", metavar="NODE_ID", help="Dispatch atomic upgrade to specific satellite node")
     parser.add_argument("--upgrade-all", action="store_true", help="Dispatch atomic upgrade to all active satellite nodes")
+    parser.add_argument("--auto-upgrade", dest="auto_upgrade_nodes", action="store_true", default=False, help="Automatically push OTA upgrades to satellites on commit drift")
+    parser.add_argument("--no-auto-upgrade", dest="auto_upgrade_nodes", action="store_false", help="Disable automatic OTA upgrades (default)")
     parser.add_argument("--notify-ip", metavar="LAN_IP", help="Dispatch Mothership IP migration to all registered fleet nodes")
     parser.add_argument("--wan-ip", metavar="WAN_IP", default=None, help="Optional WAN IP for --notify-ip")
     args = parser.parse_args()
@@ -1957,7 +1969,12 @@ def main() -> int:
             print(f"  • {nid} ({r.get('host')}): {r.get('status')} via {r.get('method')} ({r.get('detail')})")
         return 0
 
-    server = MothershipServer(host=args.host, port=args.port, require_auth=args.require_auth)
+    server = MothershipServer(
+        host=args.host,
+        port=args.port,
+        require_auth=args.require_auth,
+        auto_upgrade_nodes=args.auto_upgrade_nodes,
+    )
     if not server.start():
         return 1
 

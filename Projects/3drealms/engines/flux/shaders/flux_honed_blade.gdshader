@@ -32,10 +32,9 @@ void fragment() {
     
     // Micro-groove normal perturbation
     float groove = grind * 0.03;
-    vec3 n_mod = normalize(vec3(-dFdx(groove) * 12.0, -dFdy(groove) * 12.0, 1.0));
     
     ALBEDO = col;
     METALLIC = 0.98;
     ROUGHNESS = clamp(mix(u_roughness_body, u_roughness_edge, edge) + (grind - 0.5) * 0.04, 0.05, 0.8);
-    NORMAL = (VIEW_MATRIX * vec4(n_mod, 0.0)).xyz;
+    NORMAL = normalize(NORMAL + vec3(-dFdx(groove) * 12.0, -dFdy(groove) * 12.0, 0.0));
 }

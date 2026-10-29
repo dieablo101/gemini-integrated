@@ -36,7 +36,6 @@ void fragment() {
     
     // Analytical normal micro-detail via screen-space derivatives
     float micro_height = (brush * 0.4 + scratches * 0.6) * 0.08;
-    vec3 n_mod = normalize(vec3(-dFdx(micro_height) * 8.0, -dFdy(micro_height) * 8.0, 1.0));
     
     // Curvature / edge detection from geometric normals
     vec3 geom_norm = normalize(cross(dFdx(VERTEX), dFdy(VERTEX)));
@@ -52,6 +51,6 @@ void fragment() {
     ALBEDO = surface_color;
     METALLIC = u_metallic;
     ROUGHNESS = clamp(u_roughness_base + (1.0 - edge_factor) * 0.12 - brush * 0.05, 0.08, 0.95);
-    NORMAL = (VIEW_MATRIX * vec4(n_mod, 0.0)).xyz;
+    NORMAL = normalize(NORMAL + vec3(-dFdx(micro_height) * 8.0, -dFdy(micro_height) * 8.0, 0.0));
     AO = cavity;
 }

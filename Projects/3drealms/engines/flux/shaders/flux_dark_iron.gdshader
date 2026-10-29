@@ -4,8 +4,8 @@ render_mode blend_mix, depth_draw_opaque, cull_back, diffuse_burley, specular_sc
 // FLUX Procedural Surface Shader: Blackened Cast Iron Trim
 // Deep gothic charcoal iron with pitted corrosion and micro-grain.
 
-uniform vec3 u_albedo_base : source_color = vec3(0.12, 0.12, 0.14);
-uniform vec3 u_albedo_pitting : source_color = vec3(0.06, 0.05, 0.06);
+uniform vec3 u_albedo_base : source_color = vec3(0.14, 0.14, 0.17);
+uniform vec3 u_albedo_pitting : source_color = vec3(0.06, 0.05, 0.07);
 uniform float u_scale = 16.0;
 uniform float u_roughness = 0.55;
 uniform float u_metallic = 0.88;
@@ -40,7 +40,6 @@ void fragment() {
     
     // Height & analytical normal calculation
     float height = pit * 0.15;
-    vec3 n_mod = normalize(vec3(-dFdx(height) * 6.0, -dFdy(height) * 6.0, 1.0));
     
     // Albedo pitting
     vec3 col = mix(u_albedo_pitting, u_albedo_base, smoothstep(0.3, 0.7, pit));
@@ -48,5 +47,5 @@ void fragment() {
     ALBEDO = col;
     METALLIC = u_metallic;
     ROUGHNESS = clamp(u_roughness + (1.0 - pit) * 0.25, 0.1, 0.95);
-    NORMAL = (VIEW_MATRIX * vec4(n_mod, 0.0)).xyz;
+    NORMAL = normalize(NORMAL + vec3(-dFdx(height) * 6.0, -dFdy(height) * 6.0, 0.0));
 }
